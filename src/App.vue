@@ -847,6 +847,12 @@ const handleUnderwrite = async () => {
     appState.value = 'COMPLETE'
     activeTab.value = 'underwrite'
 
+    // Add automatic greeting to chat
+    chatMessages.value.push({
+      role: 'assistant',
+      content: '✅ Statement analysis complete. The dashboard has been updated. What specific questions do you have about this merchant?'
+    })
+
     console.log('[State] Analysis complete')
     console.log('[State] UI State:', { appState: appState.value, activeTab: activeTab.value })
 
@@ -1208,7 +1214,7 @@ const printReport = () => {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// FOLLOW-UP CHAT
+// FOLLOW-UP CHAT - Text-only, no PDF re-processing
 // ═══════════════════════════════════════════════════════════════════════════
 
 const sendChatMessage = async () => {
@@ -1228,12 +1234,13 @@ User follow-up question: ${question}
 
 Provide a concise, helpful answer based on the bank statement analysis above.`
 
-    const response = await invoke('send_pdf_to_ollama', {
+    // Use text-only chat command - NO PDF re-processing!
+    const response = await invoke('chat_with_ollama', {
       model: selectedModel.value,
       prompt: contextPrompt,
-      pdfPath: filePath.value,
       temperature: modelConfig.value.temperature,
       maxTokens: modelConfig.value.maxTokens
+      // NO pdfPath - pure text-to-text!
     })
 
     chatMessages.value.push({ role: 'assistant', content: response })

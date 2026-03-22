@@ -441,6 +441,69 @@ async fn send_pdf_to_ollama(
     Ok(final_result)
 }
 
+/// Text-only chat with Ollama - no images, pure text-to-text
+/// Used for follow-up questions after initial analysis
+#[tauri::command]
+async fn chat_with_ollama(
+    model: String,
+    prompt: String,
+    temperature: f32,
+    max_tokens: i32,
+) -> Result<String, String> {
+    println!("[Chat] Starting text-only chat with model: {}", model);
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120)) // 2 minute timeout for text chat
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    let request = OllamaChatRequest {
+        model: model.clone(),
+        messages: vec![OllamaMessage {
+            role: "user".to_string(),
+            content: prompt,
+            images: None, // No images - text only!
+        }],
+        stream: false,
+        options: Some(OllamaOptions {
+            temperature: Some(temperature),
+            num_predict: Some(max_tokens),
+        }),
+    };
+
+    println!("[Chat] Sending request to Ollama...");
+
+    let response = client
+        .post("http://localhost:11434/api/chat")
+        .json(&request)
+        .send()
+        .await
+        .map_err(|e| {
+            println!("[Chat] Request failed: {}", e);
+            format!("Failed to send request: {}", e)
+        })?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let error_text = response.text().await.unwrap_or_default();
+        println!("[Chat] Error response: {}", error_text);
+        return Err(format!("Ollama returned status {}: {}", status, error_text));
+    }
+
+    let result: ollama::OllamaChatResponse = response
+        .json()
+        .await
+        .map_err(|e| {
+            println!("[Chat] Failed to parse JSON: {}", e);
+            format!("Failed to parse response: {}", e)
+        })?;
+
+    println!("[Chat] Response received: {} chars", result.message.content.len());
+
+    Ok(result.message.content)
+}
+
 /// Export JSON data to file using native save dialog
 #[tauri::command]
 async fn export_json(
@@ -511,6 +574,7 @@ fn main() {
             read_file_as_base64,
             convert_pdf_to_images,
             send_pdf_to_ollama,
+            chat_with_ollama,
             test_ollama_model,
             export_json,
             export_csv
