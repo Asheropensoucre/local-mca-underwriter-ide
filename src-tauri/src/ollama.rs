@@ -53,11 +53,3 @@ pub struct PdfConversionResult {
     pub pages: Vec<PdfPageInfo>,
     pub images: Vec<String>, // base64 encoded
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OllamaMultiPageRequest {
-    pub model: String,
-    pub messages: Vec<OllamaMessage>,
-    pub stream: bool,
-    pub options: Option<OllamaOptions>,
-}

@@ -32,9 +32,23 @@
     </div>
 
     <!-- Loading State -->
-    <div v-else-if="isLoading" class="text-center space-y-4">
-      <div class="inline-block animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent"></div>
-      <p class="text-gray-400">{{ loadingMessage || 'Loading ' + fileName + '...' }}</p>
+    <div v-else-if="isLoading" class="text-center space-y-6">
+      <div class="relative">
+        <div class="inline-block animate-spin rounded-full h-16 w-16 border-4 border-primary border-t-transparent"></div>
+        <div v-if="loadingProgress > 0" class="absolute inset-0 flex items-center justify-center">
+          <span class="text-xs font-mono">{{ loadingProgress }}%</span>
+        </div>
+      </div>
+      <div class="space-y-2">
+        <p class="text-gray-300 font-medium">{{ loadingMessage }}</p>
+        <div class="w-64 h-2 bg-surface rounded-full overflow-hidden mx-auto">
+          <div 
+            class="h-full bg-primary transition-all duration-300"
+            :style="{ width: loadingProgress + '%' }"
+          ></div>
+        </div>
+        <p class="text-xs text-gray-500">This may take 2-5 minutes for multi-page PDFs</p>
+      </div>
     </div>
 
     <!-- Active State - Processing UI -->
@@ -92,6 +106,13 @@
                 <span class="text-xs" :class="ollamaConnected ? 'text-green-400' : 'text-red-400'">
                   {{ isCheckingConnection ? 'Checking...' : ollamaConnected ? 'Connected' : 'Disconnected' }}
                 </span>
+                <button 
+                  v-if="ollamaConnected"
+                  @click="testConnection" 
+                  class="text-xs text-primary hover:text-blue-400 ml-2"
+                >
+                  Test
+                </button>
               </div>
             </div>
 
@@ -207,6 +228,7 @@ import PdfViewer from './components/PdfViewer.vue'
 const fileSelected = ref(false)
 const isLoading = ref(false)
 const loadingMessage = ref('')
+const loadingProgress = ref(0)
 const filePath = ref('')
 const pdfPageCount = ref(0)
 const pdfSource = ref(null)
@@ -437,10 +459,10 @@ const handleUnderwrite = async () => {
   if (!ollamaConnected.value) {
     terminalOutput.value = `// Error: Ollama is not running
 // Please start Ollama and make sure vision models are installed
-// 
+//
 // To install a vision model:
 //   ollama pull llava
-//   ollama pull llama3-vision
+//   ollama pull llama3.2-vision
 //
 // Then restart the app
 `
@@ -449,7 +471,7 @@ const handleUnderwrite = async () => {
 
   const timestamp = new Date().toISOString()
   const pageCountText = pdfPageCount.value > 0 ? `(${pdfPageCount.value} page${pdfPageCount.value > 1 ? 's' : ''})` : ''
-  terminalOutput.value = `// Converting PDF to images...
+  terminalOutput.value = `// Converting PDF to grayscale JPEG...
 // Model: ${selectedModel.value}
 // File: ${fileName.value} ${pageCountText}
 // Temperature: ${modelConfig.value.temperature}
@@ -458,11 +480,22 @@ const handleUnderwrite = async () => {
 `
 
   isLoading.value = true
-  loadingMessage.value = pdfPageCount.value > 1 
-    ? `Sending ${pdfPageCount.value} pages to ${selectedModel.value}...` 
-    : `Sending to ${selectedModel.value}...`
+  loadingProgress.value = 0
+  loadingMessage.value = 'Converting PDF to grayscale JPEG...'
   
+  // Progress simulation during conversion
+  const progressInterval = setInterval(() => {
+    loadingProgress.value = Math.min(loadingProgress.value + 5, 85)
+  }, 500)
+
   try {
+    loadingMessage.value = `Sending to ${selectedModel.value}...`
+    terminalOutput.value += `// Sending to Ollama (this may take 30-60 seconds)...\n`
+    terminalOutput.value += `// Watch terminal for debug logs\n\n`
+    
+    // Make sure we're on the Underwrite tab to see results
+    activeTab.value = 'underwrite'
+
     const result = await invoke('send_pdf_to_ollama', {
       model: selectedModel.value,
       prompt: masterPrompt.value,
@@ -470,21 +503,45 @@ const handleUnderwrite = async () => {
       temperature: modelConfig.value.temperature,
       maxTokens: modelConfig.value.maxTokens
     })
-    
-    terminalOutput.value = `// Response from ${selectedModel.value}:
+
+    clearInterval(progressInterval)
+    loadingProgress.value = 100
+
+    terminalOutput.value = `// ✅ Response from ${selectedModel.value}:
 
 ${result}
 `
   } catch (error) {
-    terminalOutput.value = `// Error: ${error}
+    clearInterval(progressInterval)
+    console.error('Underwrite error:', error)
+    terminalOutput.value = `// ❌ Error: ${error}
+
+// Debug info:
+// 1. Check terminal for detailed logs
+// 2. Try a different model: llama3.2-vision or llava
+// 3. Make sure Ollama is running: ollama serve
+// 4. Test model: ollama run ${selectedModel.value} "hello"
 `
   }
-  
+
   isLoading.value = false
   loadingMessage.value = ''
+  loadingProgress.value = 0
+  // Ensure user sees the results
+  activeTab.value = 'underwrite'
 }
 
 const clearTerminal = () => {
   terminalOutput.value = '// Terminal cleared\n'
+}
+
+const testConnection = async () => {
+  terminalOutput.value = `// Testing connection to Ollama...\n`
+  try {
+    const result = await invoke('test_ollama_model', { model: selectedModel.value })
+    terminalOutput.value = `// ✅ Test successful!\n// Model responded: ${result}\n`
+  } catch (error) {
+    terminalOutput.value = `// ❌ Test failed: ${error}\n\n// Try:\n// 1. Check Ollama is running: ollama serve\n// 2. Verify model exists: ollama list\n// 3. Test with: ollama run ${selectedModel.value} "hello"\n`
+  }
 }
 </script>

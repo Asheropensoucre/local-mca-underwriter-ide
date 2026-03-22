@@ -1,6 +1,6 @@
 # Local MCA Underwriter IDE
 
-A blazing-fast, local-first underwriting IDE focused on deep-work and speed. Analyze bank statements using local vision models — 100% offline, no cloud.
+A blazing-fast, local-first underwriting IDE for analyzing bank statements and financial documents using local vision models — 100% offline, no cloud.
 
 ![License](https://img.shields.io/badge/license-Open%20Source-blue)
 ![Tauri](https://img.shields.io/badge/Tauri-v2.0-blue)
@@ -10,34 +10,48 @@ A blazing-fast, local-first underwriting IDE focused on deep-work and speed. Ana
 ## Features
 
 ### PDF Analysis
-- 📄 **Full PDF Viewer** - Multi-page navigation, zoom controls, thumbnail strip
-- 🔄 **Page Navigation** - Previous/Next buttons, page counter, click thumbnails
-- 🔍 **Zoom Controls** - 50%-200% zoom, fit-to-width option
-- 📊 **Auto Page Count** - Displays total pages in header
+- 📄 **Full PDF Viewer** - Multi-page navigation with PDF.js
+- 🔄 **Page Navigation** - Previous/Next buttons, page counter, thumbnail strip
+- 🔍 **Zoom Controls** - 50%-200% zoom, fit-to-width
+- 🖼️ **Grayscale JPEG Conversion** - 55-60% compression for faster processing
 
 ### AI Integration
-- 🤖 **Ollama Integration** - Connect to local vision models (llava, llama3-vision, qwen-vl)
-- 📡 **Connection Status** - Real-time indicator showing Ollama connection
+- 🤖 **Ollama Integration** - Connect to local vision models
+- 📡 **Connection Status** - Real-time indicator with test button
 - 📋 **Model Selector** - Auto-populates with installed Ollama models
-- 🧠 **Multi-Page Analysis** - Sends all PDF pages to vision model at once
-- ⚙️ **Model Configuration** - Temperature, max tokens, context window controls
+- 🧠 **Vision Model Support** - llama3.2-vision, llava, qwen-vl
+- ⚙️ **Model Configuration** - Temperature, max tokens, context window
 
 ### IDE Features
-- ✏️ **Master Prompt Editor** - Edit the underwriting prompt that drives analysis
-- 💾 **Prompt Persistence** - Reset to default prompt anytime
-- 📝 **Terminal Output** - View model responses in styled terminal panel
+- ✏️ **Master Prompt Editor** - Edit the underwriting prompt
+- 💾 **Prompt Persistence** - Reset to default anytime
+- 📝 **Terminal Output** - View model responses with success/error states
 - 🎨 **Dark Mode UI** - Minimalist, terminal-aesthetic design
+- ⏳ **Loading States** - Progress bar with status messages
+
+## How It Works
+
+```
+1. Upload PDF → PDF Viewer (Vue.js + PDF.js)
+2. Convert to Images → pdftocairo (poppler-utils)
+3. Compress → Grayscale JPEG (55-60% smaller)
+4. Send to Ollama → Base64 encoded images
+5. Vision Model Analyzes → 30-90 seconds
+6. Response Displayed → Terminal panel
+```
 
 ## Tech Stack
 
 | Layer | Technology |
 |-------|------------|
-| Backend | Rust |
+| Backend | Rust + tokio |
 | App Framework | Tauri v2 |
 | Frontend | Vue.js 3 + Vite |
 | Styling | Tailwind CSS |
 | PDF Rendering | PDF.js + vue-pdf-embed |
 | PDF Conversion | poppler-utils (pdftocairo) |
+| Image Processing | image crate (grayscale + JPEG) |
+| HTTP Client | reqwest |
 | AI Runtime | Ollama (local) |
 
 ## Prerequisites
@@ -77,11 +91,9 @@ sudo dnf install webkit2gtk3 gtk3 libappindicator-gtk3 librsvg2 poppler-utils
 2. Start Ollama: `ollama serve`
 3. Install a vision model:
    ```bash
-   ollama pull llava
-   # or
-   ollama pull llama3-vision
-   # or  
-   ollama pull qwen-vl
+   ollama pull llama3.2-vision   # Recommended
+   ollama pull llava             # Alternative
+   ollama pull qwen2.5-vl        # Advanced
    ```
 
 ## Installation
@@ -101,18 +113,17 @@ npm run dev
 ## Usage
 
 1. **Start the app:** `npm run dev`
-2. **Upload a PDF:** Click the drop zone or drag & drop a bank statement
+2. **Upload a PDF:** Click the drop zone or drag & drop
 3. **Select a model:** Choose from available Ollama vision models
-4. **Configure (optional):** Adjust temperature, tokens in Settings tab
-5. **Edit prompt (optional):** Customize the Master Underwriting Prompt
-6. **Click "Underwrite File":** Analysis appears in terminal output
+4. **Click "Underwrite File":** Wait 30-90 seconds for analysis
+5. **View Results:** Analysis appears in terminal panel (Underwrite tab)
 
 ## Project Structure
 
 ```
 ├── src/                          # Vue.js frontend
 │   ├── components/
-│   │   └── PdfViewer.vue        # PDF viewer component
+│   │   └── PdfViewer.vue        # PDF viewer with navigation
 │   ├── App.vue                  # Main application component
 │   ├── main.js                  # Vue entry point
 │   └── style.css                # Global styles + Tailwind
@@ -120,7 +131,7 @@ npm run dev
 │   ├── capabilities/
 │   │   └── main-capability.json # Tauri permissions
 │   ├── src/
-│   │   ├── main.rs              # Tauri app entry + Ollama integration
+│   │   ├── main.rs              # Tauri app + Ollama integration
 │   │   └── ollama.rs            # Ollama API types
 │   ├── Cargo.toml               # Rust dependencies
 │   └── tauri.conf.json          # Tauri configuration
@@ -141,21 +152,22 @@ npm run dev
 │   ┌────────────────────┐ │  ┌────────────────────────────┐  │
 │   │ [<] Page 1/5 [>]   │ │  │ [Underwrite][Prompt][⚙️]  │  │
 │   │ [-] 100% [+] [Fit] │ │  ├────────────────────────────┤  │
-│   ├────────────────────┤ │  │ ● Ollama Connected          │  │
-│   │                    │ │  │ Model: [llava ▼]            │  │
+│   ├────────────────────┤ │  │ ● Ollama Connected [Test]  │  │
+│   │                    │ │  │ Model: [llama3.2-vision ▼] │  │
 │   │   [PDF Rendered]   │ │  │ [Underwrite File]           │  │
 │   │                    │ │  │ ┌────────────────────────┐  │  │
 │   ├────────────────────┤ │  │ │ Output                 │  │  │
-│   │ [1][2][3][4][5]    │ │  │ │ { JSON analysis... }   │  │  │
+│   │ [1][2][3][4][5]    │ │  │ │ ✅ Response...         │  │  │
 │   └────────────────────┘ │  │ └────────────────────────┘  │  │
 └──────────────────────────┴──────────────────────────────────┘
                               │
                               ▼
                     ┌─────────────────────┐
                     │   Ollama (Local)    │
-                    │   - llava           │
-                    │   - llama3-vision   │
-                    │   - qwen-vl         │
+                    │   - PDF → JPEG      │
+                    │   - Grayscale       │
+                    │   - Base64 encode   │
+                    │   - Vision analysis │
                     └─────────────────────┘
 ```
 
@@ -163,54 +175,80 @@ npm run dev
 
 | Command | Description |
 |---------|-------------|
-| `npm run dev` | Start development mode (Vite + Tauri) |
+| `npm run dev` | Start development mode |
 | `npm run build` | Build for production |
-| `npm run tauri dev` | Run Tauri dev (same as npm run dev) |
-| `npm run tauri build` | Build production desktop app |
+| `npm run tauri dev` | Run Tauri dev |
+| `npm run tauri build` | Build production app |
 
 ## Configuration
 
 ### Master Underwriting Prompt
 
 Located in the **Prompt** tab. Default prompt extracts:
-- Business information
+- Business information (name, account, period)
 - Financial metrics (deposits, withdrawals, balances)
 - Risk indicators (NSF, overdrafts)
-- Funding recommendation
+- Funding recommendation (APPROVE/DENY/REVIEW)
 
 ### Model Settings
 
 Located in the **Settings** tab:
 - **Temperature** (0-1): Lower = deterministic, Higher = creative
-- **Max Tokens**: Response length limit
+- **Max Tokens**: Response length (512-8192)
 - **Context Window**: Model context size (4K-32K)
 
 ## Troubleshooting
 
 ### "pdftocairo not found"
-Install poppler-utils for your system (see Prerequisites).
+```bash
+sudo apt install poppler-utils
+```
 
 ### "Ollama is not running"
-1. Start Ollama: `ollama serve`
-2. Install a vision model: `ollama pull llava`
+```bash
+ollama serve
+```
+
+### Request timeout
+- Vision models need 30-90 seconds to process images
+- Wait at least 2 minutes before assuming failure
+- Check Ollama terminal for model loading status
 
 ### "No models found"
-1. Ensure Ollama is running
-2. Install a vision model: `ollama pull llava`
-3. Restart the app
+```bash
+ollama list  # Check installed models
+ollama pull llama3.2-vision  # Install a vision model
+```
 
-### PDF only shows first page
-Check that the page count displays correctly in the header. If it shows "1 page" for a multi-page PDF, try re-uploading the file.
+### Blank results screen
+- Ensure you're on the **Underwrite** tab
+- Check terminal for error messages
+- Try the **Test** button first
+
+## Performance Notes
+
+### Image Compression
+- **Original PNG:** ~145KB per page
+- **Grayscale JPEG:** ~64KB per page (55% reduction)
+- **Base64 encoded:** ~85KB per page
+- **Total payload (1 page):** ~85KB (well within HTTP limits)
+
+### Processing Time
+- **PDF Conversion:** 1-2 seconds
+- **Image Compression:** 1-2 seconds
+- **Ollama Analysis:** 30-90 seconds (model dependent)
+- **Total:** 35-95 seconds for 3-page PDF
 
 ## Roadmap
 
-- [ ] Streaming responses (show output as it generates)
+- [ ] Streaming responses (show tokens as generated)
 - [ ] Export analysis to JSON/CSV
 - [ ] Batch processing (multiple PDFs)
 - [ ] PDF text layer for search
 - [ ] Side-by-side PDF comparison
 - [ ] Custom prompt templates
 - [ ] Analysis history
+- [ ] Multi-page full analysis (currently sends first page only)
 
 ## License
 
@@ -219,3 +257,10 @@ Open Source
 ## Contributing
 
 Contributions welcome! This is an open-source project built for the MCA underwriting community.
+
+## Acknowledgments
+
+- **Ollama** - Local AI runtime
+- **Tauri** - Desktop app framework
+- **PDF.js** - PDF rendering
+- **poppler-utils** - PDF conversion
