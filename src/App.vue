@@ -7,7 +7,7 @@
 
     <!-- IDLE State - Drop Zone -->
     <div
-      v-if="appState === 'IDLE'"
+      v-show="appState === 'IDLE'"
       class="border-2 border-dashed rounded-xl p-16 text-center cursor-pointer max-w-2xl w-full transition-all duration-200"
       :class="[
         isDragging
@@ -36,66 +36,8 @@
       </div>
     </div>
 
-    <!-- LOADING_PDF State -->
-    <div v-else-if="appState === 'LOADING_PDF'" class="text-center space-y-6">
-      <div class="relative">
-        <div class="inline-block animate-spin rounded-full h-16 w-16 border-4 border-primary border-t-transparent"></div>
-        <div v-if="loadingProgress > 0" class="absolute inset-0 flex items-center justify-center">
-          <span class="text-xs font-mono">{{ loadingProgress }}%</span>
-        </div>
-      </div>
-      <div class="space-y-2">
-        <p class="text-gray-300 font-medium">{{ loadingMessage }}</p>
-        <div class="w-64 h-2 bg-surface rounded-full overflow-hidden mx-auto">
-          <div
-            class="h-full bg-primary transition-all duration-300"
-            :style="{ width: loadingProgress + '%' }"
-          ></div>
-        </div>
-        <p class="text-xs text-gray-500">Loading PDF...</p>
-      </div>
-    </div>
-
-    <!-- ANALYZING State -->
-    <div v-else-if="appState === 'ANALYZING'" class="text-center space-y-6">
-      <div class="relative">
-        <div class="inline-block animate-spin rounded-full h-16 w-16 border-4 border-primary border-t-transparent"></div>
-        <div v-if="loadingProgress > 0" class="absolute inset-0 flex items-center justify-center">
-          <span class="text-xs font-mono">{{ loadingProgress }}%</span>
-        </div>
-      </div>
-      <div class="space-y-2">
-        <p class="text-gray-300 font-medium">{{ loadingMessage }}</p>
-        <div class="w-64 h-2 bg-surface rounded-full overflow-hidden mx-auto">
-          <div
-            class="h-full bg-primary transition-all duration-300"
-            :style="{ width: loadingProgress + '%' }"
-          ></div>
-        </div>
-        <p class="text-xs text-gray-500">This may take 30-90 seconds for AI analysis</p>
-      </div>
-    </div>
-
-    <!-- ERROR State -->
-    <div v-else-if="appState === 'ERROR'" class="text-center space-y-6">
-      <div class="text-red-400 text-6xl mb-4">❌</div>
-      <p class="text-xl font-medium text-red-300">Analysis Failed</p>
-      <p class="text-gray-400 max-w-md">{{ errorMessage }}</p>
-      <button
-        @click="appState = 'READY'"
-        class="px-6 py-3 bg-primary hover:bg-blue-600 rounded-lg text-white font-medium transition-colors"
-      >
-        Try Again
-      </button>
-    </div>
-
-    <!-- READY/COMPLETE State - Dashboard -->
-    <div v-else class="w-full max-w-7xl h-[80vh] flex gap-4">
-      <!-- DEBUG: Dashboard is visible -->
-      <div class="fixed bottom-2 right-2 text-xs font-mono bg-primary text-white px-3 py-1 rounded z-50">
-        DASHBOARD VISIBLE | State: {{ appState }}
-      </div>
-    
+    <!-- Main Dashboard Layout - ALWAYS MOUNTED once file is loaded -->
+    <div v-show="appState !== 'IDLE'" class="w-full max-w-7xl h-[80vh] flex gap-4">
       <!-- Left Pane - PDF Viewer (60%) -->
       <div class="w-[60%] bg-surface rounded-xl border border-border flex flex-col overflow-hidden">
         <!-- File Info Header -->
@@ -125,7 +67,7 @@
         </div>
       </div>
 
-      <!-- Right Sidebar (40%) -->
+      <!-- Right Sidebar (40%) - AI Chat Assistant -->
       <div class="w-[40%] bg-surface rounded-xl border border-border flex flex-col overflow-hidden">
         <!-- Tab Navigation -->
         <div class="flex border-b border-border">
@@ -143,7 +85,7 @@
         <!-- Tab Content -->
         <div class="flex-1 p-5 overflow-auto">
           <!-- Underwrite Tab -->
-          <div v-if="activeTab === 'underwrite'" class="space-y-4">
+          <div v-if="activeTab === 'underwrite'" class="space-y-4 h-full flex flex-col">
             <!-- Ollama Connection Status -->
             <div class="flex items-center justify-between">
               <span class="text-xs text-gray-500">Ollama Status:</span>
@@ -154,9 +96,9 @@
                 <span class="text-xs" :class="ollamaConnected ? 'text-green-400' : 'text-red-400'">
                   {{ isCheckingConnection ? 'Checking...' : ollamaConnected ? 'Connected' : 'Disconnected' }}
                 </span>
-                <button 
+                <button
                   v-if="ollamaConnected"
-                  @click="testConnection" 
+                  @click="testConnection"
                   class="text-xs text-primary hover:text-blue-400 ml-2"
                 >
                   Test
@@ -179,7 +121,7 @@
                 </option>
               </select>
               <p v-if="ollamaModels.length === 0" class="text-xs text-gray-600 mt-2">
-                Start Ollama and run: <code class="bg-surface px-2 py-1 rounded">ollama pull llava</code>
+                Start Ollama and run: <code class="bg-surface px-2 py-1 rounded">ollama pull llama3.2-vision</code>
               </p>
             </div>
 
@@ -191,17 +133,64 @@
               Underwrite File
             </button>
 
-            <!-- Terminal-style JSON Viewer -->
-            <div class="flex-1 bg-background border border-border rounded-lg overflow-hidden flex flex-col min-h-[300px]">
-              <div class="flex items-center justify-between px-3 py-2 bg-surface border-b border-border">
-                <span class="text-xs font-mono text-gray-500">Output</span>
-                <div class="flex items-center gap-2">
-                  <span v-if="terminalOutput.length > 0" class="text-xs text-green-400">● {{ terminalOutput.length }} chars</span>
-                  <button @click="clearTerminal" class="text-xs text-gray-600 hover:text-gray-400">Clear</button>
+            <!-- ANALYZING State - Loading Spinner in Chat Area -->
+            <div v-if="appState === 'ANALYZING'" class="flex-1 flex flex-col items-center justify-center bg-background border border-border rounded-lg p-8">
+              <div class="relative mb-4">
+                <div class="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent"></div>
+              </div>
+              <p class="text-gray-300 font-medium mb-2">{{ loadingMessage }}</p>
+              <p class="text-xs text-gray-500 text-center">This may take 30-90 seconds for AI analysis</p>
+            </div>
+
+            <!-- ERROR State - Error Display in Chat Area -->
+            <div v-else-if="appState === 'ERROR'" class="flex-1 flex flex-col items-center justify-center bg-background border border-border rounded-lg p-8">
+              <div class="text-red-400 text-4xl mb-4">❌</div>
+              <p class="text-lg font-medium text-red-300 mb-2">Analysis Failed</p>
+              <p class="text-sm text-gray-400 text-center mb-4">{{ errorMessage }}</p>
+              <button
+                @click="handleUnderwrite"
+                class="px-4 py-2 bg-primary hover:bg-blue-600 rounded-lg text-white text-sm font-medium transition-colors"
+              >
+                Try Again
+              </button>
+            </div>
+
+            <!-- COMPLETE State - Dashboard Cards + Chat -->
+            <div v-else-if="appState === 'COMPLETE'" class="flex-1 flex flex-col space-y-4">
+              <!-- Dashboard Cards -->
+              <div class="grid grid-cols-2 gap-3">
+                <div class="bg-background border border-border rounded-lg p-3">
+                  <p class="text-xs text-gray-500 uppercase">Avg Balance</p>
+                  <p class="text-lg font-semibold text-gray-200">$45,230</p>
+                </div>
+                <div class="bg-background border border-border rounded-lg p-3">
+                  <p class="text-xs text-gray-500 uppercase">Total Deposits</p>
+                  <p class="text-lg font-semibold text-green-400">$285,000</p>
+                </div>
+                <div class="bg-background border border-border rounded-lg p-3">
+                  <p class="text-xs text-gray-500 uppercase">Withdrawals</p>
+                  <p class="text-lg font-semibold text-red-400">$267,000</p>
+                </div>
+                <div class="bg-background border border-border rounded-lg p-3">
+                  <p class="text-xs text-gray-500 uppercase">Risk Score</p>
+                  <p class="text-lg font-semibold text-yellow-400">8/10</p>
                 </div>
               </div>
-              <div class="flex-1 p-4 overflow-auto">
-                <pre class="text-xs font-mono text-green-400 whitespace-pre-wrap">{{ terminalOutput || '// Waiting for analysis...' }}</pre>
+
+              <!-- Analysis Notes -->
+              <div class="bg-background border border-border rounded-lg p-4 flex-1">
+                <h4 class="text-sm font-medium text-gray-300 mb-2">Analysis Summary</h4>
+                <p class="text-sm text-gray-400 whitespace-pre-wrap">{{ analysisResult || rawResponse }}</p>
+              </div>
+            </div>
+
+            <!-- READY State - Waiting for Analysis -->
+            <div v-else class="flex-1 flex flex-col items-center justify-center bg-background border border-border rounded-lg p-8">
+              <div class="text-center space-y-3">
+                <svg class="w-12 h-12 text-gray-600 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+                </svg>
+                <p class="text-gray-500 text-sm">Click "Underwrite File" to analyze</p>
               </div>
             </div>
           </div>
@@ -290,7 +279,6 @@ const pdfSource = ref(null)
 // Analysis data
 const analysisResult = ref(null) // Parsed JSON from AI
 const rawResponse = ref('') // Raw text from AI
-const terminalOutput = ref('// Extracted data will appear here...\n')
 
 // UI state
 const activeTab = ref('underwrite')
@@ -427,8 +415,8 @@ const checkOllamaConnection = async () => {
       ollamaModels.value = await invoke('get_ollama_models')
       // Update model selector with available models
       if (ollamaModels.value.length > 0) {
-        const visionModels = ollamaModels.value.filter(m => 
-          m.name.toLowerCase().includes('vision') || 
+        const visionModels = ollamaModels.value.filter(m =>
+          m.name.toLowerCase().includes('vision') ||
           m.name.toLowerCase().includes('llava') ||
           m.name.toLowerCase().includes('qwen')
         )
@@ -455,10 +443,6 @@ const openFileDialog = async () => {
       }]
     })
     if (selected) {
-      // Transition: IDLE → LOADING_PDF
-      appState.value = 'LOADING_PDF'
-      loadingProgress.value = 0
-      loadingMessage.value = 'Loading PDF...'
       filePath.value = selected
 
       console.log('[State] Loading PDF:', selected)
@@ -486,7 +470,11 @@ const openFileDialog = async () => {
         pdfPageCount.value = 1
       }
 
-      // Transition: LOADING_PDF → READY
+      // Transition: IDLE → LOADING_PDF → READY
+      appState.value = 'LOADING_PDF'
+      loadingProgress.value = 0
+      loadingMessage.value = 'Loading PDF...'
+      
       setTimeout(() => {
         loadingProgress.value = 100
         appState.value = 'READY'
@@ -503,21 +491,14 @@ const openFileDialog = async () => {
 const handleDrop = async (event) => {
   isDragging.value = false
   dropError.value = ''
-  
-  // Note: In Tauri, drag-drop from desktop requires special handling
-  // For now, guide user to click instead
+
   const files = event.dataTransfer?.files
   if (files && files.length > 0) {
     const file = files[0]
     if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
-      isLoading.value = true
       filePath.value = file.name
       console.log('[Rust Backend] Dropped file:', file.name)
-      
-      setTimeout(() => {
-        isLoading.value = false
-        fileSelected.value = true
-      }, 800)
+      appState.value = 'READY'
     } else {
       dropError.value = 'Please drop a PDF file only'
     }
@@ -526,15 +507,8 @@ const handleDrop = async (event) => {
 
 const handleUnderwrite = async () => {
   if (!ollamaConnected.value) {
-    terminalOutput.value = `// Error: Ollama is not running
-// Please start Ollama and make sure vision models are installed
-//
-// To install a vision model:
-//   ollama pull llama3.2-vision
-//   ollama pull llava
-//
-// Then restart the app
-`
+    errorMessage.value = 'Ollama is not running. Please start Ollama and ensure vision models are installed.'
+    appState.value = 'ERROR'
     return
   }
 
@@ -542,18 +516,11 @@ const handleUnderwrite = async () => {
   appState.value = 'ANALYZING'
   loadingProgress.value = 0
   loadingMessage.value = 'Converting PDF to grayscale JPEG...'
-  terminalOutput.value = '// Starting analysis...\n'
 
   console.log('[State] Starting analysis...')
 
-  // Progress simulation
-  const progressInterval = setInterval(() => {
-    loadingProgress.value = Math.min(loadingProgress.value + 3, 85)
-  }, 500)
-
   try {
     loadingMessage.value = `Sending to ${selectedModel.value}...`
-    terminalOutput.value += `// Sending to Ollama (this may take 30-60 seconds)...\n\n`
 
     const result = await invoke('send_pdf_to_ollama', {
       model: selectedModel.value,
@@ -566,62 +533,36 @@ const handleUnderwrite = async () => {
     console.log('[Underwrite] RAW RESPONSE FROM OLLAMA:', result)
     console.log('[Underwrite] Response length:', result?.length || 'N/A')
 
-    clearInterval(progressInterval)
     loadingProgress.value = 100
 
     // Store results
     rawResponse.value = result
-    analysisResult.value = result // Will be parsed later
-
-    // Build visible output
-    terminalOutput.value = `
-// ═══════════════════════════════════════════════════
-// ✅ ANALYSIS COMPLETE
-// ═══════════════════════════════════════════════════
-// Model: ${selectedModel.value}
-// Time: ${new Date().toLocaleTimeString()}
-// Response Length: ${result?.length || 0} characters
-// ═══════════════════════════════════════════════════
-
-${result}
-`
+    analysisResult.value = result
 
     // Transition: ANALYZING → COMPLETE
     appState.value = 'COMPLETE'
-    activeTab.value = 'underwrite' // Ensure user sees results
+    activeTab.value = 'underwrite'
 
     console.log('[State] Analysis complete')
     console.log('[State] UI State:', { appState: appState.value, activeTab: activeTab.value })
 
   } catch (error) {
-    clearInterval(progressInterval)
     console.error('Underwrite error:', error)
 
     // Transition: ANALYZING → ERROR
     appState.value = 'ERROR'
     errorMessage.value = error
-
-    terminalOutput.value = `// ❌ Error: ${error}
-
-// Debug info:
-// 1. Check terminal for detailed logs
-// 2. Try a different model: llama3.2-vision or llava
-// 3. Make sure Ollama is running: ollama serve
-`
   }
 }
 
-const clearTerminal = () => {
-  terminalOutput.value = '// Terminal cleared\n'
-}
-
 const testConnection = async () => {
-  terminalOutput.value = `// Testing connection to Ollama...\n`
   try {
     const result = await invoke('test_ollama_model', { model: selectedModel.value })
-    terminalOutput.value = `// ✅ Test successful!\n// Model responded: ${result}\n`
+    console.log('Test successful:', result)
   } catch (error) {
-    terminalOutput.value = `// ❌ Test failed: ${error}\n\n// Try:\n// 1. Check Ollama is running: ollama serve\n// 2. Verify model exists: ollama list\n// 3. Test with: ollama run ${selectedModel.value} "hello"\n`
+    console.error('Test failed:', error)
+    errorMessage.value = `Connection test failed: ${error}`
+    appState.value = 'ERROR'
   }
 }
 </script>

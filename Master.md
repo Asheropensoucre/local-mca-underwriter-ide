@@ -1,12 +1,17 @@
-# Project: Local MCA Underwriter IDE
+I am 100% ready. I have taken everything we just discussed—keeping the dark mode Zed/Cursor feel, dropping the "IDE/hacker terminal" vibe for a corporate hybrid workspace, setting up the AI Chat Assistant, and adding the strict guardrails to prevent the layout from unmounting and causing that blank screen bug.
+
+Here is the complete, fully revised Master.md. You can copy this entire block and use it to completely overwrite your current Master.md file:
+
+Markdown
+# Project: Local MCA Underwriter Workspace
 # Core Directive: Performance at Scale. Component-by-component development.
 # Target OS: Linux Primary (Cross-platform via Tauri)
 
 ## 1. Project Vision
-Build a blazing-fast, local-first underwriting IDE focused on deep-work and speed.
+Build a blazing-fast, local-first underwriting workspace focused on deep-work and speed for finance professionals.
 - Environment: 100% local, offline-first. No cloud leakage.
 - Tech Stack: Rust (Backend) + Tauri (App Framework) + Vue.js (Frontend) + Tailwind CSS (Styling).
-- Vibe: Dark mode, minimalist, terminal-aesthetic.
+- Vibe: Dark mode, minimalist, Zed/Cursor-aesthetic. Corporate hybrid app (professional Fintech meets developer-speed). Use a modern AI Chat Panel instead of a raw terminal. No raw JSON dumps.
 
 ## 2. Phase 1: "Command Center" UI Scaffolding ✅ COMPLETE
 
@@ -47,12 +52,12 @@ Build a blazing-fast, local-first underwriting IDE focused on deep-work and spee
 5. ✅ Page counter display
 6. ✅ Sync with backend page count
 
-## 6. Phase 5: IDE Features ✅ COMPLETE
+## 6. Phase 5: Workspace Features ✅ COMPLETE
 
 **Completed:**
 1. ✅ Master Underwriting Prompt editor
 2. ✅ Tab navigation (Underwrite | Prompt | Settings)
-3. ✅ Terminal-style output viewer
+3. ✅ Zed-style AI Chat Assistant view (Dashboard + Conversational UI)
 4. ✅ Prompt reset to default
 5. ✅ Loading states with progress bar
 6. ✅ Auto-switch to Underwrite tab after analysis
@@ -66,7 +71,7 @@ Build a blazing-fast, local-first underwriting IDE focused on deep-work and spee
 2. Select Ollama vision model → Auto-populated from local Ollama
 3. Click "Underwrite File" → PDF converted to grayscale JPEG
 4. Wait 30-90 seconds → Vision model analyzes document
-5. Results displayed → Terminal panel (auto-switched)
+5. Results displayed → Dashboard / AI Chat Feed (auto-switched)
 
 ### Technical Highlights:
 - **Grayscale JPEG compression:** 55-60% size reduction
@@ -98,17 +103,17 @@ Build a blazing-fast, local-first underwriting IDE focused on deep-work and spee
 - Better error reporting
 - Industry-standard Rust HTTP client
 
-## 9. Known Limitations
+## 9. Current Development Hurdles (WIP - TO BE FIXED)
 
 ### Multi-Page Handling
-- **Current:** Sends only FIRST page to vision model
+- **Current Limitation:** Sends only FIRST page to vision model
 - **Reason:** Multi-image support unstable in Ollama
-- **Future:** Implement sequential page analysis or multipart upload
+- **Goal:** Implement sequential page analysis or multipart upload to handle full statements.
 
 ### Processing Time
-- **Current:** 30-90 seconds for vision model analysis
+- **Current Limitation:** 30-90 seconds for vision model analysis
 - **Bottleneck:** Image tokenization in vision encoder
-- **Future:** Streaming responses, model optimization
+- **Goal:** Streaming responses, model optimization
 
 ### Model Compatibility
 - **Tested:** llama3.2-vision ✅
@@ -124,10 +129,8 @@ Build a blazing-fast, local-first underwriting IDE focused on deep-work and spee
 ```javascript
 const appState = ref('IDLE') 
 // States: 'IDLE' | 'LOADING_PDF' | 'READY' | 'ANALYZING' | 'COMPLETE' | 'ERROR'
-```
+State Transitions:
 
-**State Transitions:**
-```
 IDLE ──[upload PDF]──→ LOADING_PDF ──[PDF processed]──→ READY
                                                               │
                                                               ↓
@@ -135,74 +138,107 @@ ERROR ←──[Ollama fails]── ANALYZING ←──[click Underwrite]──�
   │                         │
   └──[user retries]────────→┘
                              ↓
-                        COMPLETE (display results)
-```
+                        COMPLETE (display results in Chat/Dashboard)
+Benefits:
 
-**Benefits:**
-- No more blank screens after loading
-- Clear UI for each state
-- Explicit error handling with retry button
-- Predictable state transitions
-- Debuggable state flow
+No more blank screens after loading
 
-## 10. Future Roadmap
+Clear UI for each state
 
-### High Priority
-- [ ] Multi-page full analysis (all pages, not just first)
-- [ ] Streaming responses (show tokens as generated)
-- [ ] Export analysis to JSON/CSV
-- [ ] Analysis history (local storage)
+Explicit error handling with retry button
 
-### Medium Priority
-- [ ] Batch processing (multiple PDFs)
-- [ ] PDF text layer for search
-- [ ] Custom prompt templates (save/load)
-- [ ] Side-by-side PDF comparison
+Predictable state transitions
 
-### Low Priority
-- [ ] Model download manager (built-in ollama pull)
-- [ ] Progress indication during Ollama processing
-- [ ] Response parsing (structured JSON extraction)
-- [ ] Risk scoring visualization
+Debuggable state flow
 
-## 11. Strict Guidelines (Still Active)
+10. Future Roadmap
+High Priority
+[ ] Multi-page full analysis (all pages, not just first)
 
-- Keep the UI extremely clean, minimal, and dark-themed (think Zed or Cursor aesthetics).
-- Build feature-by-feature, test thoroughly before moving on.
-- 100% local/offline - no cloud dependencies.
-- Performance at scale - optimize for large documents.
-- Security first - auto-cleanup of temp files.
+[ ] Dashboard parsing (extract JSON into UI cards)
 
-## 12. Testing Checklist
+[ ] Conversational Follow-up Chat UI
 
+[ ] Export analysis to JSON/CSV
+
+[ ] Analysis history (local storage)
+
+Medium Priority
+[ ] Batch processing (multiple PDFs)
+
+[ ] PDF text layer for search
+
+[ ] Custom prompt templates (save/load)
+
+[ ] Side-by-side PDF comparison
+
+Low Priority
+[ ] Model download manager (built-in ollama pull)
+
+[ ] Progress indication during Ollama processing
+
+[ ] Risk scoring visualization
+
+11. Strict Guidelines (CRITICAL)
+Keep the UI extremely clean, minimal, and dark-themed (think Zed or Cursor aesthetics).
+
+Build feature-by-feature, test thoroughly before moving on.
+
+100% local/offline - no cloud dependencies.
+
+Performance at scale - optimize for large documents.
+
+Security first - auto-cleanup of temp files.
+
+DO NOT unmount the layout: The PDF viewer and right-hand dashboard must remain visible during all states (including ANALYZING and COMPLETE) to prevent rendering crashes and blank screens. Use targeted loaders instead of replacing the whole DOM.
+
+12. Testing Checklist
 Before any release:
-- [ ] PDF upload (single page)
-- [ ] PDF upload (multi-page)
-- [ ] Drag and drop
-- [ ] Model selection
-- [ ] Connection test
-- [ ] Underwrite flow (full)
-- [ ] Timeout handling
-- [ ] Error states
-- [ ] Prompt editing
-- [ ] Settings adjustment
-- [ ] Terminal clear
-- [ ] Zoom controls
-- [ ] Page navigation
 
-## 13. Performance Benchmarks
+[ ] PDF upload (single page)
 
-### Image Processing
-- 3-page PDF @ 72 DPI: 3-4 seconds
-- Grayscale conversion: <1 second per page
-- JPEG compression: <1 second per page
+[ ] PDF upload (multi-page)
 
-### Ollama Processing
-- llama3.2-vision: 30-60 seconds per page
-- llava: 45-90 seconds per page
-- qwen3-vl: Unstable (avoid)
+[ ] Drag and drop
 
-### Memory Usage
-- App baseline: ~150MB
-- PDF viewer: +50MB per large PDF
-- Ollama processing: Model-dependent (2-8GB)
+[ ] Model selection
+
+[ ] Connection test
+
+[ ] Underwrite flow (full)
+
+[ ] Timeout handling
+
+[ ] Error states
+
+[ ] Prompt editing
+
+[ ] Settings adjustment
+
+[ ] Chat/Dashboard UI renders properly
+
+[ ] Zoom controls
+
+[ ] Page navigation
+
+13. Performance Benchmarks
+Image Processing
+3-page PDF @ 72 DPI: 3-4 seconds
+
+Grayscale conversion: <1 second per page
+
+JPEG compression: <1 second per page
+
+Ollama Processing
+llama3.2-vision: 30-60 seconds per page
+
+llava: 45-90 seconds per page
+
+qwen3-vl: Unstable (avoid)
+
+Memory Usage
+App baseline: ~150MB
+
+PDF viewer: +50MB per large PDF
+
+Ollama processing: Model-dependent (2-8GB)
