@@ -37,8 +37,32 @@ A blazing-fast, local-first underwriting IDE for analyzing bank statements and f
 3. Compress → Grayscale JPEG (55-60% smaller)
 4. Send to Ollama → Base64 encoded images
 5. Vision Model Analyzes → 30-90 seconds
-6. Response Displayed → Terminal panel
+6. Response Displayed → Terminal panel (auto-switched)
 ```
+
+## State Machine
+
+The app uses explicit state management for reliable UX:
+
+```
+IDLE ──[upload]──→ LOADING_PDF ──[done]──→ READY
+                                              │
+                                              ↓
+ERROR ←──[fail]── ANALYZING ←──[underwrite]──┘
+  │                    │
+  └──[retry]──────────→┘
+                        ↓
+                    COMPLETE (show results)
+```
+
+| State | Description |
+|-------|-------------|
+| `IDLE` | No PDF loaded, showing drop zone |
+| `LOADING_PDF` | Processing uploaded PDF |
+| `READY` | PDF loaded, ready for analysis |
+| `ANALYZING` | Waiting for Ollama response |
+| `COMPLETE` | Analysis done, showing results |
+| `ERROR` | Analysis failed, can retry |
 
 ## Tech Stack
 

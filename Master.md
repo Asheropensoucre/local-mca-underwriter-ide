@@ -115,6 +115,36 @@ Build a blazing-fast, local-first underwriting IDE focused on deep-work and spee
 - **Issues:** qwen3-vl (API incompatibility)
 - **Recommendation:** Use llama3.2-vision or llava
 
+## 9b. State Machine Implementation ✅
+
+**Problem Solved:** Boolean spaghetti (`isLoading`, `fileSelected`, `activeTab`) caused race conditions and blank screens after analysis completed.
+
+**Solution:** Explicit state machine with clear transitions:
+
+```javascript
+const appState = ref('IDLE') 
+// States: 'IDLE' | 'LOADING_PDF' | 'READY' | 'ANALYZING' | 'COMPLETE' | 'ERROR'
+```
+
+**State Transitions:**
+```
+IDLE ──[upload PDF]──→ LOADING_PDF ──[PDF processed]──→ READY
+                                                              │
+                                                              ↓
+ERROR ←──[Ollama fails]── ANALYZING ←──[click Underwrite]───┘
+  │                         │
+  └──[user retries]────────→┘
+                             ↓
+                        COMPLETE (display results)
+```
+
+**Benefits:**
+- No more blank screens after loading
+- Clear UI for each state
+- Explicit error handling with retry button
+- Predictable state transitions
+- Debuggable state flow
+
 ## 10. Future Roadmap
 
 ### High Priority

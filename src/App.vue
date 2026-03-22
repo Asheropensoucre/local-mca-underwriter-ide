@@ -1,12 +1,17 @@
 <template>
   <div class="min-h-screen bg-background text-gray-300 flex items-center justify-center p-8">
-    <!-- Empty State - Drop Zone -->
-    <div 
-      v-if="!fileSelected"
+    <!-- Debug State -->
+    <div class="fixed top-2 left-2 text-xs font-mono bg-surface p-2 border border-border z-50">
+      State: {{ appState }} | Tab: {{ activeTab }}
+    </div>
+
+    <!-- IDLE State - Drop Zone -->
+    <div
+      v-if="appState === 'IDLE'"
       class="border-2 border-dashed rounded-xl p-16 text-center cursor-pointer max-w-2xl w-full transition-all duration-200"
       :class="[
-        isDragging 
-          ? 'border-primary bg-primary/10 scale-105 shadow-lg shadow-primary/20' 
+        isDragging
+          ? 'border-primary bg-primary/10 scale-105 shadow-lg shadow-primary/20'
           : 'border-border hover:border-gray-500 hover:bg-surface/30'
       ]"
       @click="openFileDialog"
@@ -31,8 +36,8 @@
       </div>
     </div>
 
-    <!-- Loading State -->
-    <div v-else-if="isLoading" class="text-center space-y-6">
+    <!-- LOADING_PDF State -->
+    <div v-else-if="appState === 'LOADING_PDF'" class="text-center space-y-6">
       <div class="relative">
         <div class="inline-block animate-spin rounded-full h-16 w-16 border-4 border-primary border-t-transparent"></div>
         <div v-if="loadingProgress > 0" class="absolute inset-0 flex items-center justify-center">
@@ -42,16 +47,49 @@
       <div class="space-y-2">
         <p class="text-gray-300 font-medium">{{ loadingMessage }}</p>
         <div class="w-64 h-2 bg-surface rounded-full overflow-hidden mx-auto">
-          <div 
+          <div
             class="h-full bg-primary transition-all duration-300"
             :style="{ width: loadingProgress + '%' }"
           ></div>
         </div>
-        <p class="text-xs text-gray-500">This may take 2-5 minutes for multi-page PDFs</p>
+        <p class="text-xs text-gray-500">Loading PDF...</p>
       </div>
     </div>
 
-    <!-- Active State - Processing UI -->
+    <!-- ANALYZING State -->
+    <div v-else-if="appState === 'ANALYZING'" class="text-center space-y-6">
+      <div class="relative">
+        <div class="inline-block animate-spin rounded-full h-16 w-16 border-4 border-primary border-t-transparent"></div>
+        <div v-if="loadingProgress > 0" class="absolute inset-0 flex items-center justify-center">
+          <span class="text-xs font-mono">{{ loadingProgress }}%</span>
+        </div>
+      </div>
+      <div class="space-y-2">
+        <p class="text-gray-300 font-medium">{{ loadingMessage }}</p>
+        <div class="w-64 h-2 bg-surface rounded-full overflow-hidden mx-auto">
+          <div
+            class="h-full bg-primary transition-all duration-300"
+            :style="{ width: loadingProgress + '%' }"
+          ></div>
+        </div>
+        <p class="text-xs text-gray-500">This may take 30-90 seconds for AI analysis</p>
+      </div>
+    </div>
+
+    <!-- ERROR State -->
+    <div v-else-if="appState === 'ERROR'" class="text-center space-y-6">
+      <div class="text-red-400 text-6xl mb-4">❌</div>
+      <p class="text-xl font-medium text-red-300">Analysis Failed</p>
+      <p class="text-gray-400 max-w-md">{{ errorMessage }}</p>
+      <button
+        @click="appState = 'READY'"
+        class="px-6 py-3 bg-primary hover:bg-blue-600 rounded-lg text-white font-medium transition-colors"
+      >
+        Try Again
+      </button>
+    </div>
+
+    <!-- READY/COMPLETE State - Dashboard -->
     <div v-else class="w-full max-w-7xl h-[80vh] flex gap-4">
       <!-- Left Pane - PDF Viewer (60%) -->
       <div class="w-[60%] bg-surface rounded-xl border border-border flex flex-col overflow-hidden">
@@ -74,7 +112,12 @@
           </div>
         </div>
         <!-- PDF Viewer Component -->
-        <PdfViewer v-if="pdfSource" :source="pdfSource" :page-count="pdfPageCount" />
+        <div v-if="pdfSource" class="flex-1 overflow-hidden">
+          <PdfViewer :source="pdfSource" :page-count="pdfPageCount" />
+        </div>
+        <div v-else class="flex-1 flex items-center justify-center bg-background/50 m-4 rounded-lg border border-border border-dashed">
+          <p class="text-gray-500 text-sm">PDF loaded (viewer pending)</p>
+        </div>
       </div>
 
       <!-- Right Sidebar (40%) -->
@@ -144,13 +187,16 @@
             </button>
 
             <!-- Terminal-style JSON Viewer -->
-            <div class="flex-1 bg-background border border-border rounded-lg overflow-hidden flex flex-col min-h-[200px]">
+            <div class="flex-1 bg-background border border-border rounded-lg overflow-hidden flex flex-col min-h-[300px]">
               <div class="flex items-center justify-between px-3 py-2 bg-surface border-b border-border">
                 <span class="text-xs font-mono text-gray-500">Output</span>
-                <button @click="clearTerminal" class="text-xs text-gray-600 hover:text-gray-400">Clear</button>
+                <div class="flex items-center gap-2">
+                  <span v-if="terminalOutput.length > 0" class="text-xs text-green-400">● {{ terminalOutput.length }} chars</span>
+                  <button @click="clearTerminal" class="text-xs text-gray-600 hover:text-gray-400">Clear</button>
+                </div>
               </div>
               <div class="flex-1 p-4 overflow-auto">
-                <pre class="text-xs font-mono text-green-400 whitespace-pre-wrap">{{ terminalOutput }}</pre>
+                <pre class="text-xs font-mono text-green-400 whitespace-pre-wrap">{{ terminalOutput || '// Waiting for analysis...' }}</pre>
               </div>
             </div>
           </div>
@@ -225,23 +271,37 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@tauri-apps/api/core'
 import PdfViewer from './components/PdfViewer.vue'
 
-const fileSelected = ref(false)
-const isLoading = ref(false)
-const loadingMessage = ref('')
-const loadingProgress = ref(0)
+// ═══════════════════════════════════════════════════════════════════════════
+// STATE MACHINE - Explicit app states (no boolean spaghetti)
+// ═══════════════════════════════════════════════════════════════════════════
+const appState = ref('IDLE') // 'IDLE' | 'LOADING_PDF' | 'READY' | 'ANALYZING' | 'COMPLETE' | 'ERROR'
+const errorMessage = ref('')
+
+// File data
 const filePath = ref('')
+const fileName = ref('')
 const pdfPageCount = ref(0)
 const pdfSource = ref(null)
-const selectedModel = ref('llama-3-vision')
-const isDragging = ref(false)
-const dropError = ref('')
+
+// Analysis data
+const analysisResult = ref(null) // Parsed JSON from AI
+const rawResponse = ref('') // Raw text from AI
 const terminalOutput = ref('// Extracted data will appear here...\n')
+
+// UI state
 const activeTab = ref('underwrite')
+const loadingProgress = ref(0)
+const loadingMessage = ref('')
 
 // Ollama state
 const ollamaConnected = ref(false)
 const ollamaModels = ref([])
 const isCheckingConnection = ref(true)
+const selectedModel = ref('llama-3-vision')
+
+// Drag-drop state
+const isDragging = ref(false)
+const dropError = ref('')
 
 // Model configuration
 const modelConfig = ref({
@@ -391,12 +451,15 @@ const openFileDialog = async () => {
       }]
     })
     if (selected) {
-      isLoading.value = true
+      // Transition: IDLE → LOADING_PDF
+      appState.value = 'LOADING_PDF'
+      loadingProgress.value = 0
       loadingMessage.value = 'Loading PDF...'
       filePath.value = selected
-      
-      console.log('[Rust Backend] Selected file:', selected)
-      
+      fileName.value = selected.split('/').pop() || selected.split('\\').pop() || 'Unknown'
+
+      console.log('[State] Loading PDF:', selected)
+
       // Read PDF file as ArrayBuffer for viewer
       try {
         const { readFile } = await import('@tauri-apps/plugin-fs')
@@ -405,29 +468,32 @@ const openFileDialog = async () => {
       } catch (err) {
         console.error('Error reading PDF:', err)
       }
-      
-      // Get PDF page count and convert for vision model
+
+      // Get PDF page count
       try {
         const result = await invoke('convert_pdf_to_images', {
           pdfPath: selected,
-          dpi: 72 // Low DPI just for page count
+          dpi: 72
         })
         pdfPageCount.value = result.pages.length
+        loadingProgress.value = 50
         loadingMessage.value = `Converting ${result.pages.length} page(s)...`
       } catch (err) {
         console.error('Error getting page count:', err)
         pdfPageCount.value = 1
       }
-      
-      // Simulate loading delay
+
+      // Transition: LOADING_PDF → READY
       setTimeout(() => {
-        isLoading.value = false
-        fileSelected.value = true
-      }, 800)
+        loadingProgress.value = 100
+        appState.value = 'READY'
+        console.log('[State] PDF loaded, ready for analysis')
+      }, 500)
     }
   } catch (error) {
     console.error('Error opening file:', error)
     dropError.value = 'Failed to open file picker'
+    appState.value = 'IDLE'
   }
 }
 
@@ -461,40 +527,30 @@ const handleUnderwrite = async () => {
 // Please start Ollama and make sure vision models are installed
 //
 // To install a vision model:
-//   ollama pull llava
 //   ollama pull llama3.2-vision
+//   ollama pull llava
 //
 // Then restart the app
 `
     return
   }
 
-  const timestamp = new Date().toISOString()
-  const pageCountText = pdfPageCount.value > 0 ? `(${pdfPageCount.value} page${pdfPageCount.value > 1 ? 's' : ''})` : ''
-  terminalOutput.value = `// Converting PDF to grayscale JPEG...
-// Model: ${selectedModel.value}
-// File: ${fileName.value} ${pageCountText}
-// Temperature: ${modelConfig.value.temperature}
-// Max Tokens: ${modelConfig.value.maxTokens}
-
-`
-
-  isLoading.value = true
+  // Transition: READY → ANALYZING
+  appState.value = 'ANALYZING'
   loadingProgress.value = 0
   loadingMessage.value = 'Converting PDF to grayscale JPEG...'
-  
-  // Progress simulation during conversion
+  terminalOutput.value = '// Starting analysis...\n'
+
+  console.log('[State] Starting analysis...')
+
+  // Progress simulation
   const progressInterval = setInterval(() => {
-    loadingProgress.value = Math.min(loadingProgress.value + 5, 85)
+    loadingProgress.value = Math.min(loadingProgress.value + 3, 85)
   }, 500)
 
   try {
     loadingMessage.value = `Sending to ${selectedModel.value}...`
-    terminalOutput.value += `// Sending to Ollama (this may take 30-60 seconds)...\n`
-    terminalOutput.value += `// Watch terminal for debug logs\n\n`
-    
-    // Make sure we're on the Underwrite tab to see results
-    activeTab.value = 'underwrite'
+    terminalOutput.value += `// Sending to Ollama (this may take 30-60 seconds)...\n\n`
 
     const result = await invoke('send_pdf_to_ollama', {
       model: selectedModel.value,
@@ -504,31 +560,52 @@ const handleUnderwrite = async () => {
       maxTokens: modelConfig.value.maxTokens
     })
 
+    console.log('[Underwrite] RAW RESPONSE FROM OLLAMA:', result)
+    console.log('[Underwrite] Response length:', result?.length || 'N/A')
+
     clearInterval(progressInterval)
     loadingProgress.value = 100
 
-    terminalOutput.value = `// ✅ Response from ${selectedModel.value}:
+    // Store results
+    rawResponse.value = result
+    analysisResult.value = result // Will be parsed later
+
+    // Build visible output
+    terminalOutput.value = `
+// ═══════════════════════════════════════════════════
+// ✅ ANALYSIS COMPLETE
+// ═══════════════════════════════════════════════════
+// Model: ${selectedModel.value}
+// Time: ${new Date().toLocaleTimeString()}
+// Response Length: ${result?.length || 0} characters
+// ═══════════════════════════════════════════════════
 
 ${result}
 `
+
+    // Transition: ANALYZING → COMPLETE
+    appState.value = 'COMPLETE'
+    activeTab.value = 'underwrite' // Ensure user sees results
+
+    console.log('[State] Analysis complete')
+    console.log('[State] UI State:', { appState: appState.value, activeTab: activeTab.value })
+
   } catch (error) {
     clearInterval(progressInterval)
     console.error('Underwrite error:', error)
+
+    // Transition: ANALYZING → ERROR
+    appState.value = 'ERROR'
+    errorMessage.value = error
+
     terminalOutput.value = `// ❌ Error: ${error}
 
 // Debug info:
 // 1. Check terminal for detailed logs
 // 2. Try a different model: llama3.2-vision or llava
 // 3. Make sure Ollama is running: ollama serve
-// 4. Test model: ollama run ${selectedModel.value} "hello"
 `
   }
-
-  isLoading.value = false
-  loadingMessage.value = ''
-  loadingProgress.value = 0
-  // Ensure user sees the results
-  activeTab.value = 'underwrite'
 }
 
 const clearTerminal = () => {
