@@ -250,6 +250,133 @@ async fn convert_pdf_to_images(pdf_path: String, dpi: u32) -> Result<PdfConversi
     }
 }
 
+/// Analyze a single page with Ollama
+async fn analyze_single_page(
+    client: &reqwest::Client,
+    model: &str,
+    prompt: &str,
+    base64_image: &str,
+    temperature: f32,
+    max_tokens: i32,
+    page_num: usize,
+    total_pages: usize,
+) -> Result<String, String> {
+    let page_prompt = if total_pages > 1 {
+        format!("Page {} of {}. {}\n\nExtract data from this page only. Be thorough.", 
+            page_num, total_pages, prompt)
+    } else {
+        prompt.to_string()
+    };
+
+    let request = OllamaChatRequest {
+        model: model.to_string(),
+        messages: vec![OllamaMessage {
+            role: "user".to_string(),
+            content: page_prompt,
+            images: Some(vec![base64_image.to_string()]),
+        }],
+        stream: false,
+        options: Some(OllamaOptions {
+            temperature: Some(temperature),
+            num_predict: Some(max_tokens),
+        }),
+    };
+
+    println!("[Multi-page] Analyzing page {}/{}...", page_num, total_pages);
+
+    let response = client
+        .post("http://localhost:11434/api/chat")
+        .json(&request)
+        .send()
+        .await
+        .map_err(|e| format!("Page {} request failed: {}", page_num, e))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let error_text = response.text().await.unwrap_or_default();
+        return Err(format!("Page {} - Ollama returned status {}: {}", page_num, status, error_text));
+    }
+
+    let result: ollama::OllamaChatResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Page {} - Failed to parse response: {}", page_num, e))?;
+
+    Ok(result.message.content)
+}
+
+/// Aggregate results from multiple pages into final analysis
+async fn aggregate_page_results(
+    client: &reqwest::Client,
+    model: &str,
+    _original_prompt: &str,
+    page_results: &[String],
+    temperature: f32,
+    max_tokens: i32,
+) -> Result<String, String> {
+    println!("[Multi-page] Aggregating {} page results...", page_results.len());
+
+    let combined_context = page_results
+        .iter()
+        .enumerate()
+        .map(|(i, r)| format!("=== PAGE {} ANALYSIS ===\n{}", i + 1, r))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    let aggregate_prompt = format!(
+        r#"You have analyzed a multi-page bank statement. Below are the individual page analyses.
+
+YOUR TASK:
+Combine these page analyses into a single, comprehensive analysis. 
+
+IMPORTANT:
+- For Positions: Combine ALL positions found across all pages
+- For True Revenue: SUM the deposits from all pages (excluding loan deposits)
+- For Negative Days: SUM the negative days from all pages
+- For Debt Service: SUM all debt payments found across pages
+- Ensure the final JSON is complete and accurate
+
+Return ONLY the final combined JSON analysis.
+
+{}
+
+FINAL COMBINED JSON ANALYSIS:"# , combined_context);
+
+    let request = OllamaChatRequest {
+        model: model.to_string(),
+        messages: vec![OllamaMessage {
+            role: "user".to_string(),
+            content: aggregate_prompt,
+            images: None, // No images needed for aggregation - text only
+        }],
+        stream: false,
+        options: Some(OllamaOptions {
+            temperature: Some(temperature),
+            num_predict: Some(max_tokens),
+        }),
+    };
+
+    let response = client
+        .post("http://localhost:11434/api/chat")
+        .json(&request)
+        .send()
+        .await
+        .map_err(|e| format!("Aggregation request failed: {}", e))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let error_text = response.text().await.unwrap_or_default();
+        return Err(format!("Aggregation failed - status {}: {}", status, error_text));
+    }
+
+    let result: ollama::OllamaChatResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse aggregation response: {}", e))?;
+
+    Ok(result.message.content)
+}
+
 #[tauri::command]
 async fn send_pdf_to_ollama(
     model: String,
@@ -260,101 +387,58 @@ async fn send_pdf_to_ollama(
 ) -> Result<String, String> {
     // Convert PDF to JPEG images (compressed Base64)
     let conversion = convert_pdf_to_images(pdf_path.clone(), 72).await?;
-    
-    println!("[Ollama] Converting {} pages, sending to model...", conversion.pages.len());
-    println!("[Ollama] Total images: {}", conversion.images.len());
+    let total_pages = conversion.images.len();
+
+    println!("[Multi-page] PDF has {} pages - processing all pages sequentially", total_pages);
 
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(600)) // 10 minute total timeout
-        .connect_timeout(std::time::Duration::from_secs(30)) // 30 second connect timeout
+        .timeout(std::time::Duration::from_secs(900)) // 15 minute total timeout for multi-page
+        .connect_timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
-    // For vision models, send only the FIRST page for now (debugging)
-    // TODO: Implement proper multi-image support
-    let images_to_send = if conversion.images.len() > 1 {
-        println!("[Ollama] Sending only first page (multi-image not stable yet)");
-        vec![conversion.images[0].clone()]
-    } else {
-        conversion.images.clone()
-    };
+    // Process each page sequentially
+    let mut page_results: Vec<String> = Vec::with_capacity(total_pages);
 
-    // Build prompt
-    let full_prompt = if conversion.images.len() > 1 {
-        format!("This is a {}-page document. Analyze the first page shown.\n\n{}", 
-            conversion.images.len(), prompt)
-    } else {
-        prompt.clone()
-    };
+    for (idx, base64_image) in conversion.images.iter().enumerate() {
+        let page_num = idx + 1;
+        
+        // Per-page timeout: 5 minutes per page
+        let page_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(300))
+            .build()
+            .map_err(|e| format!("Failed to create page client: {}", e))?;
 
-    let request = OllamaChatRequest {
-        model: model.clone(),
-        messages: vec![OllamaMessage {
-            role: "user".to_string(),
-            content: full_prompt.clone(),
-            images: Some(images_to_send),
-        }],
-        stream: false,
-        options: Some(OllamaOptions {
-            temperature: Some(temperature),
-            num_predict: Some(max_tokens),
-        }),
-    };
-    
-    println!("[Ollama] Sending request to http://localhost:11434/api/chat...");
-    println!("[Ollama] Model: {}, Prompt length: {} chars, Images: {}", 
-        model, full_prompt.len(), request.messages[0].images.as_ref().map(|i| i.len()).unwrap_or(0));
+        let page_result = analyze_single_page(
+            &page_client,
+            &model,
+            &prompt,
+            base64_image,
+            temperature,
+            max_tokens,
+            page_num,
+            total_pages,
+        ).await?;
 
-    let response = client
-        .post("http://localhost:11434/api/chat")
-        .json(&request)
-        .send()
-        .await;
-    
-    println!("[Ollama] Request sent, waiting for response...");
-    
-    match response {
-        Ok(resp) => {
-            let status = resp.status();
-            println!("[Ollama] Got HTTP response, status: {}", status);
-            
-            // Check if response is an error
-            if !status.is_success() {
-                let error_text = resp.text().await.unwrap_or_default();
-                println!("[Ollama] Error response: {}", error_text);
-                return Err(format!("Ollama returned status {}: {}", status, error_text));
-            }
-            
-            let result: ollama::OllamaChatResponse = resp
-                .json()
-                .await
-                .map_err(|e| {
-                    println!("[Ollama] Failed to parse JSON: {}", e);
-                    format!("Failed to parse response: {}", e)
-                })?;
-            
-            println!("[Ollama] Done! Response length: {} chars", result.message.content.len());
-
-            Ok(result.message.content)
-        }
-        Err(e) => {
-            println!("[Ollama] Request failed: {}", e);
-            println!("[Ollama] Error type: {:?}", e);
-            
-            // Provide specific error messages
-            let error_msg = if e.is_timeout() {
-                "Request timed out. Ollama is taking too long to process the image.".to_string()
-            } else if e.is_connect() {
-                "Could not connect to Ollama. Is 'ollama serve' running?".to_string()
-            } else if e.is_request() {
-                format!("Request error: {}. The model may have crashed or rejected the request.", e)
-            } else {
-                format!("HTTP error: {}. Check Ollama logs for details.", e)
-            };
-            
-            Err(error_msg)
-        }
+        page_results.push(page_result);
+        println!("[Multi-page] Page {}/{} complete", page_num, total_pages);
     }
+
+    println!("[Multi-page] All {} pages analyzed, aggregating results...", total_pages);
+
+    // Aggregate all page results into final analysis
+    let final_result = aggregate_page_results(
+        &client,
+        &model,
+        &prompt,
+        &page_results,
+        temperature,
+        max_tokens,
+    ).await?;
+
+    println!("[Multi-page] Analysis complete! Final response length: {} chars", final_result.len());
+
+    Ok(final_result)
 }
 
 /// Export JSON data to file using native save dialog

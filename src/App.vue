@@ -134,13 +134,30 @@
               Underwrite File
             </button>
 
-            <!-- ANALYZING State - Loading Spinner in Chat Area -->
+            <!-- ANALYZING State - Loading Spinner with Multi-page Progress -->
             <div v-if="appState === 'ANALYZING'" class="flex-1 flex flex-col items-center justify-center bg-background border border-border rounded-lg p-8">
               <div class="relative mb-4">
                 <div class="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent"></div>
               </div>
               <p class="text-gray-300 font-medium mb-2">{{ loadingMessage }}</p>
-              <p class="text-xs text-gray-500 text-center">This may take 5-10 minutes for AI analysis (hardware dependent)</p>
+              <!-- Multi-page Progress -->
+              <div v-if="totalPages > 1" class="w-full max-w-xs mt-4">
+                <div class="flex justify-between text-xs text-gray-500 mb-1">
+                  <span>Page {{ currentPage }} of {{ totalPages }}</span>
+                  <span>{{ Math.round((currentPage / totalPages) * 100) }}%</span>
+                </div>
+                <div class="w-full h-2 bg-slate-700 rounded-full overflow-hidden">
+                  <div 
+                    class="h-full bg-primary transition-all duration-500"
+                    :style="{ width: (currentPage / totalPages * 100) + '%' }"
+                  ></div>
+                </div>
+                <p class="text-xs text-gray-600 mt-2 text-center">
+                  <span v-if="currentPage < totalPages">Analyzing page {{ currentPage }}...</span>
+                  <span v-else>Aggregating results...</span>
+                </p>
+              </div>
+              <p v-else class="text-xs text-gray-500 text-center">This may take 5-10 minutes for AI analysis (hardware dependent)</p>
             </div>
 
             <!-- ERROR State - Error Display in Chat Area -->
@@ -519,6 +536,8 @@ const isExporting = ref(false)
 const activeTab = ref('underwrite')
 const loadingProgress = ref(0)
 const loadingMessage = ref('')
+const totalPages = ref(0)
+const currentPage = ref(0)
 
 // Ollama state
 const ollamaConnected = ref(false)
@@ -787,10 +806,21 @@ const handleUnderwrite = async () => {
   loadingProgress.value = 0
   loadingMessage.value = 'Converting PDF to grayscale JPEG...'
 
+  // Set up multi-page progress tracking
+  totalPages.value = pdfPageCount.value || 1
+  currentPage.value = 0
+
   console.log('[State] Starting analysis...')
 
   try {
-    loadingMessage.value = `Sending to ${selectedModel.value}...`
+    loadingMessage.value = `Analyzing ${totalPages.value} page(s) with ${selectedModel.value}...`
+
+    // Simulate progress updates (backend doesn't emit progress events)
+    const progressInterval = setInterval(() => {
+      if (currentPage.value < totalPages.value) {
+        currentPage.value++
+      }
+    }, 30000) // Assume ~30 seconds per page for progress indicator
 
     const result = await invoke('send_pdf_to_ollama', {
       model: selectedModel.value,
@@ -799,6 +829,9 @@ const handleUnderwrite = async () => {
       temperature: modelConfig.value.temperature,
       maxTokens: modelConfig.value.maxTokens
     })
+
+    clearInterval(progressInterval)
+    currentPage.value = totalPages.value // Show complete
 
     console.log('[Underwrite] RAW RESPONSE FROM OLLAMA:', result)
     console.log('[Underwrite] Response length:', result?.length || 'N/A')

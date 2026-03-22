@@ -34,9 +34,11 @@ A blazing-fast, local-first underwriting workspace built specifically for the Me
 2. Convert to Images → pdftocairo (poppler-utils)
 3. Compress → Grayscale JPEG (55-60% smaller)
 4. Send to Ollama → Base64 encoded images
-5. Vision Model Analyzes → 5-10 minutes (hardware dependent)
-6. Dynamic UI Shift → Dashboard expands to 70% width
-7. Results Displayed → MCA Data Cards + Follow-up Chat
+5. Vision Model Analyzes → 5-10 minutes per page (hardware dependent)
+6. Multi-page Processing → Each page analyzed sequentially
+7. Result Aggregation → All page findings combined into final JSON
+8. Dynamic UI Shift → Dashboard expands to 70% width
+9. Results Displayed → MCA Data Cards + Follow-up Chat
 ```
 
 ## State Machine
@@ -123,7 +125,8 @@ sudo apt install poppler-utils
 ### Processing Time
 - PDF Conversion: 1-2 seconds
 - Ollama Analysis: 5-10 minutes per page (hardware dependent)
-- **Total:** 5-10 minutes for single-page PDF
+- Aggregation Pass: ~1 minute
+- **Total:** ~5-10 minutes per page (e.g., 3-page PDF = 15-30 minutes)
 
 ## Roadmap
 
@@ -131,7 +134,7 @@ sudo apt install poppler-utils
 - [x] **Dynamic UI Resizing:** Animate layout from 60/40 (pre-analysis) to 30/70 (post-analysis).
 - [x] **Advanced JSON Parsing:** UI cards for Positions, True Revenue, and Negative Days.
 - [x] **Prompt Rewrite:** Overwrite default prompt for strict MCA logic extraction.
-- [ ] Multi-page full analysis (currently sends first page only)
+- [x] **Multi-page full analysis** - Sequential page processing with result aggregation
 
 ### Medium Priority
 - [ ] Batch processing (multiple PDFs)
