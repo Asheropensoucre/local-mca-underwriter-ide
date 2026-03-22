@@ -126,10 +126,10 @@ sudo apt install poppler-utils
 
 ## Roadmap
 
-### High Priority (The Underwriter Pivot)
-- [ ] **Dynamic UI Resizing:** Animate layout from 60/40 (pre-analysis) to 30/70 (post-analysis).
-- [ ] **Advanced JSON Parsing:** UI cards for Positions, True Revenue, and Negative Days.
-- [ ] **Prompt Rewrite:** Overwrite default prompt for strict MCA logic extraction.
+### High Priority (The Underwriter Pivot) ✅ COMPLETE
+- [x] **Dynamic UI Resizing:** Animate layout from 60/40 (pre-analysis) to 30/70 (post-analysis).
+- [x] **Advanced JSON Parsing:** UI cards for Positions, True Revenue, and Negative Days.
+- [x] **Prompt Rewrite:** Overwrite default prompt for strict MCA logic extraction.
 - [ ] Multi-page full analysis (currently sends first page only)
 
 ### Medium Priority

@@ -58,9 +58,19 @@ Build a blazing-fast, local-first underwriting workspace focused on deep-work an
 5. ✅ Export analysis to JSON/CSV & Print-friendly view
 6. ✅ Auto-switch to Underwrite tab after analysis
 
-## 7. Current Status
+## 7. Phase 11: The Underwriter Pivot ✅ COMPLETE
 
-**ALL CORE PHASES COMPLETE** - App is fully functional and ready for advanced MCA logic implementation.
+**Completed:**
+1. ✅ **Dynamic UI Resizing** - Smooth 60/40 → 30/70 split animation on COMPLETE state using Tailwind `transition-all duration-500 ease-in-out`
+2. ✅ **Positions Card** - Premium dark-mode table showing Lender, Payment, Frequency, Funded amounts
+3. ✅ **Bank Metrics Cards** - 2x2 grid: True Revenue (excludes loans), Negative Days (red if >0), Avg Daily Balance, NSF Count
+4. ✅ **Debt & Leverage Card** - Total Debt Service, Safe New Payment, Leverage Ratio
+5. ✅ **MCA Prompt Rewrite** - Enforces position detection, true revenue calculation, negative days counting, leverage analysis
+6. ✅ **Updated Export/Print** - CSV and print reports include new MCA data structure
+
+## 8. Current Status
+
+**PHASE 11 COMPLETE** - App now features the full MCA Underwriter Pivot with dynamic resizing and specialized dashboard cards.
 
 ### User Flow:
 1. Upload PDFs → View in full PDF viewer (60% width)
@@ -68,7 +78,7 @@ Build a blazing-fast, local-first underwriting workspace focused on deep-work an
 3. Click "Underwrite File" → PDF converted to grayscale JPEG
 4. Results displayed → Dashboard expands (70% width), showing advanced metric cards.
 
-## 8. Key Technical Decisions
+## 9. Key Technical Decisions
 
 ### Why Grayscale JPEG?
 - Bank statements are B&W - no color info lost
@@ -78,13 +88,13 @@ Build a blazing-fast, local-first underwriting workspace focused on deep-work an
 ### Why reqwest (not Tauri HTTP)?
 - More robust timeout handling and error reporting
 
-## 9. Current Development Hurdles (WIP - TO BE FIXED)
+## 10. Current Development Hurdles (WIP - TO BE FIXED)
 
 ### Multi-Page Handling
 - **Current Limitation:** Sends only FIRST page to vision model
 - **Goal:** Implement sequential page analysis or multipart upload to handle full statements.
 
-## 10. Core MCA Underwriting Logic (The AI Prompt Rules)
+## 11. Core MCA Underwriting Logic (The AI Prompt Rules)
 The application relies on highly specific prompting to extract true underwriting metrics, not just generic OCR data.
 
 - **Position Detection:** The AI must scan debits for known MCA lenders (OnDeck, Kabbage, Fundbox, etc.). If no name is present, the AI must flag **recurring identical ACH withdrawals** (daily or weekly) as assumed positions.
@@ -93,12 +103,12 @@ The application relies on highly specific prompting to extract true underwriting
 - **Negative Days:** Do not just count NSF fees. The AI must count the exact number of days the "Daily Ending Balance" fell below $0.00.
 - **Leverage:** Calculate the total daily/weekly debt service of all existing positions to determine how much new daily payment the merchant can afford.
 
-## 11. Future Roadmap
+## 12. Future Roadmap
 
 ### High Priority (The Underwriter Pivot)
-- [ ] **Dynamic UI Resizing:** Animate layout from 60/40 (pre-analysis) to 30/70 (post-analysis) so the dashboard becomes the primary focus.
-- [ ] **Advanced JSON Parsing:** Update the UI cards to display the new "Positions" array, True Revenue, and exact Negative Days count.
-- [ ] **Prompt Rewrite:** Overwrite the default prompt to enforce the rules in Section 10.
+- [x] **Dynamic UI Resizing:** Animate layout from 60/40 (pre-analysis) to 30/70 (post-analysis) so the dashboard becomes the primary focus.
+- [x] **Advanced JSON Parsing:** Update the UI cards to display the new "Positions" array, True Revenue, and exact Negative Days count.
+- [x] **Prompt Rewrite:** Overwrite the default prompt to enforce the rules in Section 11.
 - [ ] Multi-page full analysis (sequential processing)
 
 ### Medium Priority
@@ -109,23 +119,23 @@ The application relies on highly specific prompting to extract true underwriting
 ### Low Priority
 - [ ] Streaming responses (show tokens as generated)
 
-## 12. Strict Guidelines (CRITICAL)
+## 13. Strict Guidelines (CRITICAL)
 
 - Keep the UI extremely clean, minimal, and dark-themed (think Zed or Cursor aesthetics).
 - Build feature-by-feature, test thoroughly before moving on.
 - 100% local/offline - no cloud dependencies.
 - **Dynamic Layout Constraint:** The PDF viewer and right-hand dashboard must remain visible during all states. Use CSS transitions (e.g., `transition-all duration-300`) to resize the panels smoothly when changing states, rather than unmounting the DOM.
 
-## 13. Testing Checklist
+## 14. Testing Checklist
 
 Before any release:
-- [ ] Layout persists during ANALYZING state ✅
-- [ ] Dashboard cards display parsed data ✅
-- [ ] Export JSON/CSV & Print works ✅
-- [ ] **NEW:** UI smoothly transitions to 30/70 split upon completion
-- [ ] **NEW:** Dashboard successfully renders multiple existing positions
+- [x] Layout persists during ANALYZING state ✅
+- [x] Dashboard cards display parsed data ✅
+- [x] Export JSON/CSV & Print works ✅
+- [x] UI smoothly transitions to 30/70 split upon completion ✅
+- [x] Dashboard successfully renders multiple existing positions ✅
 
-## 14. Performance Benchmarks
+## 15. Performance Benchmarks
 
 ### Image Processing
 - 3-page PDF @ 72 DPI: 3-4 seconds

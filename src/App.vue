@@ -33,8 +33,11 @@
 
     <!-- Main Dashboard Layout - ALWAYS MOUNTED once file is loaded -->
     <div v-show="appState !== 'IDLE'" class="w-full max-w-7xl h-[80vh] flex gap-4">
-      <!-- Left Pane - PDF Viewer (60%) -->
-      <div class="w-[60%] bg-surface rounded-xl border border-border flex flex-col overflow-hidden">
+      <!-- Left Pane - PDF Viewer (60% → 30% on COMPLETE) -->
+      <div 
+        class="bg-surface rounded-xl border border-border flex flex-col overflow-hidden transition-all duration-500 ease-in-out"
+        :class="appState === 'COMPLETE' ? 'w-[30%]' : 'w-[60%]'"
+      >
         <!-- File Info Header -->
         <div class="flex items-center justify-between p-4 border-b border-border">
           <div class="flex items-center gap-3 flex-1 min-w-0">
@@ -62,8 +65,11 @@
         </div>
       </div>
 
-      <!-- Right Sidebar (40%) - AI Chat Assistant -->
-      <div class="w-[40%] bg-surface rounded-xl border border-border flex flex-col overflow-hidden">
+      <!-- Right Sidebar (40% → 70% on COMPLETE) - AI Chat Assistant -->
+      <div 
+        class="bg-surface rounded-xl border border-border flex flex-col overflow-hidden transition-all duration-500 ease-in-out"
+        :class="appState === 'COMPLETE' ? 'w-[70%]' : 'w-[40%]'"
+      >
         <!-- Tab Navigation -->
         <div class="flex border-b border-border">
           <button
@@ -150,71 +156,171 @@
               </button>
             </div>
 
-            <!-- COMPLETE State - Dashboard Cards + Analysis -->
+            <!-- COMPLETE State - NEW MCA Dashboard Cards -->
             <div v-else-if="appState === 'COMPLETE'" class="flex-1 flex flex-col space-y-4">
-              <!-- Business Info Header -->
-              <div v-if="parsedData?.business" class="bg-background border border-border rounded-lg p-4">
-                <h4 class="text-sm font-medium text-gray-300 mb-2">Business Information</h4>
-                <div class="grid grid-cols-2 gap-4 text-sm">
-                  <div>
-                    <span class="text-gray-500">Business:</span>
-                    <span class="text-gray-200 ml-2">{{ parsedData.business.name || 'N/A' }}</span>
-                  </div>
-                  <div>
-                    <span class="text-gray-500">Account:</span>
-                    <span class="text-gray-200 ml-2">{{ parsedData.business.account || 'N/A' }}</span>
-                  </div>
-                  <div class="col-span-2">
-                    <span class="text-gray-500">Period:</span>
-                    <span class="text-gray-200 ml-2">{{ parsedData.business.period || 'N/A' }}</span>
-                  </div>
+              
+              <!-- === SECTION 1: POSITIONS TABLE === -->
+              <div v-if="parsedData?.positions && parsedData.positions.length > 0" class="bg-gradient-to-br from-slate-900 to-slate-800 border border-slate-700 rounded-xl p-4 shadow-lg">
+                <div class="flex items-center gap-2 mb-3">
+                  <svg class="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                  <h4 class="text-sm font-semibold text-gray-200 uppercase tracking-wide">Existing Positions</h4>
+                </div>
+                <div class="overflow-x-auto">
+                  <table class="w-full text-sm">
+                    <thead>
+                      <tr class="border-b border-slate-700">
+                        <th class="text-left py-2 px-3 text-xs font-medium text-gray-500 uppercase">Lender</th>
+                        <th class="text-left py-2 px-3 text-xs font-medium text-gray-500 uppercase">Payment</th>
+                        <th class="text-left py-2 px-3 text-xs font-medium text-gray-500 uppercase">Frequency</th>
+                        <th class="text-right py-2 px-3 text-xs font-medium text-gray-500 uppercase">Funded</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(pos, idx) in parsedData.positions" :key="idx" class="border-b border-slate-700/50 last:border-0 hover:bg-slate-700/30 transition-colors">
+                        <td class="py-2 px-3 text-gray-200 font-medium">{{ pos.lender || 'Unknown' }}</td>
+                        <td class="py-2 px-3 text-red-400 font-mono">{{ formatCurrency(pos.payment) }}</td>
+                        <td class="py-2 px-3 text-gray-400 text-xs">{{ pos.frequency || 'N/A' }}</td>
+                        <td class="py-2 px-3 text-right text-green-400 font-mono">{{ formatCurrency(pos.funded) }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
                 </div>
               </div>
 
-              <!-- Dashboard Metrics Cards -->
+              <!-- === SECTION 2: BANK METRICS === -->
               <div class="grid grid-cols-2 gap-3">
-                <div class="bg-background border border-border rounded-lg p-3">
-                  <p class="text-xs text-gray-500 uppercase">Avg Daily Balance</p>
-                  <p class="text-lg font-semibold text-gray-200">{{ formatCurrency(parsedData?.metrics?.avg_daily_balance) }}</p>
-                </div>
-                <div class="bg-background border border-border rounded-lg p-3">
-                  <p class="text-xs text-gray-500 uppercase">Total Deposits</p>
-                  <p class="text-lg font-semibold text-green-400">{{ formatCurrency(parsedData?.metrics?.total_deposits) }}</p>
-                </div>
-                <div class="bg-background border border-border rounded-lg p-3">
-                  <p class="text-xs text-gray-500 uppercase">Total Withdrawals</p>
-                  <p class="text-lg font-semibold text-red-400">{{ formatCurrency(parsedData?.metrics?.total_withdrawals) }}</p>
-                </div>
-                <div class="bg-background border border-border rounded-lg p-3">
-                  <p class="text-xs text-gray-500 uppercase">NSF Count</p>
-                  <p class="text-lg font-semibold" :class="parsedData?.metrics?.nsf_count > 0 ? 'text-red-400' : 'text-green-400'">{{ parsedData?.metrics?.nsf_count ?? 'N/A' }}</p>
-                </div>
-              </div>
-
-              <!-- Risk & Recommendation Row -->
-              <div class="grid grid-cols-2 gap-3">
-                <div class="bg-background border border-border rounded-lg p-3">
-                  <p class="text-xs text-gray-500 uppercase">Risk Score</p>
-                  <p class="text-lg font-semibold" :class="getRiskScoreColor(parsedData?.risk?.score)">{{ parsedData?.risk?.score ?? 'N/A' }}/10</p>
-                </div>
-                <div class="bg-background border border-border rounded-lg p-3 flex items-center justify-between">
-                  <div>
-                    <p class="text-xs text-gray-500 uppercase">Recommendation</p>
-                    <p class="text-lg font-semibold text-gray-200">{{ parsedData?.recommendation || 'N/A' }}</p>
+                <!-- True Revenue Card -->
+                <div class="bg-gradient-to-br from-emerald-900/40 to-emerald-800/20 border border-emerald-700/50 rounded-xl p-4">
+                  <div class="flex items-center gap-2 mb-2">
+                    <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <p class="text-xs text-emerald-300 uppercase font-semibold">True Revenue</p>
                   </div>
-                  <div class="w-3 h-3 rounded-full" :class="getRecommendationColor(parsedData?.recommendation)"></div>
+                  <p class="text-2xl font-bold text-emerald-400">{{ formatCurrency(parsedData?.bank_metrics?.true_revenue) }}</p>
+                  <p class="text-xs text-emerald-600 mt-1">Excludes loan deposits</p>
+                </div>
+
+                <!-- Negative Days Card -->
+                <div class="bg-gradient-to-br from-red-900/40 to-red-800/20 border border-red-700/50 rounded-xl p-4">
+                  <div class="flex items-center gap-2 mb-2">
+                    <svg class="w-4 h-4 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 17h8m0 0V9m0 8l-8-8-4 4-6-6" />
+                    </svg>
+                    <p class="text-xs text-red-300 uppercase font-semibold">Negative Days</p>
+                  </div>
+                  <p class="text-2xl font-bold" :class="(parsedData?.bank_metrics?.negative_days || 0) > 0 ? 'text-red-400' : 'text-emerald-400'">
+                    {{ parsedData?.bank_metrics?.negative_days ?? 0 }}
+                  </p>
+                  <p class="text-xs text-red-600 mt-1">Days balance &lt; $0</p>
+                </div>
+
+                <!-- Avg Daily Balance Card -->
+                <div class="bg-gradient-to-br from-blue-900/40 to-blue-800/20 border border-blue-700/50 rounded-xl p-4">
+                  <div class="flex items-center gap-2 mb-2">
+                    <svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                    </svg>
+                    <p class="text-xs text-blue-300 uppercase font-semibold">Avg Daily Balance</p>
+                  </div>
+                  <p class="text-xl font-bold text-blue-400">{{ formatCurrency(parsedData?.bank_metrics?.avg_daily_balance) }}</p>
+                </div>
+
+                <!-- NSF Count Card -->
+                <div class="bg-gradient-to-br from-amber-900/40 to-amber-800/20 border border-amber-700/50 rounded-xl p-4">
+                  <div class="flex items-center gap-2 mb-2">
+                    <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                    <p class="text-xs text-amber-300 uppercase font-semibold">NSF Count</p>
+                  </div>
+                  <p class="text-xl font-bold" :class="(parsedData?.bank_metrics?.nsf_count || 0) > 0 ? 'text-amber-400' : 'text-emerald-400'">
+                    {{ parsedData?.bank_metrics?.nsf_count ?? 0 }}
+                  </p>
                 </div>
               </div>
 
-              <!-- Analysis Notes -->
-              <div class="bg-background border border-border rounded-lg p-4 flex-1">
-                <div class="flex items-center justify-between mb-2">
-                  <h4 class="text-sm font-medium text-gray-300">Analysis Notes</h4>
+              <!-- === SECTION 3: DEBT & LEVERAGE === -->
+              <div class="bg-gradient-to-br from-violet-900/40 to-violet-800/20 border border-violet-700/50 rounded-xl p-4 shadow-lg">
+                <div class="flex items-center gap-2 mb-3">
+                  <svg class="w-5 h-5 text-violet-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3" />
+                  </svg>
+                  <h4 class="text-sm font-semibold text-violet-200 uppercase tracking-wide">Debt & Leverage</h4>
+                </div>
+                <div class="grid grid-cols-3 gap-4">
+                  <div>
+                    <p class="text-xs text-violet-400 mb-1">Total Debt Service</p>
+                    <p class="text-lg font-bold text-red-400 font-mono">{{ formatCurrency(parsedData?.debt_leverage?.total_debt_service) }}</p>
+                    <p class="text-xs text-violet-600">Daily/Weekly</p>
+                  </div>
+                  <div>
+                    <p class="text-xs text-violet-400 mb-1">Safe New Payment</p>
+                    <p class="text-lg font-bold text-emerald-400 font-mono">{{ formatCurrency(parsedData?.debt_leverage?.safe_new_payment) }}</p>
+                    <p class="text-xs text-violet-600">Max affordable</p>
+                  </div>
+                  <div>
+                    <p class="text-xs text-violet-400 mb-1">Leverage Ratio</p>
+                    <p class="text-lg font-bold text-violet-300 font-mono">{{ parsedData?.debt_leverage?.leverage_ratio || 'N/A' }}</p>
+                    <p class="text-xs text-violet-600">Debt-to-revenue</p>
+                  </div>
+                </div>
+              </div>
+
+              <!-- === SECTION 4: BUSINESS INFO & RISK === -->
+              <div class="grid grid-cols-2 gap-3">
+                <!-- Business Info -->
+                <div v-if="parsedData?.business" class="bg-background border border-border rounded-lg p-4">
+                  <h4 class="text-xs font-medium text-gray-500 uppercase mb-3">Business Information</h4>
+                  <div class="space-y-2 text-sm">
+                    <div>
+                      <span class="text-gray-600">Business:</span>
+                      <span class="text-gray-200 ml-2">{{ parsedData.business.name || 'N/A' }}</span>
+                    </div>
+                    <div>
+                      <span class="text-gray-600">Account:</span>
+                      <span class="text-gray-200 ml-2">{{ parsedData.business.account || 'N/A' }}</span>
+                    </div>
+                    <div>
+                      <span class="text-gray-600">Period:</span>
+                      <span class="text-gray-200 ml-2">{{ parsedData.business.period || 'N/A' }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Risk Score -->
+                <div class="bg-background border border-border rounded-lg p-4 flex flex-col justify-center">
+                  <p class="text-xs text-gray-500 uppercase mb-2">Risk Score</p>
+                  <p class="text-3xl font-bold" :class="getRiskScoreColor(parsedData?.risk?.score)">{{ parsedData?.risk?.score ?? 'N/A' }}/10</p>
+                  <div class="flex items-center gap-2 mt-2">
+                    <div class="flex-1 h-2 bg-slate-700 rounded-full overflow-hidden">
+                      <div 
+                        class="h-full rounded-full transition-all duration-500"
+                        :class="getRiskScoreBarColor(parsedData?.risk?.score)"
+                        :style="{ width: ((parsedData?.risk?.score || 0) / 10 * 100) + '%' }"
+                      ></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- === SECTION 5: RECOMMENDATION & ACTIONS === -->
+              <div class="bg-background border border-border rounded-lg p-4">
+                <div class="flex items-center justify-between mb-3">
+                  <div class="flex items-center gap-3">
+                    <div class="w-4 h-4 rounded-full" :class="getRecommendationColor(parsedData?.recommendation)"></div>
+                    <div>
+                      <p class="text-xs text-gray-500 uppercase">Recommendation</p>
+                      <p class="text-lg font-semibold text-gray-200">{{ parsedData?.recommendation || 'N/A' }}</p>
+                    </div>
+                  </div>
                   <div class="flex gap-2">
                     <button
                       @click="printReport"
                       :disabled="!rawResponse"
-                      class="text-xs px-3 py-1 bg-surface hover:bg-border border border-border rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      class="text-xs px-3 py-1.5 bg-surface hover:bg-border border border-border rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       title="Print Report"
                     >
                       🖨️ Print
@@ -222,35 +328,38 @@
                     <button
                       @click="exportToJSON"
                       :disabled="isExporting || !parsedData"
-                      class="text-xs px-3 py-1 bg-surface hover:bg-border border border-border rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                      title="Export as JSON (only available when JSON data is parsed)"
+                      class="text-xs px-3 py-1.5 bg-surface hover:bg-border border border-border rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="Export as JSON"
                     >
                       📄 JSON
                     </button>
                     <button
                       @click="exportToCSV"
                       :disabled="isExporting || !parsedData"
-                      class="text-xs px-3 py-1 bg-surface hover:bg-border border border-border rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                      title="Export as CSV (only available when JSON data is parsed)"
+                      class="text-xs px-3 py-1.5 bg-surface hover:bg-border border border-border rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="Export as CSV"
                     >
                       📊 CSV
                     </button>
                     <button
                       @click="copyResults"
                       :disabled="isExporting || !rawResponse"
-                      class="text-xs px-3 py-1 bg-surface hover:bg-border border border-border rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      class="text-xs px-3 py-1.5 bg-surface hover:bg-border border border-border rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {{ copyButtonText }}
                     </button>
                   </div>
                 </div>
-                <p class="text-sm text-gray-400 whitespace-pre-wrap">{{ parsedData?.notes || rawResponse }}</p>
+                <div>
+                  <h4 class="text-xs font-medium text-gray-500 uppercase mb-2">Analysis Notes</h4>
+                  <p class="text-sm text-gray-400 whitespace-pre-wrap max-h-32 overflow-auto">{{ parsedData?.notes || rawResponse }}</p>
+                </div>
               </div>
 
-              <!-- Follow-up Chat Section -->
+              <!-- === SECTION 6: FOLLOW-UP CHAT === -->
               <div class="border-t border-border pt-4">
                 <h4 class="text-sm font-medium text-gray-300 mb-3">Follow-up Questions</h4>
-                
+
                 <!-- Chat Messages -->
                 <div class="space-y-3 mb-3 max-h-64 overflow-auto">
                   <div v-if="chatMessages.length === 0" class="text-center py-6 text-gray-500 text-sm">
@@ -394,12 +503,12 @@ const pdfPageCount = ref(0)
 const pdfSource = ref(null)
 
 // Analysis data
-const analysisResult = ref(null) // Parsed JSON from AI
-const rawResponse = ref('') // Raw text from AI
-const parsedData = ref(null) // Structured parsed data for dashboard
+const analysisResult = ref(null)
+const rawResponse = ref('')
+const parsedData = ref(null)
 
 // Chat data
-const chatMessages = ref([]) // Array of { role: 'user' | 'assistant', content: string }
+const chatMessages = ref([])
 const chatInput = ref('')
 const isChatLoading = ref(false)
 
@@ -428,47 +537,67 @@ const modelConfig = ref({
   contextWindow: 8192
 })
 
-// Master Underwriting Prompt
-const masterPrompt = ref(`# MCA Underwriting Analysis Prompt
+// Master Underwriting Prompt - MCA SPECIFIC
+const masterPrompt = ref(`# MCA Underwriting Analysis - Expert Extraction
 
 ## Role
-You are an expert MCA (Merchant Cash Advance) underwriter with 15+ years of experience analyzing small business financials.
+You are an expert MCA (Merchant Cash Advance) underwriter with 15+ years of experience.
 
-## Task
-Analyze the uploaded bank statement PDF and extract the following:
+## Critical Extraction Rules
 
-### 1. Business Information
-- Business name
-- Account number (last 4 digits only)
-- Statement period
+### 1. POSITION DETECTION
+- Scan all debits for known MCA lenders: OnDeck, Kabbage, Fundbox, BlueVine, PayPal Working Capital, Square Capital, Stripe Capital, MerchantAdvancement, RapidAdvance, etc.
+- If no lender name visible, flag recurring identical ACH withdrawals (daily/weekly) as assumed positions
+- Extract: lender name, payment amount, frequency (daily/weekly), funded amount, funded date
 
-### 2. Financial Metrics
-- Average daily balance
-- Total monthly deposits
-- Total monthly withdrawals
-- Number of NSF/returned transactions
-- Largest single deposit
-- Largest single withdrawal
+### 2. TRUE REVENUE CALCULATION
+- Sum ALL deposits for the statement period
+- EXCLUDE any incoming loan/MCA deposits (from lenders, factoring, etc.)
+- Report the "True Revenue" as total deposits minus loan deposits
 
-### 3. Risk Indicators
-- Overdraft frequency
-- Irregular large transactions
-- Gambling/transaction patterns
-- Cash deposit ratio
+### 3. NEGATIVE DAYS
+- Count the EXACT number of days where "Daily Ending Balance" fell below $0.00
+- Do NOT just count NSF fees - count actual negative balance days
+- Report as integer (e.g., 3 means 3 days negative)
 
-### 4. Recommendation
-- Approve / Deny / Review
-- Suggested funding amount
-- Risk score (1-10)
+### 4. DEBT & LEVERAGE
+- Calculate total daily/weekly debt service from all positions
+- Determine safe new daily payment based on revenue minus existing obligations
+- Calculate leverage ratio (debt service / daily revenue)
 
-## Output Format
-Return results as valid JSON matching this schema:
+## Output Format - STRICT JSON
+Return ONLY valid JSON matching this exact schema:
+
 {
-  "business": { "name": "", "account": "", "period": "" },
-  "metrics": { "avg_daily_balance": 0, "deposits": 0, "withdrawals": 0 },
-  "risk": { "nsf_count": 0, "overdrafts": 0, "score": 0 },
+  "business": {
+    "name": "Business name",
+    "account": "Last 4 digits only",
+    "period": "Statement period"
+  },
+  "positions": [
+    {
+      "lender": "Lender name",
+      "payment": 000.00,
+      "frequency": "daily|weekly",
+      "funded": 0000
+    }
+  ],
+  "bank_metrics": {
+    "true_revenue": 0000,
+    "negative_days": 0,
+    "avg_daily_balance": 0000,
+    "nsf_count": 0
+  },
+  "debt_leverage": {
+    "total_debt_service": 000.00,
+    "safe_new_payment": 000.00,
+    "leverage_ratio": "X.X"
+  },
+  "risk": {
+    "score": 0
+  },
   "recommendation": "APPROVE|DENY|REVIEW",
-  "notes": ""
+  "notes": "Brief analysis notes"
 }`)
 
 const fileName = computed(() => {
@@ -482,46 +611,66 @@ const tabs = [
   { id: 'settings', label: 'Settings' }
 ]
 
-const defaultPrompt = `# MCA Underwriting Analysis Prompt
+const defaultPrompt = `# MCA Underwriting Analysis - Expert Extraction
 
 ## Role
-You are an expert MCA (Merchant Cash Advance) underwriter with 15+ years of experience analyzing small business financials.
+You are an expert MCA (Merchant Cash Advance) underwriter with 15+ years of experience.
 
-## Task
-Analyze the uploaded bank statement PDF and extract the following:
+## Critical Extraction Rules
 
-### 1. Business Information
-- Business name
-- Account number (last 4 digits only)
-- Statement period
+### 1. POSITION DETECTION
+- Scan all debits for known MCA lenders: OnDeck, Kabbage, Fundbox, BlueVine, PayPal Working Capital, Square Capital, Stripe Capital, MerchantAdvancement, RapidAdvance, etc.
+- If no lender name visible, flag recurring identical ACH withdrawals (daily/weekly) as assumed positions
+- Extract: lender name, payment amount, frequency (daily/weekly), funded amount, funded date
 
-### 2. Financial Metrics
-- Average daily balance
-- Total monthly deposits
-- Total monthly withdrawals
-- Number of NSF/returned transactions
-- Largest single deposit
-- Largest single withdrawal
+### 2. TRUE REVENUE CALCULATION
+- Sum ALL deposits for the statement period
+- EXCLUDE any incoming loan/MCA deposits (from lenders, factoring, etc.)
+- Report the "True Revenue" as total deposits minus loan deposits
 
-### 3. Risk Indicators
-- Overdraft frequency
-- Irregular large transactions
-- Gambling/transaction patterns
-- Cash deposit ratio
+### 3. NEGATIVE DAYS
+- Count the EXACT number of days where "Daily Ending Balance" fell below $0.00
+- Do NOT just count NSF fees - count actual negative balance days
+- Report as integer (e.g., 3 means 3 days negative)
 
-### 4. Recommendation
-- Approve / Deny / Review
-- Suggested funding amount
-- Risk score (1-10)
+### 4. DEBT & LEVERAGE
+- Calculate total daily/weekly debt service from all positions
+- Determine safe new daily payment based on revenue minus existing obligations
+- Calculate leverage ratio (debt service / daily revenue)
 
-## Output Format
-Return results as valid JSON matching this schema:
+## Output Format - STRICT JSON
+Return ONLY valid JSON matching this exact schema:
+
 {
-  "business": { "name": "", "account": "", "period": "" },
-  "metrics": { "avg_daily_balance": 0, "deposits": 0, "withdrawals": 0 },
-  "risk": { "nsf_count": 0, "overdrafts": 0, "score": 0 },
+  "business": {
+    "name": "Business name",
+    "account": "Last 4 digits only",
+    "period": "Statement period"
+  },
+  "positions": [
+    {
+      "lender": "Lender name",
+      "payment": 000.00,
+      "frequency": "daily|weekly",
+      "funded": 0000
+    }
+  ],
+  "bank_metrics": {
+    "true_revenue": 0000,
+    "negative_days": 0,
+    "avg_daily_balance": 0000,
+    "nsf_count": 0
+  },
+  "debt_leverage": {
+    "total_debt_service": 000.00,
+    "safe_new_payment": 000.00,
+    "leverage_ratio": "X.X"
+  },
+  "risk": {
+    "score": 0
+  },
   "recommendation": "APPROVE|DENY|REVIEW",
-  "notes": ""
+  "notes": "Brief analysis notes"
 }`
 
 const resetPrompt = () => {
@@ -539,10 +688,9 @@ const checkOllamaConnection = async () => {
     ollamaConnected.value = await invoke('check_ollama_connection')
     if (ollamaConnected.value) {
       ollamaModels.value = await invoke('get_ollama_models')
-      // Update model selector with available models
       if (ollamaModels.value.length > 0) {
-        const visionModels = ollamaModels.value.filter(m =>
-          m.name.toLowerCase().includes('vision') ||
+        const visionModels = ollamaModels.value.filter(
+          m => m.name.toLowerCase().includes('vision') ||
           m.name.toLowerCase().includes('llava') ||
           m.name.toLowerCase().includes('qwen')
         )
@@ -573,7 +721,6 @@ const openFileDialog = async () => {
 
       console.log('[State] Loading PDF:', selected)
 
-      // Read PDF file as ArrayBuffer for viewer
       try {
         const { readFile } = await import('@tauri-apps/plugin-fs')
         const pdfData = await readFile(selected)
@@ -582,7 +729,6 @@ const openFileDialog = async () => {
         console.error('Error reading PDF:', err)
       }
 
-      // Get PDF page count
       try {
         const result = await invoke('convert_pdf_to_images', {
           pdfPath: selected,
@@ -596,11 +742,10 @@ const openFileDialog = async () => {
         pdfPageCount.value = 1
       }
 
-      // Transition: IDLE → LOADING_PDF → READY
       appState.value = 'LOADING_PDF'
       loadingProgress.value = 0
       loadingMessage.value = 'Loading PDF...'
-      
+
       setTimeout(() => {
         loadingProgress.value = 100
         appState.value = 'READY'
@@ -638,7 +783,6 @@ const handleUnderwrite = async () => {
     return
   }
 
-  // Transition: READY → ANALYZING
   appState.value = 'ANALYZING'
   loadingProgress.value = 0
   loadingMessage.value = 'Converting PDF to grayscale JPEG...'
@@ -661,15 +805,12 @@ const handleUnderwrite = async () => {
 
     loadingProgress.value = 100
 
-    // Store results
     rawResponse.value = result
     analysisResult.value = result
-    
-    // Parse JSON from response
+
     parsedData.value = parseJsonFromResponse(result)
     console.log('[Underwrite] Parsed dashboard data:', parsedData.value)
 
-    // Transition: ANALYZING → COMPLETE
     appState.value = 'COMPLETE'
     activeTab.value = 'underwrite'
 
@@ -679,7 +820,6 @@ const handleUnderwrite = async () => {
   } catch (error) {
     console.error('Underwrite error:', error)
 
-    // Transition: ANALYZING → ERROR
     appState.value = 'ERROR'
     errorMessage.value = error
   }
@@ -697,31 +837,24 @@ const testConnection = async () => {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// JSON PARSING - Extract structured data from AI response
+// JSON PARSING
 // ═══════════════════════════════════════════════════════════════════════════
 
-/**
- * Parse JSON from AI response text
- * Handles cases where JSON is wrapped in markdown code blocks or mixed with prose
- */
 const parseJsonFromResponse = (text) => {
   if (!text) return null
-  
+
   try {
-    // Try parsing the entire text first
     return JSON.parse(text)
   } catch {
-    // Look for JSON in markdown code blocks
     const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/)
     if (codeBlockMatch) {
       try {
         return JSON.parse(codeBlockMatch[1].trim())
       } catch {
-        // Fall through to regex extraction
+        // Fall through
       }
     }
-    
-    // Look for JSON object pattern
+
     const jsonMatch = text.match(/\{[\s\S]*\}/)
     if (jsonMatch) {
       try {
@@ -731,13 +864,10 @@ const parseJsonFromResponse = (text) => {
       }
     }
   }
-  
+
   return null
 }
 
-/**
- * Format currency value
- */
 const formatCurrency = (value) => {
   if (value === null || value === undefined) return 'N/A'
   const num = typeof value === 'string' ? parseFloat(value.replace(/[^0-9.-]/g, '')) : value
@@ -750,9 +880,6 @@ const formatCurrency = (value) => {
   }).format(num)
 }
 
-/**
- * Get recommendation badge color
- */
 const getRecommendationColor = (recommendation) => {
   if (!recommendation) return 'bg-gray-500'
   const rec = recommendation.toUpperCase()
@@ -762,31 +889,30 @@ const getRecommendationColor = (recommendation) => {
   return 'bg-gray-500'
 }
 
-/**
- * Get risk score color
- */
 const getRiskScoreColor = (score) => {
   if (score === null || score === undefined) return 'text-gray-400'
-  if (score >= 8) return 'text-green-400'
-  if (score >= 5) return 'text-yellow-400'
+  if (score >= 8) return 'text-emerald-400'
+  if (score >= 5) return 'text-amber-400'
   return 'text-red-400'
 }
 
-/**
- * Copy results to clipboard
- */
+const getRiskScoreBarColor = (score) => {
+  if (score === null || score === undefined) return 'bg-gray-500'
+  if (score >= 8) return 'bg-emerald-500'
+  if (score >= 5) return 'bg-amber-500'
+  return 'bg-red-500'
+}
+
 const copyResults = async () => {
-  // Use parsed JSON if available, otherwise use raw response
   const dataToCopy = parsedData.value || rawResponse.value
   if (!dataToCopy) return
-  
+
   try {
-    const textToCopy = typeof dataToCopy === 'object' 
+    const textToCopy = typeof dataToCopy === 'object'
       ? JSON.stringify(dataToCopy, null, 2)
       : dataToCopy
-      
+
     await navigator.clipboard.writeText(textToCopy)
-    // Show brief success feedback
     const originalText = copyButtonText.value
     copyButtonText.value = 'Copied!'
     setTimeout(() => {
@@ -800,23 +926,20 @@ const copyResults = async () => {
 const copyButtonText = ref('Copy Results')
 
 // ═══════════════════════════════════════════════════════════════════════════
-// EXPORT FUNCTIONS - Export analysis to JSON/CSV
+// EXPORT FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════════════
 
-/**
- * Export analysis to JSON file
- */
 const exportToJSON = async () => {
   const dataToExport = parsedData.value || analysisResult.value
   if (!dataToExport) return
-  
+
   isExporting.value = true
   try {
     const filePath = await invoke('export_json', {
       data: dataToExport,
       defaultPath: `analysis-${fileName.value.replace('.pdf', '')}.json`
     })
-    
+
     if (filePath) {
       console.log('[Export] JSON saved to:', filePath)
     }
@@ -827,52 +950,50 @@ const exportToJSON = async () => {
   }
 }
 
-/**
- * Export analysis to CSV file
- */
 const exportToCSV = async () => {
   const data = parsedData.value
   if (!data) return
-  
+
   isExporting.value = true
   try {
-    // Build CSV content
     const csvRows = [
-      // Business Info
       ['Business Information', '', ''],
       ['Business Name', data.business?.name || '', ''],
       ['Account', data.business?.account || '', ''],
       ['Period', data.business?.period || '', ''],
       ['', '', ''],
-      // Metrics
-      ['Financial Metrics', '', ''],
-      ['Avg Daily Balance', data.metrics?.avg_daily_balance || '', 'USD'],
-      ['Total Deposits', data.metrics?.total_deposits || '', 'USD'],
-      ['Total Withdrawals', data.metrics?.total_withdrawals || '', 'USD'],
-      ['NSF Count', data.metrics?.nsf_count || '', ''],
+      ['Positions', '', ''],
+      ...data.positions?.map(p => [p.lender || 'Unknown', p.payment || '', p.frequency || '', p.funded || '']) || [],
       ['', '', ''],
-      // Risk
-      ['Risk Assessment', '', ''],
+      ['Bank Metrics', '', ''],
+      ['True Revenue', data.bank_metrics?.true_revenue || '', 'USD'],
+      ['Negative Days', data.bank_metrics?.negative_days || '', ''],
+      ['Avg Daily Balance', data.bank_metrics?.avg_daily_balance || '', 'USD'],
+      ['NSF Count', data.bank_metrics?.nsf_count || '', ''],
+      ['', '', ''],
+      ['Debt & Leverage', '', ''],
+      ['Total Debt Service', data.debt_leverage?.total_debt_service || '', 'USD'],
+      ['Safe New Payment', data.debt_leverage?.safe_new_payment || '', 'USD'],
+      ['Leverage Ratio', data.debt_leverage?.leverage_ratio || '', ''],
+      ['', '', ''],
+      ['Risk', '', ''],
       ['Risk Score', data.risk?.score || '', '/10'],
-      ['Overdrafts', data.risk?.overdrafts || '', ''],
       ['', '', ''],
-      // Recommendation
       ['Recommendation', data.recommendation || '', ''],
       ['', '', ''],
-      // Notes
-      ['Analysis Notes', data.notes || '', '']
+      ['Notes', data.notes || '', '']
     ]
-    
+
     const csvContent = csvRows.map(row => row.map(cell => {
       const str = String(cell ?? '')
       return str.includes(',') || str.includes('"') ? `"${str.replace(/"/g, '""')}"` : str
     }).join(',')).join('\n')
-    
+
     const filePath = await invoke('export_csv', {
       content: csvContent,
       defaultPath: `analysis-${fileName.value.replace('.pdf', '')}.csv`
     })
-    
+
     if (filePath) {
       console.log('[Export] CSV saved to:', filePath)
     }
@@ -883,46 +1004,47 @@ const exportToCSV = async () => {
   }
 }
 
-/**
- * Print analysis report
- */
 const printReport = () => {
   const data = parsedData.value
   const hasParsedData = !!data
-  
-  // Use raw response if no parsed data
+
   const notesContent = hasParsedData ? (data.notes || '') : rawResponse.value
   if (!notesContent && !hasParsedData) return
-  
-  // Create print-friendly content
+
   const printContent = `
     <!DOCTYPE html>
     <html>
     <head>
-      <title>Analysis Report - ${fileName.value}</title>
+      <title>MCA Analysis Report - ${fileName.value}</title>
       <style>
-        body { font-family: Arial, sans-serif; padding: 40px; color: #333; }
-        h1 { color: #1a1a1a; border-bottom: 2px solid #3b82f6; padding-bottom: 10px; }
-        h2 { color: #444; margin-top: 30px; }
-        .section { margin: 20px 0; padding: 15px; background: #f9f9f9; border-radius: 8px; }
+        body { font-family: Arial, sans-serif; padding: 40px; color: #333; background: #fff; }
+        h1 { color: #1a1a1a; border-bottom: 3px solid #3b82f6; padding-bottom: 15px; }
+        h2 { color: #444; margin-top: 30px; font-size: 18px; }
+        .section { margin: 20px 0; padding: 20px; background: #f5f5f5; border-radius: 8px; }
         .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; margin: 15px 0; }
-        .card { padding: 12px; background: white; border-radius: 6px; border: 1px solid #e0e0e0; }
-        .label { font-size: 12px; color: #666; text-transform: uppercase; }
-        .value { font-size: 18px; font-weight: bold; color: #1a1a1a; margin-top: 4px; }
-        .recommendation { display: inline-block; padding: 6px 16px; border-radius: 4px; color: white; font-weight: bold; }
+        .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; }
+        .card { padding: 15px; background: white; border-radius: 6px; border: 1px solid #e0e0e0; }
+        .label { font-size: 11px; color: #666; text-transform: uppercase; font-weight: 600; }
+        .value { font-size: 20px; font-weight: bold; color: #1a1a1a; margin-top: 5px; }
+        .recommendation { display: inline-block; padding: 8px 20px; border-radius: 4px; color: white; font-weight: bold; }
         .approve { background: #22c55e; }
         .deny { background: #ef4444; }
         .review { background: #eab308; }
         .notes { white-space: pre-wrap; line-height: 1.6; }
-        .footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #e0e0e0; font-size: 12px; color: #666; }
+        .footer { margin-top: 40px; padding-top: 20px; border-top: 2px solid #e0e0e0; font-size: 12px; color: #666; }
+        table { width: 100%; border-collapse: collapse; margin: 15px 0; }
+        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background: #f0f0f0; font-weight: 600; font-size: 12px; text-transform: uppercase; }
+        .positive { color: #22c55e; }
+        .negative { color: #ef4444; }
         @media print { body { padding: 20px; } }
       </style>
     </head>
     <body>
-      <h1>Bank Statement Analysis Report</h1>
+      <h1>MCA Bank Statement Analysis Report</h1>
       <p><strong>File:</strong> ${fileName.value}</p>
       <p><strong>Generated:</strong> ${new Date().toLocaleString()}</p>
-      
+
       ${hasParsedData ? `
       <div class="section">
         <h2>Business Information</h2>
@@ -941,29 +1063,75 @@ const printReport = () => {
           </div>
         </div>
       </div>
-      
+
+      ${data.positions && data.positions.length > 0 ? `
       <div class="section">
-        <h2>Financial Metrics</h2>
+        <h2>Existing Positions</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Lender</th>
+              <th>Payment</th>
+              <th>Frequency</th>
+              <th>Funded</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${data.positions.map(p => `
+            <tr>
+              <td>${p.lender || 'Unknown'}</td>
+              <td class="negative">$${(p.payment || 0).toLocaleString()}</td>
+              <td>${p.frequency || 'N/A'}</td>
+              <td class="positive">$${(p.funded || 0).toLocaleString()}</td>
+            </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+      ` : ''}
+
+      <div class="section">
+        <h2>Bank Metrics</h2>
         <div class="grid">
           <div class="card">
+            <div class="label">True Revenue</div>
+            <div class="value positive">$${(data.bank_metrics?.true_revenue || 0).toLocaleString()}</div>
+            <div style="font-size: 11px; color: #666;">Excludes loan deposits</div>
+          </div>
+          <div class="card">
+            <div class="label">Negative Days</div>
+            <div class="value ${(data.bank_metrics?.negative_days || 0) > 0 ? 'negative' : 'positive'}">${data.bank_metrics?.negative_days || 0}</div>
+            <div style="font-size: 11px; color: #666;">Days balance &lt; $0</div>
+          </div>
+          <div class="card">
             <div class="label">Avg Daily Balance</div>
-            <div class="value">${formatCurrency(data.metrics?.avg_daily_balance)}</div>
-          </div>
-          <div class="card">
-            <div class="label">Total Deposits</div>
-            <div class="value" style="color: #22c55e;">${formatCurrency(data.metrics?.total_deposits)}</div>
-          </div>
-          <div class="card">
-            <div class="label">Total Withdrawals</div>
-            <div class="value" style="color: #ef4444;">${formatCurrency(data.metrics?.total_withdrawals)}</div>
+            <div class="value">$${(data.bank_metrics?.avg_daily_balance || 0).toLocaleString()}</div>
           </div>
           <div class="card">
             <div class="label">NSF Count</div>
-            <div class="value">${data.metrics?.nsf_count ?? 'N/A'}</div>
+            <div class="value ${(data.bank_metrics?.nsf_count || 0) > 0 ? 'negative' : 'positive'}">${data.bank_metrics?.nsf_count || 0}</div>
           </div>
         </div>
       </div>
-      
+
+      <div class="section">
+        <h2>Debt & Leverage</h2>
+        <div class="grid-3">
+          <div class="card">
+            <div class="label">Total Debt Service</div>
+            <div class="value negative">$${(data.debt_leverage?.total_debt_service || 0).toLocaleString()}</div>
+          </div>
+          <div class="card">
+            <div class="label">Safe New Payment</div>
+            <div class="value positive">$${(data.debt_leverage?.safe_new_payment || 0).toLocaleString()}</div>
+          </div>
+          <div class="card">
+            <div class="label">Leverage Ratio</div>
+            <div class="value">${data.debt_leverage?.leverage_ratio || 'N/A'}</div>
+          </div>
+        </div>
+      </div>
+
       <div class="section">
         <h2>Risk Assessment</h2>
         <div class="grid">
@@ -987,20 +1155,19 @@ const printReport = () => {
         <p style="color: #666; font-style: italic;">No structured data was parsed from this analysis.</p>
       </div>
       `}
-      
+
       <div class="section">
         <h2>Analysis Notes</h2>
         <div class="notes">${notesContent}</div>
       </div>
-      
+
       <div class="footer">
-        <p>Generated by Local MCA Underwriter Workspace</p>
+        <p>Generated by Local MCA Underwriter Workspace | 100% Offline Analysis</p>
       </div>
     </body>
     </html>
   `
-  
-  // Open print window
+
   const printWindow = window.open('', '_blank')
   printWindow.document.write(printContent)
   printWindow.document.close()
@@ -1008,20 +1175,18 @@ const printReport = () => {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// FOLLOW-UP CHAT - Send questions to Ollama with context
+// FOLLOW-UP CHAT
 // ═══════════════════════════════════════════════════════════════════════════
 
 const sendChatMessage = async () => {
   const question = chatInput.value.trim()
   if (!question || !ollamaConnected.value || isChatLoading.value) return
 
-  // Add user message to chat
   chatMessages.value.push({ role: 'user', content: question })
   chatInput.value = ''
   isChatLoading.value = true
 
   try {
-    // Build context-aware prompt
     const contextPrompt = `
 Previous analysis of this bank statement:
 ${rawResponse.value}
@@ -1038,13 +1203,12 @@ Provide a concise, helpful answer based on the bank statement analysis above.`
       maxTokens: modelConfig.value.maxTokens
     })
 
-    // Add assistant response to chat
     chatMessages.value.push({ role: 'assistant', content: response })
   } catch (error) {
     console.error('Chat error:', error)
-    chatMessages.value.push({ 
-      role: 'assistant', 
-      content: `Error: ${error}\n\nPlease try again or check your Ollama connection.` 
+    chatMessages.value.push({
+      role: 'assistant',
+      content: `Error: ${error}\n\nPlease try again or check your Ollama connection.`
     })
   } finally {
     isChatLoading.value = false
