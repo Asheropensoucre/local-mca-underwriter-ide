@@ -130,16 +130,16 @@ sudo apt install poppler-utils
 
 ## Roadmap
 
-### High Priority (The Underwriter Pivot) ✅ COMPLETE
+### High Priority (The Underwriter Pivot) ✅ ALL COMPLETE
 - [x] **Dynamic UI Resizing:** Animate layout from 60/40 (pre-analysis) to 30/70 (post-analysis).
 - [x] **Advanced JSON Parsing:** UI cards for Positions, True Revenue, and Negative Days.
 - [x] **Prompt Rewrite:** Overwrite default prompt for strict MCA logic extraction.
 - [x] **Multi-page full analysis** - Sequential page processing with result aggregation
 
-### Medium Priority
-- [ ] Batch processing (multiple PDFs)
-- [ ] Custom prompt templates
-- [ ] Analysis history (local storage)
+### Medium Priority (NEXT FOCUS)
+- [ ] **Batch processing (multiple PDFs)** - Upload and analyze multiple bank statements in one session
+- [ ] **Custom prompt templates (save/load)** - Save custom underwriting templates for different deal types
+- [ ] **Analysis history (local storage)** - Store past analyses locally for quick reference
 
 ## License
 

@@ -68,9 +68,18 @@ Build a blazing-fast, local-first underwriting workspace focused on deep-work an
 5. ✅ **MCA Prompt Rewrite** - Enforces position detection, true revenue calculation, negative days counting, leverage analysis
 6. ✅ **Updated Export/Print** - CSV and print reports include new MCA data structure
 
+## 7b. Phase 12: Chat & Prompt Architecture ✅ COMPLETE
+
+**Completed:**
+1. ✅ **Text-Only Follow-up Chat** - New `chat_with_ollama` command (instant responses, no PDF re-processing)
+2. ✅ **Auto-Greeting** - Assistant welcomes user when analysis completes
+3. ✅ **Cursor-Style Prompt Split** - Hardcoded SYSTEM_PROMPT + editable user instructions
+4. ✅ **Anti-Hallucination Rules** - CRITICAL FALLBACK RULES prevent fake lender data on non-bank docs
+5. ✅ **Generic Backend Aggregator** - Works with any document type, defers to original prompt for formatting
+
 ## 8. Current Status
 
-**PHASE 11 COMPLETE** - App now features the full MCA Underwriter Pivot with dynamic resizing and specialized dashboard cards.
+**ALL PHASES COMPLETE** - App features full MCA Underwriter Pivot, multi-page analysis, text-only chat, and robust prompt architecture.
 
 ### User Flow:
 1. Upload PDFs → View in full PDF viewer (60% width)
@@ -106,16 +115,16 @@ The application relies on highly specific prompting to extract true underwriting
 
 ## 12. Future Roadmap
 
-### High Priority (The Underwriter Pivot)
+### High Priority (The Underwriter Pivot) ✅ ALL COMPLETE
 - [x] **Dynamic UI Resizing:** Animate layout from 60/40 (pre-analysis) to 30/70 (post-analysis) so the dashboard becomes the primary focus.
 - [x] **Advanced JSON Parsing:** Update the UI cards to display the new "Positions" array, True Revenue, and exact Negative Days count.
 - [x] **Prompt Rewrite:** Overwrite the default prompt to enforce the rules in Section 11.
 - [x] **Multi-page full analysis (sequential processing)** - Each page analyzed individually, results aggregated
 
-### Medium Priority
-- [ ] Batch processing (multiple PDFs)
-- [ ] Custom prompt templates (save/load)
-- [ ] Analysis history (local storage)
+### Medium Priority (NEXT FOCUS)
+- [ ] **Batch processing (multiple PDFs)** - Upload and analyze multiple bank statements in one session
+- [ ] **Custom prompt templates (save/load)** - Save custom underwriting templates for different deal types
+- [ ] **Analysis history (local storage)** - Store past analyses locally for quick reference
 
 ### Low Priority
 - [ ] Streaming responses (show tokens as generated)
