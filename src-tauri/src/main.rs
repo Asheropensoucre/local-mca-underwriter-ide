@@ -511,6 +511,38 @@ async fn chat_with_ollama(
     Ok(result.message.content)
 }
 
+/// Aggregate batch results from multiple PDF files into one master report
+/// Reuses the same aggregation logic as multi-page PDF processing
+#[tauri::command]
+async fn aggregate_batch_results(
+    model: String,
+    original_prompt: String,
+    page_results: Vec<String>,
+    temperature: f32,
+    max_tokens: i32,
+) -> Result<String, String> {
+    println!("[Batch] Aggregating {} PDF results...", page_results.len());
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300)) // 5 minute timeout for aggregation
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    let final_result = aggregate_page_results(
+        &client,
+        &model,
+        &original_prompt,
+        &page_results,
+        temperature,
+        max_tokens,
+    ).await?;
+
+    println!("[Batch] Aggregation complete! Final response length: {} chars", final_result.len());
+
+    Ok(final_result)
+}
+
 /// Export JSON data to file using native save dialog
 #[tauri::command]
 async fn export_json(
@@ -582,6 +614,7 @@ fn main() {
             convert_pdf_to_images,
             send_pdf_to_ollama,
             chat_with_ollama,
+            aggregate_batch_results,
             test_ollama_model,
             export_json,
             export_csv

@@ -22,19 +22,46 @@
         </div>
         <div>
           <p class="text-xl font-medium text-gray-200">Drop Bank Statements Here</p>
-          <p class="text-sm text-gray-500 mt-2">or click to browse your files</p>
+          <p class="text-sm text-gray-500 mt-2">or click to browse (select multiple months)</p>
         </div>
         <div class="flex items-center justify-center gap-4">
           <span class="px-3 py-1 bg-surface border border-border rounded text-xs text-gray-500">PDF</span>
+          <span class="px-3 py-1 bg-surface border border-border rounded text-xs text-gray-500">Multiple Files</span>
         </div>
         <p v-if="dropError" class="text-sm text-red-400">{{ dropError }}</p>
+        
+        <!-- File Queue Preview -->
+        <div v-if="fileQueue.length > 0" class="text-left">
+          <p class="text-sm font-medium text-gray-400 mb-2">Selected Files ({{ fileQueue.length }}):</p>
+          <div class="max-h-48 overflow-auto space-y-1">
+            <div 
+              v-for="(file, idx) in fileQueue" 
+              :key="idx"
+              class="flex items-center justify-between bg-surface border border-border rounded px-3 py-2 text-sm"
+            >
+              <span class="text-gray-300 truncate flex-1">{{ file.name }}</span>
+              <button
+                @click.stop="removeFile(idx)"
+                class="ml-2 text-red-400 hover:text-red-300 text-xs"
+              >
+                ✕ Remove
+              </button>
+            </div>
+          </div>
+          <button
+            @click.stop="clearFileQueue"
+            class="mt-2 text-xs text-gray-500 hover:text-gray-400"
+          >
+            Clear All
+          </button>
+        </div>
       </div>
     </div>
 
     <!-- Main Dashboard Layout - ALWAYS MOUNTED once file is loaded -->
     <div v-show="appState !== 'IDLE'" class="w-full max-w-7xl h-[80vh] flex gap-4">
       <!-- Left Pane - PDF Viewer (60% → 30% on COMPLETE) -->
-      <div 
+      <div
         class="bg-surface rounded-xl border border-border flex flex-col overflow-hidden transition-all duration-500 ease-in-out"
         :class="appState === 'COMPLETE' ? 'w-[30%]' : 'w-[60%]'"
       >
@@ -45,7 +72,11 @@
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
             </svg>
             <div class="flex-1 min-w-0">
-              <p class="text-sm font-medium text-gray-300 truncate">{{ fileName }}</p>
+              <!-- Batch mode: show current file index -->
+              <p v-if="fileQueue.length > 1" class="text-sm font-medium text-gray-300">
+                File {{ currentFileIndex + 1 }} of {{ fileQueue.length }}: {{ fileName }}
+              </p>
+              <p v-else class="text-sm font-medium text-gray-300 truncate">{{ fileName }}</p>
               <p class="text-xs text-gray-500">{{ filePath }}</p>
             </div>
           </div>
@@ -515,10 +546,17 @@ import PdfViewer from './components/PdfViewer.vue'
 const appState = ref('IDLE') // 'IDLE' | 'LOADING_PDF' | 'READY' | 'ANALYZING' | 'COMPLETE' | 'ERROR'
 const errorMessage = ref('')
 
-// File data
-const filePath = ref('')
+// File data - BATCH PROCESSING SUPPORT
+// File queue for multiple PDFs (3-6 months of statements)
+const fileQueue = ref([]) // Array of { path: string, name: string, pageCount: number }
+const currentFileIndex = ref(0) // Current file being processed
 const pdfPageCount = ref(0)
 const pdfSource = ref(null)
+
+// Batch processing state
+const isBatchProcessing = ref(false)
+const batchResults = ref([]) // Array of raw results from each PDF
+const combinedResult = ref(null) // Final aggregated result
 
 // Analysis data
 const analysisResult = ref(null)
@@ -593,9 +631,20 @@ const buildFullPrompt = () => {
   return SYSTEM_PROMPT + '\n\nUSER CUSTOM INSTRUCTIONS:\n' + userCustomInstructions.value
 }
 
+// File name computed from current file in queue
 const fileName = computed(() => {
-  if (!filePath.value) return ''
-  return filePath.value.split('/').pop() || filePath.value.split('\\').pop() || ''
+  if (fileQueue.value.length > 0 && currentFileIndex.value < fileQueue.value.length) {
+    return fileQueue.value[currentFileIndex.value].name
+  }
+  return ''
+})
+
+// File path computed from current file in queue
+const filePath = computed(() => {
+  if (fileQueue.value.length > 0 && currentFileIndex.value < fileQueue.value.length) {
+    return fileQueue.value[currentFileIndex.value].path
+  }
+  return ''
 })
 
 const tabs = [
@@ -606,6 +655,32 @@ const tabs = [
 
 const resetCustomInstructions = () => {
   userCustomInstructions.value = 'Add custom underwriting focus areas here...'
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BATCH FILE QUEUE MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════
+
+const removeFile = (index) => {
+  fileQueue.value.splice(index, 1)
+  // Adjust current index if needed
+  if (currentFileIndex.value >= fileQueue.value.length) {
+    currentFileIndex.value = Math.max(0, fileQueue.value.length - 1)
+  }
+  // If queue is empty, go back to IDLE
+  if (fileQueue.value.length === 0) {
+    appState.value = 'IDLE'
+    pdfSource.value = null
+    pdfPageCount.value = 0
+  }
+}
+
+const clearFileQueue = () => {
+  fileQueue.value = []
+  currentFileIndex.value = 0
+  appState.value = 'IDLE'
+  pdfSource.value = null
+  pdfPageCount.value = 0
 }
 
 // Check Ollama connection on mount
@@ -641,68 +716,100 @@ const openFileDialog = async () => {
   dropError.value = ''
   try {
     const selected = await open({
-      multiple: false,
+      multiple: true, // Allow multiple file selection
       filters: [{
         name: 'PDF',
         extensions: ['pdf']
       }]
     })
-    if (selected) {
-      filePath.value = selected
-
-      console.log('[State] Loading PDF:', selected)
-
-      try {
-        const { readFile } = await import('@tauri-apps/plugin-fs')
-        const pdfData = await readFile(selected)
-        pdfSource.value = new Uint8Array(pdfData)
-      } catch (err) {
-        console.error('Error reading PDF:', err)
-      }
-
-      try {
-        const result = await invoke('convert_pdf_to_images', {
-          pdfPath: selected,
-          dpi: 72
+    if (selected && Array.isArray(selected)) {
+      // Add all selected files to queue
+      for (const file of selected) {
+        fileQueue.value.push({
+          path: file,
+          name: file.split('/').pop() || file.split('\\').pop() || file,
+          pageCount: 0
         })
-        pdfPageCount.value = result.pages.length
-        loadingProgress.value = 50
-        loadingMessage.value = `Converting ${result.pages.length} page(s)...`
-      } catch (err) {
-        console.error('Error getting page count:', err)
-        pdfPageCount.value = 1
       }
-
-      appState.value = 'LOADING_PDF'
-      loadingProgress.value = 0
-      loadingMessage.value = 'Loading PDF...'
-
-      setTimeout(() => {
-        loadingProgress.value = 100
-        appState.value = 'READY'
-        console.log('[State] PDF loaded, ready for analysis')
-      }, 500)
+      
+      console.log('[Batch] Added', selected.length, 'files to queue')
+      
+      // Load the first file for preview
+      if (fileQueue.value.length > 0) {
+        await loadFileForPreview(0)
+      }
     }
   } catch (error) {
     console.error('Error opening file:', error)
     dropError.value = 'Failed to open file picker'
-    appState.value = 'IDLE'
   }
+}
+
+// Load a file from queue for PDF preview
+const loadFileForPreview = async (index) => {
+  if (index >= fileQueue.value.length) return
+  
+  const file = fileQueue.value[index]
+  currentFileIndex.value = index
+  
+  console.log('[State] Loading PDF:', file.path)
+  
+  try {
+    const { readFile } = await import('@tauri-apps/plugin-fs')
+    const pdfData = await readFile(file.path)
+    pdfSource.value = new Uint8Array(pdfData)
+  } catch (err) {
+    console.error('Error reading PDF:', err)
+  }
+  
+  try {
+    const result = await invoke('convert_pdf_to_images', {
+      pdfPath: file.path,
+      dpi: 72
+    })
+    fileQueue.value[index].pageCount = result.pages.length
+    pdfPageCount.value = result.pages.length
+    loadingProgress.value = 50
+    loadingMessage.value = `Converting ${result.pages.length} page(s)...`
+  } catch (err) {
+    console.error('Error getting page count:', err)
+    pdfPageCount.value = 1
+    fileQueue.value[index].pageCount = 1
+  }
+  
+  appState.value = 'LOADING_PDF'
+  loadingProgress.value = 0
+  loadingMessage.value = 'Loading PDF...'
+  
+  setTimeout(() => {
+    loadingProgress.value = 100
+    appState.value = 'READY'
+    console.log('[State] PDF loaded, ready for analysis')
+  }, 500)
 }
 
 const handleDrop = async (event) => {
   isDragging.value = false
   dropError.value = ''
-
+  
   const files = event.dataTransfer?.files
   if (files && files.length > 0) {
-    const file = files[0]
-    if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
-      filePath.value = file.name
-      console.log('[Rust Backend] Dropped file:', file.name)
-      appState.value = 'READY'
-    } else {
-      dropError.value = 'Please drop a PDF file only'
+    // Process all dropped files
+    for (const file of files) {
+      if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
+        fileQueue.value.push({
+          path: file.path || file.name,
+          name: file.name,
+          pageCount: 0
+        })
+      }
+    }
+    
+    console.log('[Batch] Added', files.length, 'files from drop')
+    
+    // Load the first file for preview
+    if (fileQueue.value.length > 0) {
+      await loadFileForPreview(0)
     }
   }
 }
@@ -713,48 +820,67 @@ const handleUnderwrite = async () => {
     appState.value = 'ERROR'
     return
   }
+  
+  if (fileQueue.value.length === 0) {
+    errorMessage.value = 'No files selected. Please upload at least one PDF.'
+    appState.value = 'ERROR'
+    return
+  }
 
   appState.value = 'ANALYZING'
   loadingProgress.value = 0
-  loadingMessage.value = 'Converting PDF to grayscale JPEG...'
-
-  // Set up multi-page progress tracking
-  totalPages.value = pdfPageCount.value || 1
-  currentPage.value = 0
-
-  console.log('[State] Starting analysis...')
+  batchResults.value = [] // Reset batch results
+  
+  console.log('[Batch] Starting batch analysis of', fileQueue.value.length, 'files...')
 
   try {
-    loadingMessage.value = `Analyzing ${totalPages.value} page(s) with ${selectedModel.value}...`
-
-    // Simulate progress updates (backend doesn't emit progress events)
-    const progressInterval = setInterval(() => {
-      if (currentPage.value < totalPages.value) {
-        currentPage.value++
-      }
-    }, 30000) // Assume ~30 seconds per page for progress indicator
-
-    const result = await invoke('send_pdf_to_ollama', {
+    // Process each file in the queue sequentially
+    for (let i = 0; i < fileQueue.value.length; i++) {
+      currentFileIndex.value = i
+      const file = fileQueue.value[i]
+      
+      loadingMessage.value = `Analyzing file ${i + 1} of ${fileQueue.value.length}: ${file.name}...`
+      totalPages.value = fileQueue.value.length
+      currentPage.value = i
+      
+      console.log('[Batch] Processing file', i + 1, '/', fileQueue.value.length, '-', file.name)
+      
+      // Analyze this file
+      const result = await invoke('send_pdf_to_ollama', {
+        model: selectedModel.value,
+        prompt: buildFullPrompt(),
+        pdfPath: file.path,
+        temperature: modelConfig.value.temperature,
+        maxTokens: modelConfig.value.maxTokens
+      })
+      
+      batchResults.value.push(result)
+      console.log('[Batch] File', i + 1, 'complete -', result.length, 'chars')
+    }
+    
+    // All files processed - now aggregate into one master result
+    loadingMessage.value = `Combining ${fileQueue.value.length} files into master report...`
+    currentPage.value = fileQueue.value.length
+    
+    console.log('[Batch] All files analyzed, aggregating results...')
+    
+    // Use the Rust aggregator to combine all results
+    const combinedResult = await invoke('aggregate_batch_results', {
       model: selectedModel.value,
-      prompt: buildFullPrompt(),
-      pdfPath: filePath.value,
+      originalPrompt: buildFullPrompt(),
+      pageResults: batchResults.value,
       temperature: modelConfig.value.temperature,
       maxTokens: modelConfig.value.maxTokens
     })
-
-    clearInterval(progressInterval)
-    currentPage.value = totalPages.value // Show complete
-
-    console.log('[Underwrite] RAW RESPONSE FROM OLLAMA:', result)
-    console.log('[Underwrite] Response length:', result?.length || 'N/A')
-
+    
+    console.log('[Batch] Aggregation complete -', combinedResult.length, 'chars')
+    
     loadingProgress.value = 100
-
-    rawResponse.value = result
-    analysisResult.value = result
-
-    parsedData.value = parseJsonFromResponse(result)
-    console.log('[Underwrite] Parsed dashboard data:', parsedData.value)
+    rawResponse.value = combinedResult
+    analysisResult.value = combinedResult
+    parsedData.value = parseJsonFromResponse(combinedResult)
+    
+    console.log('[Batch] Parsed master dashboard data:', parsedData.value)
 
     appState.value = 'COMPLETE'
     activeTab.value = 'underwrite'
@@ -762,10 +888,10 @@ const handleUnderwrite = async () => {
     // Add automatic greeting to chat
     chatMessages.value.push({
       role: 'assistant',
-      content: '✅ Statement analysis complete. The dashboard has been updated. What specific questions do you have about this merchant?'
+      content: `✅ Combined analysis of ${fileQueue.value.length} file(s) complete. The dashboard shows aggregated metrics across all statements. What specific questions do you have about this merchant?`
     })
 
-    console.log('[State] Analysis complete')
+    console.log('[State] Batch analysis complete')
     console.log('[State] UI State:', { appState: appState.value, activeTab: activeTab.value })
 
   } catch (error) {
