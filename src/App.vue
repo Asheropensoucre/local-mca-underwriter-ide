@@ -91,6 +91,11 @@
 
     <!-- READY/COMPLETE State - Dashboard -->
     <div v-else class="w-full max-w-7xl h-[80vh] flex gap-4">
+      <!-- DEBUG: Dashboard is visible -->
+      <div class="fixed bottom-2 right-2 text-xs font-mono bg-primary text-white px-3 py-1 rounded z-50">
+        DASHBOARD VISIBLE | State: {{ appState }}
+      </div>
+    
       <!-- Left Pane - PDF Viewer (60%) -->
       <div class="w-[60%] bg-surface rounded-xl border border-border flex flex-col overflow-hidden">
         <!-- File Info Header -->
@@ -279,7 +284,6 @@ const errorMessage = ref('')
 
 // File data
 const filePath = ref('')
-const fileName = ref('')
 const pdfPageCount = ref(0)
 const pdfSource = ref(null)
 
@@ -456,7 +460,6 @@ const openFileDialog = async () => {
       loadingProgress.value = 0
       loadingMessage.value = 'Loading PDF...'
       filePath.value = selected
-      fileName.value = selected.split('/').pop() || selected.split('\\').pop() || 'Unknown'
 
       console.log('[State] Loading PDF:', selected)
 
