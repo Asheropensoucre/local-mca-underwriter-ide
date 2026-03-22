@@ -218,7 +218,7 @@
                   <div class="flex gap-2">
                     <button
                       @click="printReport"
-                      :disabled="!parsedData"
+                      :disabled="!rawResponse"
                       class="text-xs px-3 py-1 bg-surface hover:bg-border border border-border rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       title="Print Report"
                     >
@@ -228,7 +228,7 @@
                       @click="exportToJSON"
                       :disabled="isExporting || !parsedData"
                       class="text-xs px-3 py-1 bg-surface hover:bg-border border border-border rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                      title="Export as JSON"
+                      title="Export as JSON (only available when JSON data is parsed)"
                     >
                       📄 JSON
                     </button>
@@ -236,13 +236,13 @@
                       @click="exportToCSV"
                       :disabled="isExporting || !parsedData"
                       class="text-xs px-3 py-1 bg-surface hover:bg-border border border-border rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                      title="Export as CSV"
+                      title="Export as CSV (only available when JSON data is parsed)"
                     >
                       📊 CSV
                     </button>
                     <button
                       @click="copyResults"
-                      :disabled="isExporting"
+                      :disabled="isExporting || !rawResponse"
                       class="text-xs px-3 py-1 bg-surface hover:bg-border border border-border rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {{ copyButtonText }}
@@ -781,11 +781,16 @@ const getRiskScoreColor = (score) => {
  * Copy results to clipboard
  */
 const copyResults = async () => {
-  const dataToCopy = parsedData.value || analysisResult.value
+  // Use parsed JSON if available, otherwise use raw response
+  const dataToCopy = parsedData.value || rawResponse.value
   if (!dataToCopy) return
   
   try {
-    await navigator.clipboard.writeText(JSON.stringify(dataToCopy, null, 2))
+    const textToCopy = typeof dataToCopy === 'object' 
+      ? JSON.stringify(dataToCopy, null, 2)
+      : dataToCopy
+      
+    await navigator.clipboard.writeText(textToCopy)
     // Show brief success feedback
     const originalText = copyButtonText.value
     copyButtonText.value = 'Copied!'
@@ -888,7 +893,11 @@ const exportToCSV = async () => {
  */
 const printReport = () => {
   const data = parsedData.value
-  if (!data) return
+  const hasParsedData = !!data
+  
+  // Use raw response if no parsed data
+  const notesContent = hasParsedData ? (data.notes || '') : rawResponse.value
+  if (!notesContent && !hasParsedData) return
   
   // Create print-friendly content
   const printContent = `
@@ -919,6 +928,7 @@ const printReport = () => {
       <p><strong>File:</strong> ${fileName.value}</p>
       <p><strong>Generated:</strong> ${new Date().toLocaleString()}</p>
       
+      ${hasParsedData ? `
       <div class="section">
         <h2>Business Information</h2>
         <div class="grid">
@@ -976,10 +986,16 @@ const printReport = () => {
           </div>
         </div>
       </div>
+      ` : `
+      <div class="section">
+        <h2>Analysis Result</h2>
+        <p style="color: #666; font-style: italic;">No structured data was parsed from this analysis.</p>
+      </div>
+      `}
       
       <div class="section">
         <h2>Analysis Notes</h2>
-        <div class="notes">${data.notes || rawResponse.value}</div>
+        <div class="notes">${notesContent}</div>
       </div>
       
       <div class="footer">
