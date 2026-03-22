@@ -306,10 +306,11 @@ async fn analyze_single_page(
 }
 
 /// Aggregate results from multiple pages into final analysis
+/// Generic aggregator - works with any document type, not just MCA
 async fn aggregate_page_results(
     client: &reqwest::Client,
     model: &str,
-    _original_prompt: &str,
+    original_prompt: &str,
     page_results: &[String],
     temperature: f32,
     max_tokens: i32,
@@ -323,24 +324,30 @@ async fn aggregate_page_results(
         .collect::<Vec<_>>()
         .join("\n\n");
 
+    // Generic aggregation prompt - defers to original prompt for formatting rules
     let aggregate_prompt = format!(
-        r#"You have analyzed a multi-page bank statement. Below are the individual page analyses.
+        r#"You have analyzed a multi-page document. Below are the individual page analyses.
 
 YOUR TASK:
-Combine these page analyses into a single, comprehensive analysis. 
+Combine these page analyses into one cohesive final response.
 
 IMPORTANT:
-- For Positions: Combine ALL positions found across all pages
-- For True Revenue: SUM the deposits from all pages (excluding loan deposits)
-- For Negative Days: SUM the negative days from all pages
-- For Debt Service: SUM all debt payments found across pages
-- Ensure the final JSON is complete and accurate
+- Merge all findings from all pages into a single comprehensive analysis
+- You MUST strictly adhere to the formatting and rules requested in the original prompt
+- If the original prompt requested JSON, return ONLY valid JSON
+- Combine numerical values (sums, counts, etc.) appropriately across pages
+- Do not introduce any new information - only synthesize what was extracted
 
-Return ONLY the final combined JSON analysis.
-
+ORIGINAL PROMPT (follow these rules and format):
 {}
 
-FINAL COMBINED JSON ANALYSIS:"# , combined_context);
+PAGE ANALYSES TO COMBINE:
+{}
+
+FINAL COMBINED RESPONSE (follow original prompt format exactly):"#,
+        original_prompt,
+        combined_context
+    );
 
     let request = OllamaChatRequest {
         model: model.to_string(),

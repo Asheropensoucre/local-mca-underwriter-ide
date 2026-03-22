@@ -441,16 +441,17 @@
           <!-- Prompt Tab -->
           <div v-if="activeTab === 'prompt'" class="space-y-4">
             <div>
-              <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Master Underwriting Prompt</label>
+              <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Custom Underwriting Instructions</label>
+              <p class="text-xs text-gray-600 mb-2">Add specific focus areas. Core MCA rules are automatically applied.</p>
               <textarea
-                v-model="masterPrompt"
+                v-model="userCustomInstructions"
                 class="w-full h-[400px] bg-background border border-border rounded-lg px-4 py-3 text-sm font-mono text-gray-300 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary resize-none"
                 spellcheck="false"
               ></textarea>
             </div>
             <button
               class="w-full bg-surface hover:bg-border text-gray-300 font-medium py-2 rounded-lg transition-colors"
-              @click="resetPrompt"
+              @click="resetCustomInstructions"
             >
               Reset to Default
             </button>
@@ -556,68 +557,36 @@ const modelConfig = ref({
   contextWindow: 8192
 })
 
-// Master Underwriting Prompt - MCA SPECIFIC
-const masterPrompt = ref(`# MCA Underwriting Analysis - Expert Extraction
+// ═══════════════════════════════════════════════════════════════════════════
+// CURSOR-STYLE PROMPT ARCHITECTURE
+// System prompt is hardcoded to ensure consistent JSON output
+// User can only add custom instructions on top of the system prompt
+// ═══════════════════════════════════════════════════════════════════════════
 
-## Role
-You are an expert MCA (Merchant Cash Advance) underwriter with 15+ years of experience.
+const SYSTEM_PROMPT = `You are an elite MCA Underwriting AI. Analyze the provided document.
 
-## Critical Extraction Rules
+STRICT RULES:
+1. Position Detection: Scan debits for known MCA lenders (OnDeck, Kabbage, etc.) or recurring daily/weekly identical ACH withdrawals.
+2. Funding Detection: Scan deposits for matches to debited lenders to find 'Funded Amount' and 'Date'.
+3. True Revenue: Calculate total monthly deposits EXCLUDING incoming loan/MCA deposits.
+4. Negative Days: Count the exact number of days the 'Daily Ending Balance' fell below $0.00.
 
-### 1. POSITION DETECTION
-- Scan all debits for known MCA lenders: OnDeck, Kabbage, Fundbox, BlueVine, PayPal Working Capital, Square Capital, Stripe Capital, MerchantAdvancement, RapidAdvance, etc.
-- If no lender name visible, flag recurring identical ACH withdrawals (daily/weekly) as assumed positions
-- Extract: lender name, payment amount, frequency (daily/weekly), funded amount, funded date
-
-### 2. TRUE REVENUE CALCULATION
-- Sum ALL deposits for the statement period
-- EXCLUDE any incoming loan/MCA deposits (from lenders, factoring, etc.)
-- Report the "True Revenue" as total deposits minus loan deposits
-
-### 3. NEGATIVE DAYS
-- Count the EXACT number of days where "Daily Ending Balance" fell below $0.00
-- Do NOT just count NSF fees - count actual negative balance days
-- Report as integer (e.g., 3 means 3 days negative)
-
-### 4. DEBT & LEVERAGE
-- Calculate total daily/weekly debt service from all positions
-- Determine safe new daily payment based on revenue minus existing obligations
-- Calculate leverage ratio (debt service / daily revenue)
-
-## Output Format - STRICT JSON
-Return ONLY valid JSON matching this exact schema:
-
+You MUST return ONLY valid JSON matching this exact structure, with no markdown formatting or extra text:
 {
-  "business": {
-    "name": "Business name",
-    "account": "Last 4 digits only",
-    "period": "Statement period"
-  },
-  "positions": [
-    {
-      "lender": "Lender name",
-      "payment": 000.00,
-      "frequency": "daily|weekly",
-      "funded": 0000
-    }
-  ],
-  "bank_metrics": {
-    "true_revenue": 0000,
-    "negative_days": 0,
-    "avg_daily_balance": 0000,
-    "nsf_count": 0
-  },
-  "debt_leverage": {
-    "total_debt_service": 000.00,
-    "safe_new_payment": 000.00,
-    "leverage_ratio": "X.X"
-  },
-  "risk": {
-    "score": 0
-  },
-  "recommendation": "APPROVE|DENY|REVIEW",
-  "notes": "Brief analysis notes"
-}`)
+  "merchant_info": { "name": "string", "month_year": "string" },
+  "positions": [ { "lender": "string", "payment": number, "frequency": "daily|weekly", "funded_amount": number, "funded_date": "string" } ],
+  "debt_summary": { "total_positions": number, "total_daily_debt_service": number, "total_weekly_debt_service": number },
+  "bank_metrics": { "total_monthly_revenue": number, "average_daily_balance": number, "negative_days_count": number },
+  "leverage_analysis": { "is_over_leveraged": boolean, "estimated_safe_new_daily_payment": number }
+}`
+
+// User-customizable instructions (editable in UI)
+const userCustomInstructions = ref('Add custom underwriting focus areas here...')
+
+// Build the full prompt by merging system prompt + user instructions
+const buildFullPrompt = () => {
+  return SYSTEM_PROMPT + '\n\nUSER CUSTOM INSTRUCTIONS:\n' + userCustomInstructions.value
+}
 
 const fileName = computed(() => {
   if (!filePath.value) return ''
@@ -630,70 +599,8 @@ const tabs = [
   { id: 'settings', label: 'Settings' }
 ]
 
-const defaultPrompt = `# MCA Underwriting Analysis - Expert Extraction
-
-## Role
-You are an expert MCA (Merchant Cash Advance) underwriter with 15+ years of experience.
-
-## Critical Extraction Rules
-
-### 1. POSITION DETECTION
-- Scan all debits for known MCA lenders: OnDeck, Kabbage, Fundbox, BlueVine, PayPal Working Capital, Square Capital, Stripe Capital, MerchantAdvancement, RapidAdvance, etc.
-- If no lender name visible, flag recurring identical ACH withdrawals (daily/weekly) as assumed positions
-- Extract: lender name, payment amount, frequency (daily/weekly), funded amount, funded date
-
-### 2. TRUE REVENUE CALCULATION
-- Sum ALL deposits for the statement period
-- EXCLUDE any incoming loan/MCA deposits (from lenders, factoring, etc.)
-- Report the "True Revenue" as total deposits minus loan deposits
-
-### 3. NEGATIVE DAYS
-- Count the EXACT number of days where "Daily Ending Balance" fell below $0.00
-- Do NOT just count NSF fees - count actual negative balance days
-- Report as integer (e.g., 3 means 3 days negative)
-
-### 4. DEBT & LEVERAGE
-- Calculate total daily/weekly debt service from all positions
-- Determine safe new daily payment based on revenue minus existing obligations
-- Calculate leverage ratio (debt service / daily revenue)
-
-## Output Format - STRICT JSON
-Return ONLY valid JSON matching this exact schema:
-
-{
-  "business": {
-    "name": "Business name",
-    "account": "Last 4 digits only",
-    "period": "Statement period"
-  },
-  "positions": [
-    {
-      "lender": "Lender name",
-      "payment": 000.00,
-      "frequency": "daily|weekly",
-      "funded": 0000
-    }
-  ],
-  "bank_metrics": {
-    "true_revenue": 0000,
-    "negative_days": 0,
-    "avg_daily_balance": 0000,
-    "nsf_count": 0
-  },
-  "debt_leverage": {
-    "total_debt_service": 000.00,
-    "safe_new_payment": 000.00,
-    "leverage_ratio": "X.X"
-  },
-  "risk": {
-    "score": 0
-  },
-  "recommendation": "APPROVE|DENY|REVIEW",
-  "notes": "Brief analysis notes"
-}`
-
-const resetPrompt = () => {
-  masterPrompt.value = defaultPrompt
+const resetCustomInstructions = () => {
+  userCustomInstructions.value = 'Add custom underwriting focus areas here...'
 }
 
 // Check Ollama connection on mount
@@ -824,7 +731,7 @@ const handleUnderwrite = async () => {
 
     const result = await invoke('send_pdf_to_ollama', {
       model: selectedModel.value,
-      prompt: masterPrompt.value,
+      prompt: buildFullPrompt(),
       pdfPath: filePath.value,
       temperature: modelConfig.value.temperature,
       maxTokens: modelConfig.value.maxTokens
