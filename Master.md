@@ -1,8 +1,3 @@
-I am 100% ready. I have taken everything we just discussed—keeping the dark mode Zed/Cursor feel, dropping the "IDE/hacker terminal" vibe for a corporate hybrid workspace, setting up the AI Chat Assistant, and adding the strict guardrails to prevent the layout from unmounting and causing that blank screen bug.
-
-Here is the complete, fully revised Master.md. You can copy this entire block and use it to completely overwrite your current Master.md file:
-
-Markdown
 # Project: Local MCA Underwriter Workspace
 # Core Directive: Performance at Scale. Component-by-component development.
 # Target OS: Linux Primary (Cross-platform via Tauri)
@@ -62,7 +57,20 @@ Build a blazing-fast, local-first underwriting workspace focused on deep-work an
 5. ✅ Loading states with progress bar
 6. ✅ Auto-switch to Underwrite tab after analysis
 
-## 7. Current Status
+## 7. Phase 6: UI Pivot - Blank Screen Fix ✅ COMPLETE
+
+**Problem:** The `v-if/v-else` state logic was destroying (unmounting) the PDF viewer and right panel during the `ANALYZING` state, causing a silent crash when trying to rebuild the DOM.
+
+**Solution:** 
+- Replaced `v-if/v-else` with `v-show` for the main dashboard layout
+- Left Panel (PDF Viewer) and Right Panel (Chat/Dashboard) now ALWAYS remain mounted once a file is loaded
+- Removed the raw terminal output box entirely
+- Added targeted loading states inside the Right Panel during analysis
+- States (`ANALYZING`, `ERROR`, `COMPLETE`, `READY`) now render content within the persistent Right Panel
+
+**Result:** No more blank screen crashes. The layout remains stable throughout all state transitions.
+
+## 8. Current Status
 
 **ALL PHASES COMPLETE** - App is fully functional:
 
@@ -71,7 +79,7 @@ Build a blazing-fast, local-first underwriting workspace focused on deep-work an
 2. Select Ollama vision model → Auto-populated from local Ollama
 3. Click "Underwrite File" → PDF converted to grayscale JPEG
 4. Wait 30-90 seconds → Vision model analyzes document
-5. Results displayed → Dashboard / AI Chat Feed (auto-switched)
+5. Results displayed → Dashboard cards + AI Chat Feed (auto-switched)
 
 ### Technical Highlights:
 - **Grayscale JPEG compression:** 55-60% size reduction
@@ -79,8 +87,9 @@ Build a blazing-fast, local-first underwriting workspace focused on deep-work an
 - **Error reporting:** Specific error messages (timeout/connect/request)
 - **Security:** Temp files auto-deleted after processing
 - **UX:** Progress bar, loading messages, auto-tab switching
+- **Stability:** Persistent layout prevents blank screen crashes
 
-## 8. Key Technical Decisions
+## 9. Key Technical Decisions
 
 ### Why Grayscale JPEG?
 - Bank statements are B&W - no color info lost
@@ -103,7 +112,12 @@ Build a blazing-fast, local-first underwriting workspace focused on deep-work an
 - Better error reporting
 - Industry-standard Rust HTTP client
 
-## 9. Current Development Hurdles (WIP - TO BE FIXED)
+### Why Persistent Layout (v-show vs v-if)?
+- Heavy PDF viewer components crash when unmounted/rebuilt rapidly
+- State transitions should not destroy DOM structure
+- Targeted loaders (inside panels) are smoother than full-page overlays
+
+## 10. Current Development Hurdles (WIP - TO BE FIXED)
 
 ### Multi-Page Handling
 - **Current Limitation:** Sends only FIRST page to vision model
@@ -120,17 +134,19 @@ Build a blazing-fast, local-first underwriting workspace focused on deep-work an
 - **Issues:** qwen3-vl (API incompatibility)
 - **Recommendation:** Use llama3.2-vision or llava
 
-## 9b. State Machine Implementation ✅
+## 11. State Machine Implementation ✅
 
 **Problem Solved:** Boolean spaghetti (`isLoading`, `fileSelected`, `activeTab`) caused race conditions and blank screens after analysis completed.
 
 **Solution:** Explicit state machine with clear transitions:
 
 ```javascript
-const appState = ref('IDLE') 
+const appState = ref('IDLE')
 // States: 'IDLE' | 'LOADING_PDF' | 'READY' | 'ANALYZING' | 'COMPLETE' | 'ERROR'
-State Transitions:
+```
 
+**State Transitions:**
+```
 IDLE ──[upload PDF]──→ LOADING_PDF ──[PDF processed]──→ READY
                                                               │
                                                               ↓
@@ -139,106 +155,74 @@ ERROR ←──[Ollama fails]── ANALYZING ←──[click Underwrite]──�
   └──[user retries]────────→┘
                              ↓
                         COMPLETE (display results in Chat/Dashboard)
-Benefits:
+```
 
-No more blank screens after loading
+**Benefits:**
+- No more blank screens after loading
+- Clear UI for each state
+- Explicit error handling with retry button
+- Predictable state transitions
+- Debuggable state flow
 
-Clear UI for each state
+## 12. Future Roadmap
 
-Explicit error handling with retry button
+### High Priority
+- [ ] Dashboard parsing (extract JSON into UI cards) - **IN PROGRESS**
+- [ ] Conversational Follow-up Chat UI
+- [ ] Export analysis to JSON/CSV
+- [ ] Analysis history (local storage)
+- [ ] Multi-page full analysis (all pages, not just first)
 
-Predictable state transitions
+### Medium Priority
+- [ ] Batch processing (multiple PDFs)
+- [ ] PDF text layer for search
+- [ ] Custom prompt templates (save/load)
+- [ ] Side-by-side PDF comparison
 
-Debuggable state flow
+### Low Priority
+- [ ] Model download manager (built-in ollama pull)
+- [ ] Progress indication during Ollama processing
+- [ ] Risk scoring visualization
 
-10. Future Roadmap
-High Priority
-[ ] Multi-page full analysis (all pages, not just first)
+## 13. Strict Guidelines (CRITICAL)
+1. Keep the UI extremely clean, minimal, and dark-themed (think Zed or Cursor aesthetics).
+2. Build feature-by-feature, test thoroughly before moving on.
+3. 100% local/offline - no cloud dependencies.
+4. Performance at scale - optimize for large documents.
+5. Security first - auto-cleanup of temp files.
+6. **DO NOT unmount the layout:** The PDF viewer and right-hand dashboard must remain visible during all states (including ANALYZING and COMPLETE) to prevent rendering crashes and blank screens. Use targeted loaders instead of replacing the whole DOM.
 
-[ ] Dashboard parsing (extract JSON into UI cards)
-
-[ ] Conversational Follow-up Chat UI
-
-[ ] Export analysis to JSON/CSV
-
-[ ] Analysis history (local storage)
-
-Medium Priority
-[ ] Batch processing (multiple PDFs)
-
-[ ] PDF text layer for search
-
-[ ] Custom prompt templates (save/load)
-
-[ ] Side-by-side PDF comparison
-
-Low Priority
-[ ] Model download manager (built-in ollama pull)
-
-[ ] Progress indication during Ollama processing
-
-[ ] Risk scoring visualization
-
-11. Strict Guidelines (CRITICAL)
-Keep the UI extremely clean, minimal, and dark-themed (think Zed or Cursor aesthetics).
-
-Build feature-by-feature, test thoroughly before moving on.
-
-100% local/offline - no cloud dependencies.
-
-Performance at scale - optimize for large documents.
-
-Security first - auto-cleanup of temp files.
-
-DO NOT unmount the layout: The PDF viewer and right-hand dashboard must remain visible during all states (including ANALYZING and COMPLETE) to prevent rendering crashes and blank screens. Use targeted loaders instead of replacing the whole DOM.
-
-12. Testing Checklist
+## 14. Testing Checklist
 Before any release:
 
-[ ] PDF upload (single page)
+- [ ] PDF upload (single page)
+- [ ] PDF upload (multi-page)
+- [ ] Drag and drop
+- [ ] Model selection
+- [ ] Connection test
+- [ ] Underwrite flow (full)
+- [ ] Timeout handling
+- [ ] Error states
+- [ ] Prompt editing
+- [ ] Settings adjustment
+- [ ] Chat/Dashboard UI renders properly
+- [ ] Zoom controls
+- [ ] Page navigation
+- [ ] **Layout persists during ANALYZING state** ✅
 
-[ ] PDF upload (multi-page)
+## 15. Performance Benchmarks
 
-[ ] Drag and drop
+### Image Processing
+- 3-page PDF @ 72 DPI: 3-4 seconds
+- Grayscale conversion: <1 second per page
+- JPEG compression: <1 second per page
 
-[ ] Model selection
+### Ollama Processing
+- llama3.2-vision: 30-60 seconds per page
+- llava: 45-90 seconds per page
+- qwen3-vl: Unstable (avoid)
 
-[ ] Connection test
-
-[ ] Underwrite flow (full)
-
-[ ] Timeout handling
-
-[ ] Error states
-
-[ ] Prompt editing
-
-[ ] Settings adjustment
-
-[ ] Chat/Dashboard UI renders properly
-
-[ ] Zoom controls
-
-[ ] Page navigation
-
-13. Performance Benchmarks
-Image Processing
-3-page PDF @ 72 DPI: 3-4 seconds
-
-Grayscale conversion: <1 second per page
-
-JPEG compression: <1 second per page
-
-Ollama Processing
-llama3.2-vision: 30-60 seconds per page
-
-llava: 45-90 seconds per page
-
-qwen3-vl: Unstable (avoid)
-
-Memory Usage
-App baseline: ~150MB
-
-PDF viewer: +50MB per large PDF
-
-Ollama processing: Model-dependent (2-8GB)
+### Memory Usage
+- App baseline: ~150MB
+- PDF viewer: +50MB per large PDF
+- Ollama processing: Model-dependent (2-8GB)

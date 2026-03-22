@@ -155,32 +155,74 @@
               </button>
             </div>
 
-            <!-- COMPLETE State - Dashboard Cards + Chat -->
+            <!-- COMPLETE State - Dashboard Cards + Analysis -->
             <div v-else-if="appState === 'COMPLETE'" class="flex-1 flex flex-col space-y-4">
-              <!-- Dashboard Cards -->
+              <!-- Business Info Header -->
+              <div v-if="parsedData?.business" class="bg-background border border-border rounded-lg p-4">
+                <h4 class="text-sm font-medium text-gray-300 mb-2">Business Information</h4>
+                <div class="grid grid-cols-2 gap-4 text-sm">
+                  <div>
+                    <span class="text-gray-500">Business:</span>
+                    <span class="text-gray-200 ml-2">{{ parsedData.business.name || 'N/A' }}</span>
+                  </div>
+                  <div>
+                    <span class="text-gray-500">Account:</span>
+                    <span class="text-gray-200 ml-2">{{ parsedData.business.account || 'N/A' }}</span>
+                  </div>
+                  <div class="col-span-2">
+                    <span class="text-gray-500">Period:</span>
+                    <span class="text-gray-200 ml-2">{{ parsedData.business.period || 'N/A' }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Dashboard Metrics Cards -->
               <div class="grid grid-cols-2 gap-3">
                 <div class="bg-background border border-border rounded-lg p-3">
-                  <p class="text-xs text-gray-500 uppercase">Avg Balance</p>
-                  <p class="text-lg font-semibold text-gray-200">$45,230</p>
+                  <p class="text-xs text-gray-500 uppercase">Avg Daily Balance</p>
+                  <p class="text-lg font-semibold text-gray-200">{{ formatCurrency(parsedData?.metrics?.avg_daily_balance) }}</p>
                 </div>
                 <div class="bg-background border border-border rounded-lg p-3">
                   <p class="text-xs text-gray-500 uppercase">Total Deposits</p>
-                  <p class="text-lg font-semibold text-green-400">$285,000</p>
+                  <p class="text-lg font-semibold text-green-400">{{ formatCurrency(parsedData?.metrics?.total_deposits) }}</p>
                 </div>
                 <div class="bg-background border border-border rounded-lg p-3">
-                  <p class="text-xs text-gray-500 uppercase">Withdrawals</p>
-                  <p class="text-lg font-semibold text-red-400">$267,000</p>
+                  <p class="text-xs text-gray-500 uppercase">Total Withdrawals</p>
+                  <p class="text-lg font-semibold text-red-400">{{ formatCurrency(parsedData?.metrics?.total_withdrawals) }}</p>
                 </div>
+                <div class="bg-background border border-border rounded-lg p-3">
+                  <p class="text-xs text-gray-500 uppercase">NSF Count</p>
+                  <p class="text-lg font-semibold" :class="parsedData?.metrics?.nsf_count > 0 ? 'text-red-400' : 'text-green-400'">{{ parsedData?.metrics?.nsf_count ?? 'N/A' }}</p>
+                </div>
+              </div>
+
+              <!-- Risk & Recommendation Row -->
+              <div class="grid grid-cols-2 gap-3">
                 <div class="bg-background border border-border rounded-lg p-3">
                   <p class="text-xs text-gray-500 uppercase">Risk Score</p>
-                  <p class="text-lg font-semibold text-yellow-400">8/10</p>
+                  <p class="text-lg font-semibold" :class="getRiskScoreColor(parsedData?.risk?.score)">{{ parsedData?.risk?.score ?? 'N/A' }}/10</p>
+                </div>
+                <div class="bg-background border border-border rounded-lg p-3 flex items-center justify-between">
+                  <div>
+                    <p class="text-xs text-gray-500 uppercase">Recommendation</p>
+                    <p class="text-lg font-semibold text-gray-200">{{ parsedData?.recommendation || 'N/A' }}</p>
+                  </div>
+                  <div class="w-3 h-3 rounded-full" :class="getRecommendationColor(parsedData?.recommendation)"></div>
                 </div>
               </div>
 
               <!-- Analysis Notes -->
               <div class="bg-background border border-border rounded-lg p-4 flex-1">
-                <h4 class="text-sm font-medium text-gray-300 mb-2">Analysis Summary</h4>
-                <p class="text-sm text-gray-400 whitespace-pre-wrap">{{ analysisResult || rawResponse }}</p>
+                <div class="flex items-center justify-between mb-2">
+                  <h4 class="text-sm font-medium text-gray-300">Analysis Notes</h4>
+                  <button
+                    @click="copyResults"
+                    class="text-xs px-3 py-1 bg-surface hover:bg-border border border-border rounded transition-colors"
+                  >
+                    {{ copyButtonText }}
+                  </button>
+                </div>
+                <p class="text-sm text-gray-400 whitespace-pre-wrap">{{ parsedData?.notes || rawResponse }}</p>
               </div>
             </div>
 
@@ -279,6 +321,7 @@ const pdfSource = ref(null)
 // Analysis data
 const analysisResult = ref(null) // Parsed JSON from AI
 const rawResponse = ref('') // Raw text from AI
+const parsedData = ref(null) // Structured parsed data for dashboard
 
 // UI state
 const activeTab = ref('underwrite')
@@ -538,6 +581,10 @@ const handleUnderwrite = async () => {
     // Store results
     rawResponse.value = result
     analysisResult.value = result
+    
+    // Parse JSON from response
+    parsedData.value = parseJsonFromResponse(result)
+    console.log('[Underwrite] Parsed dashboard data:', parsedData.value)
 
     // Transition: ANALYZING → COMPLETE
     appState.value = 'COMPLETE'
@@ -565,4 +612,102 @@ const testConnection = async () => {
     appState.value = 'ERROR'
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// JSON PARSING - Extract structured data from AI response
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Parse JSON from AI response text
+ * Handles cases where JSON is wrapped in markdown code blocks or mixed with prose
+ */
+const parseJsonFromResponse = (text) => {
+  if (!text) return null
+  
+  try {
+    // Try parsing the entire text first
+    return JSON.parse(text)
+  } catch {
+    // Look for JSON in markdown code blocks
+    const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/)
+    if (codeBlockMatch) {
+      try {
+        return JSON.parse(codeBlockMatch[1].trim())
+      } catch {
+        // Fall through to regex extraction
+      }
+    }
+    
+    // Look for JSON object pattern
+    const jsonMatch = text.match(/\{[\s\S]*\}/)
+    if (jsonMatch) {
+      try {
+        return JSON.parse(jsonMatch[0])
+      } catch {
+        console.warn('Found JSON-like text but parsing failed')
+      }
+    }
+  }
+  
+  return null
+}
+
+/**
+ * Format currency value
+ */
+const formatCurrency = (value) => {
+  if (value === null || value === undefined) return 'N/A'
+  const num = typeof value === 'string' ? parseFloat(value.replace(/[^0-9.-]/g, '')) : value
+  if (isNaN(num)) return 'N/A'
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0
+  }).format(num)
+}
+
+/**
+ * Get recommendation badge color
+ */
+const getRecommendationColor = (recommendation) => {
+  if (!recommendation) return 'bg-gray-500'
+  const rec = recommendation.toUpperCase()
+  if (rec === 'APPROVE') return 'bg-green-500'
+  if (rec === 'DENY') return 'bg-red-500'
+  if (rec === 'REVIEW') return 'bg-yellow-500'
+  return 'bg-gray-500'
+}
+
+/**
+ * Get risk score color
+ */
+const getRiskScoreColor = (score) => {
+  if (score === null || score === undefined) return 'text-gray-400'
+  if (score >= 8) return 'text-green-400'
+  if (score >= 5) return 'text-yellow-400'
+  return 'text-red-400'
+}
+
+/**
+ * Copy results to clipboard
+ */
+const copyResults = async () => {
+  const dataToCopy = parsedData.value || analysisResult.value
+  if (!dataToCopy) return
+  
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(dataToCopy, null, 2))
+    // Show brief success feedback
+    const originalText = copyButtonText.value
+    copyButtonText.value = 'Copied!'
+    setTimeout(() => {
+      copyButtonText.value = originalText
+    }, 2000)
+  } catch (err) {
+    console.error('Failed to copy:', err)
+  }
+}
+
+const copyButtonText = ref('Copy Results')
 </script>
