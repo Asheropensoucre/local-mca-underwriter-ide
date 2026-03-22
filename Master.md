@@ -3,10 +3,11 @@
 # Target OS: Linux Primary (Cross-platform via Tauri)
 
 ## 1. Project Vision
-Build a blazing-fast, local-first underwriting workspace focused on deep-work and speed for finance professionals.
+Build a blazing-fast, local-first underwriting workspace focused on deep-work and speed for MCA finance professionals.
 - Environment: 100% local, offline-first. No cloud leakage.
 - Tech Stack: Rust (Backend) + Tauri (App Framework) + Vue.js (Frontend) + Tailwind CSS (Styling).
-- Vibe: Dark mode, minimalist, Zed/Cursor-aesthetic. Corporate hybrid app (professional Fintech meets developer-speed). Use a modern AI Chat Panel instead of a raw terminal. No raw JSON dumps.
+- Vibe: Dark mode, minimalist, Zed/Cursor-aesthetic. Corporate hybrid app (professional Fintech meets developer-speed). Use a modern AI Chat Panel.
+- Core UX: Dynamic workspace. 60/40 split for setup, shifting to 30/70 split for deep data review.
 
 ## 2. Phase 1: "Command Center" UI Scaffolding ✅ COMPLETE
 
@@ -53,215 +54,78 @@ Build a blazing-fast, local-first underwriting workspace focused on deep-work an
 1. ✅ Master Underwriting Prompt editor
 2. ✅ Tab navigation (Underwrite | Prompt | Settings)
 3. ✅ Zed-style AI Chat Assistant view (Dashboard + Conversational UI)
-4. ✅ Prompt reset to default
-5. ✅ Loading states with progress bar
+4. ✅ Dashboard parsing (extract JSON into UI cards)
+5. ✅ Export analysis to JSON/CSV & Print-friendly view
 6. ✅ Auto-switch to Underwrite tab after analysis
 
-## 7. Phase 6: UI Pivot - Blank Screen Fix ✅ COMPLETE
+## 7. Current Status
 
-**Problem:** The `v-if/v-else` state logic was destroying (unmounting) the PDF viewer and right panel during the `ANALYZING` state, causing a silent crash when trying to rebuild the DOM.
-
-**Solution:** 
-- Replaced `v-if/v-else` with `v-show` for the main dashboard layout
-- Left Panel (PDF Viewer) and Right Panel (Chat/Dashboard) now ALWAYS remain mounted once a file is loaded
-- Removed the raw terminal output box entirely
-- Added targeted loading states inside the Right Panel during analysis
-- States (`ANALYZING`, `ERROR`, `COMPLETE`, `READY`) now render content within the persistent Right Panel
-
-**Result:** No more blank screen crashes. The layout remains stable throughout all state transitions.
-
-## 8. Phase 7: Analysis Dashboard ✅ COMPLETE
-
-**Problem:** AI response was displayed as raw text without structured visualization.
-
-**Solution:**
-- Added JSON parsing utility to extract structured data from AI responses
-- Built premium dashboard cards with proper formatting
-- Implemented color-coded indicators for recommendations and risk scores
-- Added Copy Results button with clipboard feedback
-
-**Result:** Professional dashboard displaying business info, financial metrics, risk assessment, and recommendations in clean UI cards.
-
-## 9. Phase 8: Follow-up Chat ✅ COMPLETE
-
-**Problem:** Users couldn't ask follow-up questions about the analysis without re-running the full analysis.
-
-**Solution:**
-- Added conversational chat interface below dashboard cards
-- Context-aware prompts include full previous analysis
-- Message thread with user/AI messages, loading states
-- Same PDF sent for vision model reference
-
-**Result:** Users can now ask unlimited follow-up questions about the analyzed document with full context retention.
-
-## 10. Phase 9: Export & Print ✅ COMPLETE
-
-**Problem:** Users needed to save and share analysis results externally.
-
-**Solution:**
-- **JSON Export:** Save full parsed analysis data
-- **CSV Export:** Structured spreadsheet-ready format
-- **Print Report:** Professional light-themed report with print dialog
-- All exports use native file save dialogs
-
-**Result:** Users can export results in multiple formats for record-keeping, sharing, or further analysis in spreadsheets.
-
-## 11. Current Status
-
-**ALL PHASES COMPLETE** - App is fully functional:
+**ALL CORE PHASES COMPLETE** - App is fully functional and ready for advanced MCA logic implementation.
 
 ### User Flow:
-1. Upload PDFs → View in full PDF viewer with navigation
-2. Select Ollama vision model → Auto-populated from local Ollama
+1. Upload PDFs → View in full PDF viewer (60% width)
+2. Select Ollama vision model
 3. Click "Underwrite File" → PDF converted to grayscale JPEG
-4. Wait 5-10 minutes → Vision model analyzes document
-5. Results displayed → Dashboard cards + AI Chat Feed (auto-switched)
-6. Ask follow-up questions → Get instant answers with full context
-7. Export results → Save as JSON, CSV, or print professional report
+4. Results displayed → Dashboard expands (70% width), showing advanced metric cards.
 
-### Technical Highlights:
-- **Grayscale JPEG compression:** 55-60% size reduction
-- **Timeout handling:** 10-minute timeout for vision models
-- **Error reporting:** Specific error messages (timeout/connect/request)
-- **Security:** Temp files auto-deleted after processing
-- **UX:** Progress bar, loading messages, auto-tab switching
-- **Stability:** Persistent layout prevents blank screen crashes
-- **Dashboard:** Parsed JSON into premium UI cards
-- **Chat:** Context-aware follow-up questions
-- **Export:** JSON, CSV, and print report functionality
-
-## 11. Key Technical Decisions
+## 8. Key Technical Decisions
 
 ### Why Grayscale JPEG?
 - Bank statements are B&W - no color info lost
 - 55-60% smaller than color PNG
 - Faster transmission to Ollama
-- Vision models still read text/numbers clearly
-
-### Why Base64 (not file paths)?
-- Ollama API requires Base64 in JSON payload
-- File paths not supported by Ollama REST API
-- Compression makes payload manageable (~85KB per page)
-
-### Why 72 DPI?
-- Screen quality sufficient for text recognition
-- Higher DPI = exponentially larger files
-- Vision models don't need print-quality images
 
 ### Why reqwest (not Tauri HTTP)?
-- More robust timeout handling
-- Better error reporting
-- Industry-standard Rust HTTP client
+- More robust timeout handling and error reporting
 
-### Why Persistent Layout (v-show vs v-if)?
-- Heavy PDF viewer components crash when unmounted/rebuilt rapidly
-- State transitions should not destroy DOM structure
-- Targeted loaders (inside panels) are smoother than full-page overlays
-
-### Why Context-Aware Chat?
-- Re-sending PDF with full analysis context ensures accurate answers
-- Avoids building complex conversation state management
-- Each question is self-contained with full history
-
-## 12. Current Development Hurdles (WIP - TO BE FIXED)
+## 9. Current Development Hurdles (WIP - TO BE FIXED)
 
 ### Multi-Page Handling
 - **Current Limitation:** Sends only FIRST page to vision model
-- **Reason:** Multi-image support unstable in Ollama
 - **Goal:** Implement sequential page analysis or multipart upload to handle full statements.
 
-### Processing Time
-- **Current Limitation:** 5-10 minutes for vision model analysis (single page)
-- **Bottleneck:** Image tokenization in vision encoder, model size, CPU/GPU hardware
-- **Goal:** Streaming responses, model optimization, hardware acceleration
+## 10. Core MCA Underwriting Logic (The AI Prompt Rules)
+The application relies on highly specific prompting to extract true underwriting metrics, not just generic OCR data.
 
-### Model Compatibility
-- **Tested:** llama3.2-vision ✅
-- **Issues:** qwen3-vl (API incompatibility)
-- **Recommendation:** Use llama3.2-vision or llava
+- **Position Detection:** The AI must scan debits for known MCA lenders (OnDeck, Kabbage, Fundbox, etc.). If no name is present, the AI must flag **recurring identical ACH withdrawals** (daily or weekly) as assumed positions.
+- **Funding Detection:** Scan deposits for matches to debited lenders to extract "Funded Amount" and "Funded Date".
+- **True Revenue Calculation:** Total monthly deposits MUST explicitly exclude incoming loan/MCA deposits to determine actual business revenue.
+- **Negative Days:** Do not just count NSF fees. The AI must count the exact number of days the "Daily Ending Balance" fell below $0.00.
+- **Leverage:** Calculate the total daily/weekly debt service of all existing positions to determine how much new daily payment the merchant can afford.
 
-## 13. State Machine Implementation ✅
+## 11. Future Roadmap
 
-**Problem Solved:** Boolean spaghetti (`isLoading`, `fileSelected`, `activeTab`) caused race conditions and blank screens after analysis completed.
-
-**Solution:** Explicit state machine with clear transitions:
-
-```javascript
-const appState = ref('IDLE')
-// States: 'IDLE' | 'LOADING_PDF' | 'READY' | 'ANALYZING' | 'COMPLETE' | 'ERROR'
-```
-
-**State Transitions:**
-```
-IDLE ──[upload PDF]──→ LOADING_PDF ──[PDF processed]──→ READY
-                                                              │
-                                                              ↓
-ERROR ←──[Ollama fails]── ANALYZING ←──[click Underwrite]───┘
-  │                         │
-  └──[user retries]────────→┘
-                             ↓
-                        COMPLETE (display results in Chat/Dashboard)
-```
-
-**Benefits:**
-- No more blank screens after loading
-- Clear UI for each state
-- Explicit error handling with retry button
-- Predictable state transitions
-- Debuggable state flow
-
-## 15. Future Roadmap
-
-### High Priority
-- [x] Dashboard parsing (extract JSON into UI cards) ✅
-- [x] Conversational Follow-up Chat UI ✅
-- [x] Export analysis to JSON/CSV ✅
-- [ ] Analysis history (local storage)
-- [ ] Multi-page full analysis (all pages, not just first)
+### High Priority (The Underwriter Pivot)
+- [ ] **Dynamic UI Resizing:** Animate layout from 60/40 (pre-analysis) to 30/70 (post-analysis) so the dashboard becomes the primary focus.
+- [ ] **Advanced JSON Parsing:** Update the UI cards to display the new "Positions" array, True Revenue, and exact Negative Days count.
+- [ ] **Prompt Rewrite:** Overwrite the default prompt to enforce the rules in Section 10.
+- [ ] Multi-page full analysis (sequential processing)
 
 ### Medium Priority
 - [ ] Batch processing (multiple PDFs)
-- [ ] PDF text layer for search
 - [ ] Custom prompt templates (save/load)
-- [ ] Side-by-side PDF comparison
+- [ ] Analysis history (local storage)
 
 ### Low Priority
-- [ ] Model download manager (built-in ollama pull)
-- [ ] Progress indication during Ollama processing
-- [ ] Risk scoring visualization
+- [ ] Streaming responses (show tokens as generated)
 
-## 15. Strict Guidelines (CRITICAL)
-1. Keep the UI extremely clean, minimal, and dark-themed (think Zed or Cursor aesthetics).
-2. Build feature-by-feature, test thoroughly before moving on.
-3. 100% local/offline - no cloud dependencies.
-4. Performance at scale - optimize for large documents.
-5. Security first - auto-cleanup of temp files.
-6. **DO NOT unmount the layout:** The PDF viewer and right-hand dashboard must remain visible during all states (including ANALYZING and COMPLETE) to prevent rendering crashes and blank screens. Use targeted loaders instead of replacing the whole DOM.
+## 12. Strict Guidelines (CRITICAL)
 
-## 17. Testing Checklist
+- Keep the UI extremely clean, minimal, and dark-themed (think Zed or Cursor aesthetics).
+- Build feature-by-feature, test thoroughly before moving on.
+- 100% local/offline - no cloud dependencies.
+- **Dynamic Layout Constraint:** The PDF viewer and right-hand dashboard must remain visible during all states. Use CSS transitions (e.g., `transition-all duration-300`) to resize the panels smoothly when changing states, rather than unmounting the DOM.
+
+## 13. Testing Checklist
+
 Before any release:
-
-- [ ] PDF upload (single page)
-- [ ] PDF upload (multi-page)
-- [ ] Drag and drop
-- [ ] Model selection
-- [ ] Connection test
-- [ ] Underwrite flow (full)
-- [ ] Timeout handling
-- [ ] Error states
-- [ ] Prompt editing
-- [ ] Settings adjustment
-- [ ] Chat/Dashboard UI renders properly
-- [ ] Zoom controls
-- [ ] Page navigation
 - [ ] Layout persists during ANALYZING state ✅
 - [ ] Dashboard cards display parsed data ✅
-- [ ] Follow-up chat sends questions ✅
-- [ ] Export JSON works ✅
-- [ ] Export CSV works ✅
-- [ ] Print report works ✅
+- [ ] Export JSON/CSV & Print works ✅
+- [ ] **NEW:** UI smoothly transitions to 30/70 split upon completion
+- [ ] **NEW:** Dashboard successfully renders multiple existing positions
 
-## 17. Performance Benchmarks
+## 14. Performance Benchmarks
 
 ### Image Processing
 - 3-page PDF @ 72 DPI: 3-4 seconds
@@ -271,7 +135,7 @@ Before any release:
 ### Ollama Processing
 - llama3.2-vision: 5-10 minutes per page (hardware dependent)
 - llava: 5-10 minutes per page (hardware dependent)
-- qwen3-vl: Unstable (avoid)
+- qwen2.5-vl: Best small model to use (Highly Recommended)
 
 ### Memory Usage
 - App baseline: ~150MB
