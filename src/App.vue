@@ -224,6 +224,59 @@
                 </div>
                 <p class="text-sm text-gray-400 whitespace-pre-wrap">{{ parsedData?.notes || rawResponse }}</p>
               </div>
+
+              <!-- Follow-up Chat Section -->
+              <div class="border-t border-border pt-4">
+                <h4 class="text-sm font-medium text-gray-300 mb-3">Follow-up Questions</h4>
+                
+                <!-- Chat Messages -->
+                <div class="space-y-3 mb-3 max-h-64 overflow-auto">
+                  <div v-if="chatMessages.length === 0" class="text-center py-6 text-gray-500 text-sm">
+                    Ask follow-up questions about this analysis
+                  </div>
+                  <div
+                    v-for="(msg, idx) in chatMessages"
+                    :key="idx"
+                    class="rounded-lg p-3 text-sm"
+                    :class="msg.role === 'user' ? 'bg-primary/20 border border-primary/30' : 'bg-surface border border-border'"
+                  >
+                    <div class="flex items-center gap-2 mb-1">
+                      <span class="text-xs font-medium" :class="msg.role === 'user' ? 'text-primary' : 'text-gray-400'">
+                        {{ msg.role === 'user' ? 'You' : 'Assistant' }}
+                      </span>
+                    </div>
+                    <p class="text-gray-300 whitespace-pre-wrap">{{ msg.content }}</p>
+                  </div>
+                  <div v-if="isChatLoading" class="bg-surface border border-border rounded-lg p-3">
+                    <div class="flex items-center gap-2">
+                      <div class="animate-spin rounded-full h-4 w-4 border-2 border-primary border-t-transparent"></div>
+                      <span class="text-xs text-gray-500">Thinking...</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Chat Input -->
+                <div class="flex gap-2">
+                  <input
+                    v-model="chatInput"
+                    @keyup.enter="sendChatMessage"
+                    type="text"
+                    placeholder="Ask a follow-up question..."
+                    class="flex-1 bg-background border border-border rounded-lg px-3 py-2 text-sm text-gray-300 placeholder-gray-600 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                    :disabled="isChatLoading || !ollamaConnected"
+                  />
+                  <button
+                    @click="sendChatMessage"
+                    :disabled="isChatLoading || !chatInput.trim() || !ollamaConnected"
+                    class="px-4 py-2 bg-primary hover:bg-blue-600 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg text-white text-sm font-medium transition-colors"
+                  >
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                    </svg>
+                  </button>
+                </div>
+                <p v-if="!ollamaConnected" class="text-xs text-red-400 mt-2">Connect to Ollama to send questions</p>
+              </div>
             </div>
 
             <!-- READY State - Waiting for Analysis -->
@@ -322,6 +375,11 @@ const pdfSource = ref(null)
 const analysisResult = ref(null) // Parsed JSON from AI
 const rawResponse = ref('') // Raw text from AI
 const parsedData = ref(null) // Structured parsed data for dashboard
+
+// Chat data
+const chatMessages = ref([]) // Array of { role: 'user' | 'assistant', content: string }
+const chatInput = ref('')
+const isChatLoading = ref(false)
 
 // UI state
 const activeTab = ref('underwrite')
@@ -710,4 +768,48 @@ const copyResults = async () => {
 }
 
 const copyButtonText = ref('Copy Results')
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FOLLOW-UP CHAT - Send questions to Ollama with context
+// ═══════════════════════════════════════════════════════════════════════════
+
+const sendChatMessage = async () => {
+  const question = chatInput.value.trim()
+  if (!question || !ollamaConnected.value || isChatLoading.value) return
+
+  // Add user message to chat
+  chatMessages.value.push({ role: 'user', content: question })
+  chatInput.value = ''
+  isChatLoading.value = true
+
+  try {
+    // Build context-aware prompt
+    const contextPrompt = `
+Previous analysis of this bank statement:
+${rawResponse.value}
+
+User follow-up question: ${question}
+
+Provide a concise, helpful answer based on the bank statement analysis above.`
+
+    const response = await invoke('send_pdf_to_ollama', {
+      model: selectedModel.value,
+      prompt: contextPrompt,
+      pdfPath: filePath.value,
+      temperature: modelConfig.value.temperature,
+      maxTokens: modelConfig.value.maxTokens
+    })
+
+    // Add assistant response to chat
+    chatMessages.value.push({ role: 'assistant', content: response })
+  } catch (error) {
+    console.error('Chat error:', error)
+    chatMessages.value.push({ 
+      role: 'assistant', 
+      content: `Error: ${error}\n\nPlease try again or check your Ollama connection.` 
+    })
+  } finally {
+    isChatLoading.value = false
+  }
+}
 </script>

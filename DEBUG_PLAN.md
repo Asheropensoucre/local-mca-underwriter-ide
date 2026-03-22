@@ -104,12 +104,58 @@ parseJsonFromResponse(text) // Extracts JSON from various formats
 
 ---
 
-## Step 5: Add Follow-up Chat
+## Step 5: Add Follow-up Chat ✅ COMPLETE
 
-- [ ] Add a sleek Chat input field below the analysis cards
-- [ ] Send follow-up questions to Ollama
-- [ ] Display the conversation thread above the input
-- [ ] Maintain context (same PDF, same session)
+**Status:** ✅ COMPLETED
+
+**Goal:** Add conversational follow-up questions about the analyzed PDF.
+
+### Completed Tasks:
+- [x] Add a sleek Chat input field below the analysis cards
+- [x] Send follow-up questions to Ollama
+- [x] Display the conversation thread above the input
+- [x] Maintain context (same PDF, same session)
+
+### Implementation Details:
+
+**Chat UI Components:**
+- Chat header ("Follow-up Questions")
+- Message thread (scrollable, max-h-64)
+  - User messages: Blue background with primary border
+  - Assistant messages: Surface background with border
+  - Loading state: Spinner with "Thinking..."
+- Input field with Enter key support
+- Send button (disabled when loading/disconnected)
+- Empty state: "Ask follow-up questions about this analysis"
+
+**State Management:**
+```javascript
+chatMessages = ref([])      // Array of { role, content }
+chatInput = ref('')         // Current input
+isChatLoading = ref(false)  // Loading indicator
+```
+
+**Context Preservation:**
+- Includes full previous analysis in prompt
+- Sends PDF path for vision model reference
+- Maintains session context for follow-ups
+
+**Chat Function:**
+```javascript
+sendChatMessage() {
+  // 1. Add user message to thread
+  // 2. Build context-aware prompt with previous analysis
+  // 3. Send to Ollama with same PDF
+  // 4. Add assistant response to thread
+  // 5. Handle errors gracefully
+}
+```
+
+**User Experience:**
+- Press Enter to send
+- Disabled state when Ollama disconnected
+- Loading spinner during response generation
+- Error messages displayed in chat thread
 
 ---
 
