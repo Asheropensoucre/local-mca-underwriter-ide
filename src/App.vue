@@ -812,16 +812,12 @@ const exportToJSON = async () => {
   
   isExporting.value = true
   try {
-    const { save } = await import('@tauri-apps/plugin-dialog')
-    const { writeFile } = await import('@tauri-apps/plugin-fs')
-    
-    const filePath = await save({
-      defaultPath: `analysis-${fileName.value.replace('.pdf', '')}.json`,
-      filters: [{ name: 'JSON', extensions: ['json'] }]
+    const filePath = await invoke('export_json', {
+      data: dataToExport,
+      defaultPath: `analysis-${fileName.value.replace('.pdf', '')}.json`
     })
     
     if (filePath) {
-      await writeFile(filePath, JSON.stringify(dataToExport, null, 2))
       console.log('[Export] JSON saved to:', filePath)
     }
   } catch (error) {
@@ -840,9 +836,6 @@ const exportToCSV = async () => {
   
   isExporting.value = true
   try {
-    const { save } = await import('@tauri-apps/plugin-dialog')
-    const { writeFile } = await import('@tauri-apps/plugin-fs')
-    
     // Build CSV content
     const csvRows = [
       // Business Info
@@ -875,13 +868,12 @@ const exportToCSV = async () => {
       return str.includes(',') || str.includes('"') ? `"${str.replace(/"/g, '""')}"` : str
     }).join(',')).join('\n')
     
-    const filePath = await save({
-      defaultPath: `analysis-${fileName.value.replace('.pdf', '')}.csv`,
-      filters: [{ name: 'CSV', extensions: ['csv'] }]
+    const filePath = await invoke('export_csv', {
+      content: csvContent,
+      defaultPath: `analysis-${fileName.value.replace('.pdf', '')}.csv`
     })
     
     if (filePath) {
-      await writeFile(filePath, csvContent)
       console.log('[Export] CSV saved to:', filePath)
     }
   } catch (error) {

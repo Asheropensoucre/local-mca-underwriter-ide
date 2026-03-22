@@ -1,1 +1,1 @@
-{"main-capability":{"identifier":"main-capability","description":"Main capability for the app","local":true,"windows":["main"],"permissions":["dialog:default","dialog:allow-open","fs:default","fs:allow-read-file"]}}
+{"main-capability":{"identifier":"main-capability","description":"Main capability for the app","local":true,"windows":["main"],"permissions":["dialog:default","dialog:allow-open","dialog:allow-save","fs:default","fs:allow-read-file","fs:allow-write-file"]}}

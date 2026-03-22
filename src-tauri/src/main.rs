@@ -7,6 +7,7 @@ use ollama::{OllamaChatRequest, OllamaMessage, OllamaOptions, OllamaModelsRespon
 use std::fs;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use image::GenericImageView;
+use tauri_plugin_dialog::DialogExt;
 
 #[tauri::command]
 async fn check_ollama_connection() -> Result<bool, String> {
@@ -356,6 +357,65 @@ async fn send_pdf_to_ollama(
     }
 }
 
+/// Export JSON data to file using native save dialog
+#[tauri::command]
+async fn export_json(
+    app: tauri::AppHandle,
+    data: serde_json::Value,
+    default_path: String,
+) -> Result<String, String> {
+    let content = serde_json::to_string_pretty(&data)
+        .map_err(|e| format!("Failed to serialize JSON: {}", e))?;
+
+    // Show save dialog
+    let file_path = app.dialog()
+        .file()
+        .set_file_name(&default_path)
+        .add_filter("JSON Files", &["json"])
+        .blocking_save_file();
+
+    if let Some(path) = file_path {
+        // Convert FilePath to PathBuf
+        let path_buf = path.into_path()
+            .map_err(|_| "Failed to convert file path".to_string())?;
+        
+        fs::write(&path_buf, content)
+            .map_err(|e| format!("Failed to write file: {}", e))?;
+        println!("[Export] JSON saved to: {:?}", path_buf);
+        Ok(path_buf.to_string_lossy().to_string())
+    } else {
+        Ok(String::new()) // User canceled
+    }
+}
+
+/// Export CSV content to file using native save dialog
+#[tauri::command]
+async fn export_csv(
+    app: tauri::AppHandle,
+    content: String,
+    default_path: String,
+) -> Result<String, String> {
+    // Show save dialog
+    let file_path = app.dialog()
+        .file()
+        .set_file_name(&default_path)
+        .add_filter("CSV Files", &["csv"])
+        .blocking_save_file();
+
+    if let Some(path) = file_path {
+        // Convert FilePath to PathBuf
+        let path_buf = path.into_path()
+            .map_err(|_| "Failed to convert file path".to_string())?;
+        
+        fs::write(&path_buf, content)
+            .map_err(|e| format!("Failed to write file: {}", e))?;
+        println!("[Export] CSV saved to: {:?}", path_buf);
+        Ok(path_buf.to_string_lossy().to_string())
+    } else {
+        Ok(String::new()) // User canceled
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -367,7 +427,9 @@ fn main() {
             read_file_as_base64,
             convert_pdf_to_images,
             send_pdf_to_ollama,
-            test_ollama_model
+            test_ollama_model,
+            export_json,
+            export_csv
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
