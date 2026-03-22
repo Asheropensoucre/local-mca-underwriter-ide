@@ -138,7 +138,7 @@ npm run dev
 1. **Start the app:** `npm run dev`
 2. **Upload a PDF:** Click the drop zone or drag & drop
 3. **Select a model:** Choose from available Ollama vision models
-4. **Click "Underwrite File":** Wait 30-90 seconds for analysis
+4. **Click "Underwrite File":** Wait 5-10 minutes for analysis (hardware dependent)
 5. **View Results:** Analysis appears as dashboard cards + AI Chat summary
 
 ## Project Structure
@@ -231,7 +231,7 @@ ollama serve
 ```
 
 ### Request timeout
-Vision models need 30-90 seconds to process images. Wait at least 2 minutes before assuming failure. Check Ollama terminal for model loading status.
+Vision models need 5-10 minutes to process images (hardware dependent). Wait at least 15 minutes before assuming failure. Check Ollama terminal for model loading status.
 
 ### "No models found"
 ```bash
@@ -253,8 +253,8 @@ Ensure you're on the Underwrite tab. Check the chat feed for error messages. Try
 ### Processing Time
 - PDF Conversion: 1-2 seconds
 - Image Compression: 1-2 seconds
-- Ollama Analysis: 30-90 seconds (model dependent)
-- **Total:** 35-95 seconds for 3-page PDF
+- Ollama Analysis: 5-10 minutes per page (hardware dependent)
+- **Total:** 5-10 minutes for single-page PDF
 
 ## Roadmap
 

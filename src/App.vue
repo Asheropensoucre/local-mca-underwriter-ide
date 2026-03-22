@@ -139,7 +139,7 @@
                 <div class="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent"></div>
               </div>
               <p class="text-gray-300 font-medium mb-2">{{ loadingMessage }}</p>
-              <p class="text-xs text-gray-500 text-center">This may take 30-90 seconds for AI analysis</p>
+              <p class="text-xs text-gray-500 text-center">This may take 5-10 minutes for AI analysis (hardware dependent)</p>
             </div>
 
             <!-- ERROR State - Error Display in Chat Area -->

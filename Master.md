@@ -125,9 +125,9 @@ Build a blazing-fast, local-first underwriting workspace focused on deep-work an
 - **Goal:** Implement sequential page analysis or multipart upload to handle full statements.
 
 ### Processing Time
-- **Current Limitation:** 30-90 seconds for vision model analysis
-- **Bottleneck:** Image tokenization in vision encoder
-- **Goal:** Streaming responses, model optimization
+- **Current Limitation:** 5-10 minutes for vision model analysis (single page)
+- **Bottleneck:** Image tokenization in vision encoder, model size, CPU/GPU hardware
+- **Goal:** Streaming responses, model optimization, hardware acceleration
 
 ### Model Compatibility
 - **Tested:** llama3.2-vision ✅
@@ -218,8 +218,8 @@ Before any release:
 - JPEG compression: <1 second per page
 
 ### Ollama Processing
-- llama3.2-vision: 30-60 seconds per page
-- llava: 45-90 seconds per page
+- llama3.2-vision: 5-10 minutes per page (hardware dependent)
+- llava: 5-10 minutes per page (hardware dependent)
 - qwen3-vl: Unstable (avoid)
 
 ### Memory Usage
