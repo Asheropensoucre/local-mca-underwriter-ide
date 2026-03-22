@@ -571,6 +571,11 @@ STRICT RULES:
 3. True Revenue: Calculate total monthly deposits EXCLUDING incoming loan/MCA deposits.
 4. Negative Days: Count the exact number of days the 'Daily Ending Balance' fell below $0.00.
 
+CRITICAL FALLBACK RULES:
+- If the document is NOT a bank statement, or if no MCA positions are found, you MUST return an empty array for positions: "positions": []
+- Do NOT invent, assume, or hallucinate lenders.
+- If revenue, balances, or negative days cannot be calculated because the data is missing or it is the wrong document type, use 0 or null.
+
 You MUST return ONLY valid JSON matching this exact structure, with no markdown formatting or extra text:
 {
   "merchant_info": { "name": "string", "month_year": "string" },
