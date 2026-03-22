@@ -1,10 +1,5 @@
 <template>
   <div class="min-h-screen bg-background text-gray-300 flex items-center justify-center p-8">
-    <!-- Debug State -->
-    <div class="fixed top-2 left-2 text-xs font-mono bg-surface p-2 border border-border z-50">
-      State: {{ appState }} | Tab: {{ activeTab }}
-    </div>
-
     <!-- IDLE State - Drop Zone -->
     <div
       v-show="appState === 'IDLE'"
