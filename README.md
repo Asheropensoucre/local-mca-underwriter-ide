@@ -88,6 +88,7 @@ sudo apt install -y \
 ```bash
 # Clone the repository
 git clone https://github.com/Asheropensoucre/local-mca-underwriter-ide
+
 cd "local-mca-underwriter-ide"
 
 # Install dependencies
