@@ -26,7 +26,9 @@ A blazing-fast, local-first underwriting workspace for analyzing bank statements
 - ✏️ **Master Prompt Editor** - Edit the underwriting prompt
 - 💾 **Prompt Persistence** - Reset to default anytime
 - 📊 **Analysis Dashboard** - Parsed metrics in premium UI cards
+- 💬 **Follow-up Chat** - Ask questions about the analysis with full context
 - 📝 **AI Chat Assistant** - Conversational interface for follow-up questions
+- 📤 **Export Options** - Save analysis as JSON, CSV, or print report
 - 🎨 **Premium Dark Mode UI** - Minimalist, Zed/Cursor-inspired corporate hybrid design
 - ⏳ **Loading States** - Targeted loaders (no full-page unmounting)
 
@@ -37,8 +39,10 @@ Upload PDF → PDF Viewer (Vue.js + PDF.js)
            → Convert to Images (pdftocairo)
            → Compress (Grayscale JPEG, 55-60% smaller)
            → Send to Ollama (Base64 encoded)
-           → Vision Model Analyzes (30-90 seconds)
+           → Vision Model Analyzes (5-10 minutes)
            → Dashboard Cards + AI Chat Feed (auto-switched)
+           → Ask Follow-up Questions (context-aware)
+           → Export Results (JSON/CSV/Print)
 ```
 
 ## State Machine
@@ -62,7 +66,7 @@ ERROR ←──[fail]── ANALYZING ←──[underwrite]──┘
 | `LOADING_PDF` | Processing uploaded PDF |
 | `READY` | PDF loaded, ready for analysis |
 | `ANALYZING` | Waiting for Ollama response (Layout remains visible) |
-| `COMPLETE` | Analysis done, showing results in dashboard |
+| `COMPLETE` | Analysis done, showing results in dashboard + chat |
 | `ERROR` | Analysis failed, can retry |
 
 ## Tech Stack
@@ -140,6 +144,8 @@ npm run dev
 3. **Select a model:** Choose from available Ollama vision models
 4. **Click "Underwrite File":** Wait 5-10 minutes for analysis (hardware dependent)
 5. **View Results:** Analysis appears as dashboard cards + AI Chat summary
+6. **Ask Follow-up Questions:** Type questions in the chat to get context-aware answers
+7. **Export Results:** Save as JSON, CSV, or print a professional report
 
 ## Project Structure
 
@@ -199,7 +205,7 @@ npm run dev
 | Command | Description |
 |---------|-------------|
 | `npm run dev` | Start development mode |
-| `npm run build` | Build for production |
+| `npm run build:frontend` | Build frontend for production |
 | `npm run tauri dev` | Run Tauri dev |
 | `npm run tauri build` | Build production app |
 
@@ -258,10 +264,11 @@ Ensure you're on the Underwrite tab. Check the chat feed for error messages. Try
 
 ## Roadmap
 
-- [ ] Dashboard parsing (extract JSON into UI cards) - **IN PROGRESS**
-- [ ] Conversational Follow-up Chat UI
+- [x] Dashboard parsing (extract JSON into UI cards) ✅
+- [x] Conversational Follow-up Chat UI ✅
+- [x] Export analysis to JSON/CSV ✅
+- [x] Print-friendly view ✅
 - [ ] Streaming responses (show tokens as generated)
-- [ ] Export analysis to JSON/CSV
 - [ ] Batch processing (multiple PDFs)
 - [ ] PDF text layer for search
 - [ ] Side-by-side PDF comparison

@@ -215,12 +215,39 @@
               <div class="bg-background border border-border rounded-lg p-4 flex-1">
                 <div class="flex items-center justify-between mb-2">
                   <h4 class="text-sm font-medium text-gray-300">Analysis Notes</h4>
-                  <button
-                    @click="copyResults"
-                    class="text-xs px-3 py-1 bg-surface hover:bg-border border border-border rounded transition-colors"
-                  >
-                    {{ copyButtonText }}
-                  </button>
+                  <div class="flex gap-2">
+                    <button
+                      @click="printReport"
+                      :disabled="!parsedData"
+                      class="text-xs px-3 py-1 bg-surface hover:bg-border border border-border rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="Print Report"
+                    >
+                      🖨️ Print
+                    </button>
+                    <button
+                      @click="exportToJSON"
+                      :disabled="isExporting || !parsedData"
+                      class="text-xs px-3 py-1 bg-surface hover:bg-border border border-border rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="Export as JSON"
+                    >
+                      📄 JSON
+                    </button>
+                    <button
+                      @click="exportToCSV"
+                      :disabled="isExporting || !parsedData"
+                      class="text-xs px-3 py-1 bg-surface hover:bg-border border border-border rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="Export as CSV"
+                    >
+                      📊 CSV
+                    </button>
+                    <button
+                      @click="copyResults"
+                      :disabled="isExporting"
+                      class="text-xs px-3 py-1 bg-surface hover:bg-border border border-border rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {{ copyButtonText }}
+                    </button>
+                  </div>
                 </div>
                 <p class="text-sm text-gray-400 whitespace-pre-wrap">{{ parsedData?.notes || rawResponse }}</p>
               </div>
@@ -380,6 +407,9 @@ const parsedData = ref(null) // Structured parsed data for dashboard
 const chatMessages = ref([]) // Array of { role: 'user' | 'assistant', content: string }
 const chatInput = ref('')
 const isChatLoading = ref(false)
+
+// Export state
+const isExporting = ref(false)
 
 // UI state
 const activeTab = ref('underwrite')
@@ -768,6 +798,211 @@ const copyResults = async () => {
 }
 
 const copyButtonText = ref('Copy Results')
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EXPORT FUNCTIONS - Export analysis to JSON/CSV
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Export analysis to JSON file
+ */
+const exportToJSON = async () => {
+  const dataToExport = parsedData.value || analysisResult.value
+  if (!dataToExport) return
+  
+  isExporting.value = true
+  try {
+    const { save } = await import('@tauri-apps/plugin-dialog')
+    const { writeFile } = await import('@tauri-apps/plugin-fs')
+    
+    const filePath = await save({
+      defaultPath: `analysis-${fileName.value.replace('.pdf', '')}.json`,
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    })
+    
+    if (filePath) {
+      await writeFile(filePath, JSON.stringify(dataToExport, null, 2))
+      console.log('[Export] JSON saved to:', filePath)
+    }
+  } catch (error) {
+    console.error('[Export] JSON export failed:', error)
+  } finally {
+    isExporting.value = false
+  }
+}
+
+/**
+ * Export analysis to CSV file
+ */
+const exportToCSV = async () => {
+  const data = parsedData.value
+  if (!data) return
+  
+  isExporting.value = true
+  try {
+    const { save } = await import('@tauri-apps/plugin-dialog')
+    const { writeFile } = await import('@tauri-apps/plugin-fs')
+    
+    // Build CSV content
+    const csvRows = [
+      // Business Info
+      ['Business Information', '', ''],
+      ['Business Name', data.business?.name || '', ''],
+      ['Account', data.business?.account || '', ''],
+      ['Period', data.business?.period || '', ''],
+      ['', '', ''],
+      // Metrics
+      ['Financial Metrics', '', ''],
+      ['Avg Daily Balance', data.metrics?.avg_daily_balance || '', 'USD'],
+      ['Total Deposits', data.metrics?.total_deposits || '', 'USD'],
+      ['Total Withdrawals', data.metrics?.total_withdrawals || '', 'USD'],
+      ['NSF Count', data.metrics?.nsf_count || '', ''],
+      ['', '', ''],
+      // Risk
+      ['Risk Assessment', '', ''],
+      ['Risk Score', data.risk?.score || '', '/10'],
+      ['Overdrafts', data.risk?.overdrafts || '', ''],
+      ['', '', ''],
+      // Recommendation
+      ['Recommendation', data.recommendation || '', ''],
+      ['', '', ''],
+      // Notes
+      ['Analysis Notes', data.notes || '', '']
+    ]
+    
+    const csvContent = csvRows.map(row => row.map(cell => {
+      const str = String(cell ?? '')
+      return str.includes(',') || str.includes('"') ? `"${str.replace(/"/g, '""')}"` : str
+    }).join(',')).join('\n')
+    
+    const filePath = await save({
+      defaultPath: `analysis-${fileName.value.replace('.pdf', '')}.csv`,
+      filters: [{ name: 'CSV', extensions: ['csv'] }]
+    })
+    
+    if (filePath) {
+      await writeFile(filePath, csvContent)
+      console.log('[Export] CSV saved to:', filePath)
+    }
+  } catch (error) {
+    console.error('[Export] CSV export failed:', error)
+  } finally {
+    isExporting.value = false
+  }
+}
+
+/**
+ * Print analysis report
+ */
+const printReport = () => {
+  const data = parsedData.value
+  if (!data) return
+  
+  // Create print-friendly content
+  const printContent = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Analysis Report - ${fileName.value}</title>
+      <style>
+        body { font-family: Arial, sans-serif; padding: 40px; color: #333; }
+        h1 { color: #1a1a1a; border-bottom: 2px solid #3b82f6; padding-bottom: 10px; }
+        h2 { color: #444; margin-top: 30px; }
+        .section { margin: 20px 0; padding: 15px; background: #f9f9f9; border-radius: 8px; }
+        .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; margin: 15px 0; }
+        .card { padding: 12px; background: white; border-radius: 6px; border: 1px solid #e0e0e0; }
+        .label { font-size: 12px; color: #666; text-transform: uppercase; }
+        .value { font-size: 18px; font-weight: bold; color: #1a1a1a; margin-top: 4px; }
+        .recommendation { display: inline-block; padding: 6px 16px; border-radius: 4px; color: white; font-weight: bold; }
+        .approve { background: #22c55e; }
+        .deny { background: #ef4444; }
+        .review { background: #eab308; }
+        .notes { white-space: pre-wrap; line-height: 1.6; }
+        .footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #e0e0e0; font-size: 12px; color: #666; }
+        @media print { body { padding: 20px; } }
+      </style>
+    </head>
+    <body>
+      <h1>Bank Statement Analysis Report</h1>
+      <p><strong>File:</strong> ${fileName.value}</p>
+      <p><strong>Generated:</strong> ${new Date().toLocaleString()}</p>
+      
+      <div class="section">
+        <h2>Business Information</h2>
+        <div class="grid">
+          <div class="card">
+            <div class="label">Business Name</div>
+            <div class="value">${data.business?.name || 'N/A'}</div>
+          </div>
+          <div class="card">
+            <div class="label">Account</div>
+            <div class="value">${data.business?.account || 'N/A'}</div>
+          </div>
+          <div class="card" style="grid-column: span 2;">
+            <div class="label">Statement Period</div>
+            <div class="value">${data.business?.period || 'N/A'}</div>
+          </div>
+        </div>
+      </div>
+      
+      <div class="section">
+        <h2>Financial Metrics</h2>
+        <div class="grid">
+          <div class="card">
+            <div class="label">Avg Daily Balance</div>
+            <div class="value">${formatCurrency(data.metrics?.avg_daily_balance)}</div>
+          </div>
+          <div class="card">
+            <div class="label">Total Deposits</div>
+            <div class="value" style="color: #22c55e;">${formatCurrency(data.metrics?.total_deposits)}</div>
+          </div>
+          <div class="card">
+            <div class="label">Total Withdrawals</div>
+            <div class="value" style="color: #ef4444;">${formatCurrency(data.metrics?.total_withdrawals)}</div>
+          </div>
+          <div class="card">
+            <div class="label">NSF Count</div>
+            <div class="value">${data.metrics?.nsf_count ?? 'N/A'}</div>
+          </div>
+        </div>
+      </div>
+      
+      <div class="section">
+        <h2>Risk Assessment</h2>
+        <div class="grid">
+          <div class="card">
+            <div class="label">Risk Score</div>
+            <div class="value">${data.risk?.score ?? 'N/A'}/10</div>
+          </div>
+          <div class="card">
+            <div class="label">Recommendation</div>
+            <div class="value">
+              <span class="recommendation ${data.recommendation?.toLowerCase() || 'review'}">
+                ${data.recommendation || 'N/A'}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <div class="section">
+        <h2>Analysis Notes</h2>
+        <div class="notes">${data.notes || rawResponse.value}</div>
+      </div>
+      
+      <div class="footer">
+        <p>Generated by Local MCA Underwriter Workspace</p>
+      </div>
+    </body>
+    </html>
+  `
+  
+  // Open print window
+  const printWindow = window.open('', '_blank')
+  printWindow.document.write(printContent)
+  printWindow.document.close()
+  printWindow.print()
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // FOLLOW-UP CHAT - Send questions to Ollama with context

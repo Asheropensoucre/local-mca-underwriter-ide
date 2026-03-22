@@ -70,7 +70,43 @@ Build a blazing-fast, local-first underwriting workspace focused on deep-work an
 
 **Result:** No more blank screen crashes. The layout remains stable throughout all state transitions.
 
-## 8. Current Status
+## 8. Phase 7: Analysis Dashboard ✅ COMPLETE
+
+**Problem:** AI response was displayed as raw text without structured visualization.
+
+**Solution:**
+- Added JSON parsing utility to extract structured data from AI responses
+- Built premium dashboard cards with proper formatting
+- Implemented color-coded indicators for recommendations and risk scores
+- Added Copy Results button with clipboard feedback
+
+**Result:** Professional dashboard displaying business info, financial metrics, risk assessment, and recommendations in clean UI cards.
+
+## 9. Phase 8: Follow-up Chat ✅ COMPLETE
+
+**Problem:** Users couldn't ask follow-up questions about the analysis without re-running the full analysis.
+
+**Solution:**
+- Added conversational chat interface below dashboard cards
+- Context-aware prompts include full previous analysis
+- Message thread with user/AI messages, loading states
+- Same PDF sent for vision model reference
+
+**Result:** Users can now ask unlimited follow-up questions about the analyzed document with full context retention.
+
+## 10. Phase 9: Export & Print ✅ COMPLETE
+
+**Problem:** Users needed to save and share analysis results externally.
+
+**Solution:**
+- **JSON Export:** Save full parsed analysis data
+- **CSV Export:** Structured spreadsheet-ready format
+- **Print Report:** Professional light-themed report with print dialog
+- All exports use native file save dialogs
+
+**Result:** Users can export results in multiple formats for record-keeping, sharing, or further analysis in spreadsheets.
+
+## 11. Current Status
 
 **ALL PHASES COMPLETE** - App is fully functional:
 
@@ -78,8 +114,10 @@ Build a blazing-fast, local-first underwriting workspace focused on deep-work an
 1. Upload PDFs → View in full PDF viewer with navigation
 2. Select Ollama vision model → Auto-populated from local Ollama
 3. Click "Underwrite File" → PDF converted to grayscale JPEG
-4. Wait 30-90 seconds → Vision model analyzes document
+4. Wait 5-10 minutes → Vision model analyzes document
 5. Results displayed → Dashboard cards + AI Chat Feed (auto-switched)
+6. Ask follow-up questions → Get instant answers with full context
+7. Export results → Save as JSON, CSV, or print professional report
 
 ### Technical Highlights:
 - **Grayscale JPEG compression:** 55-60% size reduction
@@ -88,8 +126,11 @@ Build a blazing-fast, local-first underwriting workspace focused on deep-work an
 - **Security:** Temp files auto-deleted after processing
 - **UX:** Progress bar, loading messages, auto-tab switching
 - **Stability:** Persistent layout prevents blank screen crashes
+- **Dashboard:** Parsed JSON into premium UI cards
+- **Chat:** Context-aware follow-up questions
+- **Export:** JSON, CSV, and print report functionality
 
-## 9. Key Technical Decisions
+## 11. Key Technical Decisions
 
 ### Why Grayscale JPEG?
 - Bank statements are B&W - no color info lost
@@ -117,7 +158,12 @@ Build a blazing-fast, local-first underwriting workspace focused on deep-work an
 - State transitions should not destroy DOM structure
 - Targeted loaders (inside panels) are smoother than full-page overlays
 
-## 10. Current Development Hurdles (WIP - TO BE FIXED)
+### Why Context-Aware Chat?
+- Re-sending PDF with full analysis context ensures accurate answers
+- Avoids building complex conversation state management
+- Each question is self-contained with full history
+
+## 12. Current Development Hurdles (WIP - TO BE FIXED)
 
 ### Multi-Page Handling
 - **Current Limitation:** Sends only FIRST page to vision model
@@ -134,7 +180,7 @@ Build a blazing-fast, local-first underwriting workspace focused on deep-work an
 - **Issues:** qwen3-vl (API incompatibility)
 - **Recommendation:** Use llama3.2-vision or llava
 
-## 11. State Machine Implementation ✅
+## 13. State Machine Implementation ✅
 
 **Problem Solved:** Boolean spaghetti (`isLoading`, `fileSelected`, `activeTab`) caused race conditions and blank screens after analysis completed.
 
@@ -164,12 +210,12 @@ ERROR ←──[Ollama fails]── ANALYZING ←──[click Underwrite]──�
 - Predictable state transitions
 - Debuggable state flow
 
-## 12. Future Roadmap
+## 15. Future Roadmap
 
 ### High Priority
-- [ ] Dashboard parsing (extract JSON into UI cards) - **IN PROGRESS**
-- [ ] Conversational Follow-up Chat UI
-- [ ] Export analysis to JSON/CSV
+- [x] Dashboard parsing (extract JSON into UI cards) ✅
+- [x] Conversational Follow-up Chat UI ✅
+- [x] Export analysis to JSON/CSV ✅
 - [ ] Analysis history (local storage)
 - [ ] Multi-page full analysis (all pages, not just first)
 
@@ -184,7 +230,7 @@ ERROR ←──[Ollama fails]── ANALYZING ←──[click Underwrite]──�
 - [ ] Progress indication during Ollama processing
 - [ ] Risk scoring visualization
 
-## 13. Strict Guidelines (CRITICAL)
+## 15. Strict Guidelines (CRITICAL)
 1. Keep the UI extremely clean, minimal, and dark-themed (think Zed or Cursor aesthetics).
 2. Build feature-by-feature, test thoroughly before moving on.
 3. 100% local/offline - no cloud dependencies.
@@ -192,7 +238,7 @@ ERROR ←──[Ollama fails]── ANALYZING ←──[click Underwrite]──�
 5. Security first - auto-cleanup of temp files.
 6. **DO NOT unmount the layout:** The PDF viewer and right-hand dashboard must remain visible during all states (including ANALYZING and COMPLETE) to prevent rendering crashes and blank screens. Use targeted loaders instead of replacing the whole DOM.
 
-## 14. Testing Checklist
+## 17. Testing Checklist
 Before any release:
 
 - [ ] PDF upload (single page)
@@ -208,9 +254,14 @@ Before any release:
 - [ ] Chat/Dashboard UI renders properly
 - [ ] Zoom controls
 - [ ] Page navigation
-- [ ] **Layout persists during ANALYZING state** ✅
+- [ ] Layout persists during ANALYZING state ✅
+- [ ] Dashboard cards display parsed data ✅
+- [ ] Follow-up chat sends questions ✅
+- [ ] Export JSON works ✅
+- [ ] Export CSV works ✅
+- [ ] Print report works ✅
 
-## 15. Performance Benchmarks
+## 17. Performance Benchmarks
 
 ### Image Processing
 - 3-page PDF @ 72 DPI: 3-4 seconds
