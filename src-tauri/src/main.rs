@@ -177,8 +177,8 @@ async fn convert_pdf_to_images(pdf_path: String, dpi: u32) -> Result<PdfConversi
 
     println!("[PDF] Converting PDF to JPEG images at {} DPI...", dpi);
 
-    // Clean up old temp directories first to prevent disk space leaks
-    let _ = cleanup_temp_images();
+    // DON'T cleanup old temp dirs here - they're needed for the preview!
+    // Cleanup happens when the app closes or via explicit cleanup_temp_images() call
 
     // Create temp directory for page images
     let temp_dir = TempDir::new()
@@ -263,10 +263,23 @@ async fn convert_pdf_to_images(pdf_path: String, dpi: u32) -> Result<PdfConversi
             // Return first page path for frontend preview (absolute path)
             let preview_path = image_paths.first().cloned();
             
-            println!("[PDF] Preview path: {:?}", preview_path);
+            // Log the actual file path and check if it exists
+            if let Some(ref path) = preview_path {
+                println!("[PDF] Preview path: {}", path);
+                println!("[PDF] Preview file exists: {}", std::path::Path::new(path).exists());
+                
+                // Get file size for debugging
+                if let Ok(metadata) = std::fs::metadata(path) {
+                    println!("[PDF] Preview file size: {} bytes", metadata.len());
+                }
+            } else {
+                println!("[PDF] WARNING: No preview_path available!");
+            }
 
             // DON'T drop temp_dir_arc - it's stored in TEMP_DIRS and will be cleaned up later
-            
+            // Keep the Arc alive by storing it in the result
+            // The temp_dir_arc will be dropped when PdfConversionResult is dropped
+
             Ok(PdfConversionResult {
                 pages,
                 images: paths_as_base64,

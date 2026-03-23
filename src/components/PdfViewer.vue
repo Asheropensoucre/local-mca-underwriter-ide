@@ -21,7 +21,7 @@
       <div v-if="!imageSrc" class="text-center">
         <div class="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent mx-auto mb-3"></div>
         <p class="text-sm text-gray-400">Loading Preview...</p>
-        <p class="text-xs text-gray-600 mt-2">Source: {{ source || 'none' }}</p>
+        <p class="text-xs text-gray-600 mt-2">Path: {{ source ? source.substring(0, 50) + '...' : 'none' }}</p>
       </div>
 
       <!-- Image -->
@@ -37,7 +37,8 @@
       <!-- Error State -->
       <div v-if="imageError" class="text-center text-red-400">
         <p class="text-sm mb-2">Failed to load preview</p>
-        <p class="text-xs text-gray-600">{{ imageError }}</p>
+        <p class="text-xs text-gray-600 break-all max-w-md">{{ imageError }}</p>
+        <p class="text-xs text-gray-500 mt-2">Source path: {{ source }}</p>
       </div>
     </div>
   </div>
@@ -76,12 +77,15 @@ const setupImage = async () => {
   }
   
   console.log('[PdfViewer] Setting up image from path:', props.source)
+  console.log('[PdfViewer] Path length:', props.source.length)
+  console.log('[PdfViewer] Path starts with /:', props.source.startsWith('/'))
   
   try {
     // Convert file path to Tauri URL
     const url = convertFileSrc(props.source)
     imageSrc.value = url
     console.log('[PdfViewer] Image URL created:', url)
+    console.log('[PdfViewer] URL protocol:', url.split(':')[0])
   } catch (err) {
     console.error('[PdfViewer] Failed to convert file path:', err)
     imageError.value = err.message || 'Failed to load image'
