@@ -1,13 +1,13 @@
 <template>
   <div class="h-screen w-screen flex flex-row overflow-hidden bg-background text-gray-300">
     <!-- Left Navigation Menu (Pane 1) -->
-    <div class="w-16 md:w-64 flex-shrink-0 h-full border-r border-border bg-surface flex flex-col">
+    <div class="w-64 flex-shrink-0 h-full border-r border-border bg-surface flex flex-col">
       <!-- Header -->
       <div class="h-12 flex items-center px-4 border-b border-border">
         <svg class="w-5 h-5 text-gray-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
         </svg>
-        <span class="ml-3 text-xs font-semibold text-gray-400 uppercase tracking-wider hidden md:block">Explorer</span>
+        <span class="ml-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Explorer</span>
       </div>
       
       <!-- Navigation Items -->
@@ -15,40 +15,19 @@
         <!-- Recent Files Section -->
         <div class="px-3 mb-2">
           <div class="flex items-center justify-between mb-1">
-            <span class="text-xs font-medium text-gray-500 hidden md:block">Recent Files</span>
+            <span class="text-xs font-medium text-gray-500">Recent Files</span>
           </div>
           <div class="space-y-0.5">
-            <div class="px-2 py-1.5 text-xs text-gray-600 italic hidden md:block">No recent files</div>
+            <div class="px-2 py-1.5 text-xs text-gray-600 italic">No recent files</div>
           </div>
         </div>
-        
-        <!-- Saved Templates Section -->
-        <div class="px-3 mt-4">
-          <div class="flex items-center justify-between mb-1">
-            <span class="text-xs font-medium text-gray-500 hidden md:block">Templates</span>
-          </div>
-          <div class="space-y-0.5">
-            <div class="px-2 py-1.5 text-xs text-gray-600 italic hidden md:block">No saved templates</div>
-          </div>
-        </div>
-      </div>
-      
-      <!-- Bottom Actions -->
-      <div class="p-2 border-t border-border">
-        <button class="w-full flex items-center justify-center md:justify-start gap-2 px-2 py-1.5 text-xs text-gray-400 hover:text-gray-200 hover:bg-border rounded transition-colors">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-          </svg>
-          <span class="hidden md:block">Settings</span>
-        </button>
       </div>
     </div>
 
     <!-- IDLE State - Drop Zone -->
     <div
       v-show="appState === 'IDLE'"
-      class="border-2 border-dashed rounded-xl p-16 text-center cursor-pointer w-full transition-all duration-200 m-auto"
+      class="border-2 border-dashed rounded-xl p-16 text-center cursor-pointer w-full transition-all duration-200 flex items-center justify-center"
       :class="[
         isDragging
           ? 'border-primary bg-primary/10 scale-105 shadow-lg shadow-primary/20'
@@ -59,9 +38,9 @@
       @dragleave="isDragging = false"
       @drop.prevent="handleDrop"
     >
-      <div class="space-y-6">
-        <div class="flex justify-center">
-          <svg class="w-20 h-20 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <div class="space-y-6 max-w-2xl">
+        <div>
+          <svg class="w-20 h-20 text-gray-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
           </svg>
         </div>
@@ -69,7 +48,7 @@
           <p class="text-xl font-medium text-gray-200">Drop Bank Statements Here</p>
           <p class="text-sm text-gray-500 mt-2">or click to browse (select multiple months)</p>
         </div>
-        <div class="flex items-center justify-center gap-4">
+        <div class="flex gap-4">
           <span class="px-3 py-1 bg-surface border border-border rounded text-xs text-gray-500">PDF</span>
           <span class="px-3 py-1 bg-surface border border-border rounded text-xs text-gray-500">Multiple Files</span>
         </div>
