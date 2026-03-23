@@ -147,15 +147,27 @@ Build a blazing-fast, local-first underwriting workspace focused on deep-work an
 6. ✅ **Auto-Save** - Every analysis automatically saved on completion
 7. ✅ **Added chrono** - RFC3339 timestamp support for cross-platform compatibility
 
+## 7j. Phase 20: UI Refactor - Edge-to-Edge IDE Layout ✅ COMPLETE
+
+**Completed:**
+1. ✅ **Full-Screen Shell** - Root div uses h-screen w-screen flex flex-row overflow-hidden
+2. ✅ **Removed Card Look** - Eliminated max-w-7xl, h-[80vh], rounded-xl, gap-4, p-8
+3. ✅ **Fixed Right Sidebar** - w-[400px] h-full flex-shrink-0 border-l (constant width for all tabs)
+4. ✅ **Dynamic Left Pane** - PDF viewer still animates 60% → 30% on COMPLETE state
+5. ✅ **Clean Dividers** - border-r between panes, border-l on right sidebar
+6. ✅ **IDLE State Centered** - Drop zone uses m-auto to center in edge-to-edge layout
+7. ✅ **Functional Logic Preserved** - All v-if, v-model, @click bindings unchanged
+
 ## 8. Current Status
 
-**ALL PHASES COMPLETE (1-19)** - App features full MCA Underwriter Pivot, multi-page analysis, text-only chat, batch processing, event-driven architecture, strict JSON enforcement, Data URI preview, automatic garbage collection, clean JSON merger without echo, custom prompt templates, and analysis history with Rust persistence for enterprise-grade local storage.
+**ALL PHASES COMPLETE (1-20)** - App features full MCA Underwriter Pivot, multi-page analysis, text-only chat, batch processing, event-driven architecture, strict JSON enforcement, Data URI preview, automatic garbage collection, clean JSON merger without echo, custom prompt templates, analysis history with Rust persistence, and edge-to-edge IDE-style layout with fixed 400px right sidebar.
 
 ### User Flow:
-1. Upload PDFs → View in full PDF viewer (60% width)
-2. Select Ollama vision model
+1. Upload PDFs → View in full PDF viewer (left pane, 60% width initially)
+2. Select Ollama vision model in right sidebar (fixed 400px width)
 3. Click "Underwrite File" → PDF converted to grayscale JPEG
-4. Results displayed → Dashboard expands (70% width), showing advanced metric cards.
+4. Results displayed → Left pane shrinks to 30% width, right sidebar shows dashboard cards
+5. All tabs (Underwrite, Prompt, Settings, History) accessible in fixed right sidebar
 
 ## 9. Key Technical Decisions
 

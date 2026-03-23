@@ -173,6 +173,13 @@ sudo apt install poppler-utils
 - **Auto-Save:** Every analysis automatically saved to history on completion
 - **Instant Reload:** Load button restores dashboard without re-running AI
 
+### Recent Improvements (Phase 20 - UI Refactor)
+- **Edge-to-Edge IDE Layout:** Full-screen shell (h-screen w-screen) removes centered card look
+- **Fixed Right Sidebar:** 400px constant width for Chat/Prompt/Settings/History tabs
+- **Dynamic Left Pane:** PDF viewer still resizes (60% → 30% on COMPLETE)
+- **Clean Dividers:** border-r for left pane, border-l for right sidebar
+- **Removed:** max-w-7xl, h-[80vh], rounded-xl, gap-4 from main container
+
 ### Recent Improvements (Phase 15)
 - **Strict JSON Output:** `format: "json"` prevents AI from truncating arrays
 - **Temp Permissions:** fs:allow-temp-read enables convertFileSrc to work
