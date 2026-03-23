@@ -20,7 +20,7 @@ A blazing-fast, local-first underwriting workspace built specifically for the Me
 - 🖼️ **Lightweight Preview** - Simple <img> tag, zero JavaScript PDF rendering
 - 📊 **Page Count Display** - Sync with backend page count
 - 🖼️ **Grayscale JPEG Conversion** - 55-60% compression for faster local processing
-- 🎨 **Dynamic UI Resizing** - Starts at a 60/40 split for PDF reading, dynamically animating to a 30/70 split when analysis completes to give the Dashboard maximum space.
+- 🎨 **Dynamic UI Resizing** - Starts at a 60/40 split for PDF reading, dynamically animating to a 30/70 split when analysis completes so the Dashboard has maximum space. The right sidebar is fluid (flex-1) and expands to fill all available width.
 
 **Architecture Note:** We removed vue-pdf-embed (heavy JavaScript PDF renderer) to eliminate Out-Of-Memory crashes and ArrayBuffer detachments. The Rust backend already generates JPEGs for Ollama - we now serve Page 1 directly to the frontend via Tauri's convertFileSrc. Result: 100% more stable, zero client-side PDF parsing.
 
@@ -175,10 +175,10 @@ sudo apt install poppler-utils
 
 ### Recent Improvements (Phase 20 - UI Refactor)
 - **Edge-to-Edge IDE Layout:** Full-screen shell (h-screen w-screen) removes centered card look
-- **Fixed Right Sidebar:** 400px constant width for Chat/Prompt/Settings/History tabs
+- **Fluid Right Sidebar:** flex-1 min-w-0 - expands to fill all remaining space (no fixed width)
 - **Dynamic Left Pane:** PDF viewer still resizes (60% → 30% on COMPLETE)
 - **Clean Dividers:** border-r for left pane, border-l for right sidebar
-- **Removed:** max-w-7xl, h-[80vh], rounded-xl, gap-4 from main container
+- **Removed:** max-w-7xl, h-[80vh], rounded-xl, gap-4, w-[400px] from main container
 
 ### Recent Improvements (Phase 15)
 - **Strict JSON Output:** `format: "json"` prevents AI from truncating arrays

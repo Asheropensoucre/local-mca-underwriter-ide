@@ -103,7 +103,7 @@
 
       <!-- Right Sidebar - AI Chat Assistant -->
       <div
-        class="w-[400px] h-full flex-shrink-0 border-l border-border bg-surface flex flex-col"
+        class="flex-1 h-full min-w-0 border-l border-border bg-surface flex flex-col overflow-hidden"
       >
         <!-- Tab Navigation -->
         <div class="flex border-b border-border">
