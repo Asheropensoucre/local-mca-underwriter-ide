@@ -18,13 +18,12 @@
     <!-- Image Viewer -->
     <div class="flex-1 overflow-auto bg-background/50 p-4 flex items-center justify-center relative" ref="viewerContainer">
       <!-- Loading State -->
-      <div v-if="!imageSrc" class="text-center">
+      <div v-if="!imageSrc && !imageError" class="text-center">
         <div class="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent mx-auto mb-3"></div>
         <p class="text-sm text-gray-400">Loading Preview...</p>
-        <p class="text-xs text-gray-600 mt-2">Path: {{ source ? source.substring(0, 50) + '...' : 'none' }}</p>
       </div>
 
-      <!-- Image -->
+      <!-- Image - Use convertFileSrc to convert system path to asset:// URL -->
       <img
         v-if="imageSrc"
         :src="imageSrc"
@@ -38,19 +37,18 @@
       <div v-if="imageError" class="text-center text-red-400">
         <p class="text-sm mb-2">Failed to load preview</p>
         <p class="text-xs text-gray-600 break-all max-w-md">{{ imageError }}</p>
-        <p class="text-xs text-gray-500 mt-2">Source path: {{ source }}</p>
       </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { convertFileSrc } from '@tauri-apps/api/core'
 
 const props = defineProps({
   source: {
-    type: String, // Now expects a file path string
+    type: String, // File path string from Rust
     required: true
   },
   pageCount: {
@@ -61,40 +59,47 @@ const props = defineProps({
 
 const emit = defineEmits(['error', 'load'])
 
-const viewerContainer = ref(null)
 const imageSrc = ref(null)
 const imageError = ref(null)
 const totalPages = ref(1)
 
-// Setup image from file path
-const setupImage = async () => {
+// Convert file path to Tauri asset URL using convertFileSrc
+// This is REQUIRED - Tauri blocks direct file:// access
+const imageSrcComputed = computed(() => {
+  if (!props.source) {
+    console.warn('[PdfViewer] No source path provided')
+    return null
+  }
+  
+  try {
+    const url = convertFileSrc(props.source)
+    console.log('[PdfViewer] Converted path to URL:', url)
+    return url
+  } catch (err) {
+    console.error('[PdfViewer] convertFileSrc failed:', err)
+    imageError.value = `Failed to convert path: ${err.message}`
+    return null
+  }
+})
+
+// Setup image when source changes
+const setupImage = () => {
   imageError.value = null
   
   if (!props.source) {
-    console.warn('[PdfViewer] No source provided')
+    imageSrc.value = null
     imageError.value = 'No file path provided'
     return
   }
   
   console.log('[PdfViewer] Setting up image from path:', props.source)
-  console.log('[PdfViewer] Path length:', props.source.length)
-  console.log('[PdfViewer] Path starts with /:', props.source.startsWith('/'))
   
-  try {
-    // Convert file path to Tauri URL
-    const url = convertFileSrc(props.source)
-    imageSrc.value = url
-    console.log('[PdfViewer] Image URL created:', url)
-    console.log('[PdfViewer] URL protocol:', url.split(':')[0])
-  } catch (err) {
-    console.error('[PdfViewer] Failed to convert file path:', err)
-    imageError.value = err.message || 'Failed to load image'
-    emit('error', err)
-  }
+  // Use the computed value which calls convertFileSrc
+  imageSrc.value = imageSrcComputed.value
 }
 
 const handleImageLoad = (event) => {
-  console.log('[PdfViewer] Image loaded successfully:', event.target.naturalWidth, 'x', event.target.naturalHeight)
+  console.log('[PdfViewer] Image loaded:', event.target.naturalWidth, 'x', event.target.naturalHeight)
   imageError.value = null
   emit('load', {
     width: event.target.naturalWidth,
@@ -104,7 +109,7 @@ const handleImageLoad = (event) => {
 
 const handleImageError = (event) => {
   const errorMsg = `Failed to load: ${props.source}`
-  console.error('[PdfViewer] Image load error:', errorMsg, event)
+  console.error('[PdfViewer] Image error:', errorMsg, event)
   imageError.value = errorMsg
   emit('error', new Error(errorMsg))
 }
@@ -115,22 +120,16 @@ if (props.pageCount > 0) {
 }
 
 onMounted(() => {
-  console.log('[PdfViewer] Component mounted, source:', props.source)
+  console.log('[PdfViewer] Mounted, source:', props.source)
   setupImage()
 })
 
-// Watch for source changes
+// Watch for source changes and reload image
 watch(() => props.source, (newSource, oldSource) => {
   console.log('[PdfViewer] Source changed:', oldSource, '->', newSource)
   if (newSource && newSource !== oldSource) {
-    imageSrc.value = null // Reset to show loading state
-    setTimeout(() => setupImage(), 10) // Small delay to ensure reactivity
+    imageSrc.value = null // Reset to show loading
+    setTimeout(() => setupImage(), 50) // Small delay for reactivity
   }
-}, { immediate: false })
-
-onUnmounted(() => {
-  console.log('[PdfViewer] Component unmounted')
-  imageSrc.value = null
-  imageError.value = null
 })
 </script>
