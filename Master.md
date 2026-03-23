@@ -109,9 +109,18 @@ Build a blazing-fast, local-first underwriting workspace focused on deep-work an
 4. ✅ **Preview Image Loading** - Fixed race condition where files were deleted before frontend could load
 5. ✅ **Bundle Size Reduction** - Removed vue-pdf-embed (2.6MB → 111KB, 95% smaller)
 
+## 7f. Phase 16: Data URI Preview + Garbage Collector ✅ COMPLETE
+
+**Completed:**
+1. ✅ **Data URI Preview** - Rust generates `data:image/jpeg;base64,...` URI from page-1.jpg
+2. ✅ **Asset Protocol Bypass** - No CSP configuration needed, no symlink issues
+3. ✅ **Garbage Collector** - `cleanup_temp_files()` command deletes temp directories
+4. ✅ **Auto-Cleanup on Close** - Temp files deleted when app unmounts
+5. ✅ **Security Hardening** - Sensitive financial PDFs no longer linger in /tmp
+
 ## 8. Current Status
 
-**ALL PHASES COMPLETE (1-15)** - App features full MCA Underwriter Pivot, multi-page analysis, text-only chat, batch processing, event-driven architecture, and strict JSON enforcement for 50+ page PDFs.
+**ALL PHASES COMPLETE (1-16)** - App features full MCA Underwriter Pivot, multi-page analysis, text-only chat, batch processing, event-driven architecture, strict JSON enforcement, Data URI preview, and automatic garbage collection for 50+ page PDFs.
 
 ### User Flow:
 1. Upload PDFs → View in full PDF viewer (60% width)

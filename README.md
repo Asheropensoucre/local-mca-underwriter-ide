@@ -142,6 +142,12 @@ sudo apt install poppler-utils
 - **Temp file cleanup:** Immediate deletion after each page
 - **Tested up to:** 50+ pages safely
 
+### Recent Improvements (Phase 16)
+- **Data URI Preview:** Rust generates `data:image/jpeg;base64,...` - no CSP issues
+- **Garbage Collector:** Auto-deletes temp files on app close
+- **Security:** Sensitive PDFs no longer linger in /tmp
+- **Asset Protocol Bypass:** No symlink routing problems
+
 ### Recent Improvements (Phase 15)
 - **Strict JSON Output:** `format: "json"` prevents AI from truncating arrays
 - **Temp Permissions:** fs:allow-temp-read enables convertFileSrc to work
