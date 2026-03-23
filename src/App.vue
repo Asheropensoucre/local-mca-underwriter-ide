@@ -474,6 +474,46 @@
 
           <!-- Prompt Tab -->
           <div v-if="activeTab === 'prompt'" class="space-y-4">
+            <!-- Template Management -->
+            <div class="bg-surface border border-border rounded-lg p-4">
+              <h4 class="text-sm font-medium text-gray-300 mb-3">Saved Templates</h4>
+              <div class="flex items-center gap-3 mb-3">
+                <select
+                  v-model="selectedTemplateName"
+                  @change="loadSelectedTemplate"
+                  class="flex-1 bg-background border border-border rounded-lg px-4 py-2 text-sm text-gray-300 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                >
+                  <option value="">Select a template...</option>
+                  <option v-for="template in savedTemplates" :key="template.name" :value="template.name">
+                    {{ template.name }}
+                  </option>
+                </select>
+                <button
+                  @click="deleteSelectedTemplate"
+                  :disabled="!selectedTemplateName"
+                  class="px-4 py-2 bg-red-900/50 hover:bg-red-800/50 border border-red-700 rounded-lg text-sm text-red-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  🗑️ Delete
+                </button>
+              </div>
+              <div class="flex items-center gap-3">
+                <input
+                  v-model="newTemplateName"
+                  type="text"
+                  placeholder="Template name..."
+                  class="flex-1 bg-background border border-border rounded-lg px-4 py-2 text-sm text-gray-300 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                />
+                <button
+                  @click="saveNewTemplate"
+                  :disabled="!newTemplateName.trim()"
+                  class="px-4 py-2 bg-primary hover:bg-blue-600 rounded-lg text-sm text-white font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  💾 Save Template
+                </button>
+              </div>
+            </div>
+
+            <!-- Custom Instructions Editor -->
             <div>
               <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Custom Underwriting Instructions</label>
               <p class="text-xs text-gray-600 mb-2">Add specific focus areas. Core MCA rules are automatically applied.</p>
@@ -604,6 +644,11 @@ const modelConfig = ref({
   contextWindow: 8192
 })
 
+// Template management state
+const savedTemplates = ref([]) // Array of { name, instructions }
+const selectedTemplateName = ref('')
+const newTemplateName = ref('')
+
 // ═══════════════════════════════════════════════════════════════════════════
 // CURSOR-STYLE PROMPT ARCHITECTURE
 // System prompt is hardcoded to ensure consistent JSON output
@@ -681,6 +726,59 @@ const resetCustomInstructions = () => {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// PROMPT TEMPLATE MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Load all templates from Rust backend
+const loadTemplates = async () => {
+  try {
+    savedTemplates.value = await invoke('get_templates')
+  } catch (error) {
+    console.error('Failed to load templates:', error)
+  }
+}
+
+// Load selected template into the editor
+const loadSelectedTemplate = () => {
+  const template = savedTemplates.value.find(t => t.name === selectedTemplateName.value)
+  if (template) {
+    userCustomInstructions.value = template.instructions
+  }
+}
+
+// Save current instructions as a new template
+const saveNewTemplate = async () => {
+  const name = newTemplateName.value.trim()
+  if (!name) return
+  
+  try {
+    await invoke('save_template', { 
+      name, 
+      instructions: userCustomInstructions.value 
+    })
+    await loadTemplates() // Refresh the list
+    selectedTemplateName.value = name // Select the newly saved template
+    newTemplateName.value = '' // Clear the input
+  } catch (error) {
+    console.error('Failed to save template:', error)
+  }
+}
+
+// Delete the selected template
+const deleteSelectedTemplate = async () => {
+  if (!selectedTemplateName.value) return
+  
+  try {
+    await invoke('delete_template', { name: selectedTemplateName.value })
+    await loadTemplates() // Refresh the list
+    selectedTemplateName.value = '' // Clear selection
+    resetCustomInstructions() // Reset to default
+  } catch (error) {
+    console.error('Failed to delete template:', error)
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // BATCH FILE QUEUE MANAGEMENT
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -709,6 +807,7 @@ const clearFileQueue = () => {
 // Check Ollama connection on mount and set up event listeners
 onMounted(async () => {
   await checkOllamaConnection()
+  await loadTemplates() // Load saved prompt templates
   // Set up event listeners (non-blocking, don't await)
   setupAnalysisEventListeners()
 })

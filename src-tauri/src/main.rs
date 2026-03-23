@@ -10,7 +10,10 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use image::GenericImageView;
 use tauri_plugin_dialog::DialogExt;
 use tauri::Emitter;
+use tauri::Manager;
 use tempfile::TempDir;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 // Track temporary directories to clean them up later
 // We need to store the TempDir itself, not just the path, to prevent auto-deletion
@@ -35,13 +38,110 @@ fn cleanup_temp_images() -> Result<(), String> {
 fn cleanup_temp_files() -> Result<usize, String> {
     let mut dirs = TEMP_DIRS.lock().map_err(|e| format!("Failed to lock temp dirs: {}", e))?;
     let count = dirs.len();
-    
+
     println!("[GarbageCollector] Deleting {} temp directories...", count);
-    
+
     dirs.clear();
-    
+
     println!("[GarbageCollector] Cleanup complete");
     Ok(count)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PROMPT TEMPLATE MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PromptTemplate {
+    name: String,
+    instructions: String,
+}
+
+/// Get the path to the templates.json file
+fn get_templates_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    
+    fs::create_dir_all(&app_data_dir)
+        .map_err(|e| format!("Failed to create app data dir: {}", e))?;
+    
+    Ok(app_data_dir.join("templates.json"))
+}
+
+/// Load templates from disk
+fn load_templates(app: &tauri::AppHandle) -> Result<HashMap<String, PromptTemplate>, String> {
+    let templates_path = get_templates_path(app)?;
+    
+    if !templates_path.exists() {
+        return Ok(HashMap::new());
+    }
+    
+    let content = fs::read_to_string(&templates_path)
+        .map_err(|e| format!("Failed to read templates file: {}", e))?;
+    
+    let templates: HashMap<String, PromptTemplate> = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse templates: {}", e))?;
+    
+    Ok(templates)
+}
+
+/// Save templates to disk
+fn save_templates_to_disk(app: &tauri::AppHandle, templates: &HashMap<String, PromptTemplate>) -> Result<(), String> {
+    let templates_path = get_templates_path(app)?;
+    
+    let content = serde_json::to_string_pretty(templates)
+        .map_err(|e| format!("Failed to serialize templates: {}", e))?;
+    
+    fs::write(&templates_path, content)
+        .map_err(|e| format!("Failed to write templates file: {}", e))?;
+    
+    Ok(())
+}
+
+/// Get all saved prompt templates
+#[tauri::command]
+fn get_templates(app: tauri::AppHandle) -> Result<Vec<PromptTemplate>, String> {
+    let templates = load_templates(&app)?;
+    let mut template_vec: Vec<PromptTemplate> = templates.into_values().collect();
+    
+    // Sort by name for consistent ordering
+    template_vec.sort_by(|a, b| a.name.cmp(&b.name));
+    
+    Ok(template_vec)
+}
+
+/// Save a new prompt template
+#[tauri::command]
+fn save_template(app: tauri::AppHandle, name: String, instructions: String) -> Result<(), String> {
+    let mut templates = load_templates(&app)?;
+    
+    let template = PromptTemplate {
+        name: name.clone(),
+        instructions,
+    };
+    
+    templates.insert(name.clone(), template);
+    save_templates_to_disk(&app, &templates)?;
+    
+    println!("[Template] Saved template: {}", name);
+    Ok(())
+}
+
+/// Delete a prompt template
+#[tauri::command]
+fn delete_template(app: tauri::AppHandle, name: String) -> Result<(), String> {
+    let mut templates = load_templates(&app)?;
+    
+    if templates.remove(&name).is_none() {
+        return Err(format!("Template '{}' not found", name));
+    }
+    
+    save_templates_to_disk(&app, &templates)?;
+    
+    println!("[Template] Deleted template: {}", name);
+    Ok(())
 }
 
 #[tauri::command]
@@ -800,7 +900,10 @@ fn main() {
             aggregate_batch_results,
             test_ollama_model,
             export_json,
-            export_csv
+            export_csv,
+            get_templates,
+            save_template,
+            delete_template
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
