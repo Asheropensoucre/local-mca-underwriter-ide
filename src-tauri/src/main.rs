@@ -5,10 +5,33 @@ mod ollama;
 
 use ollama::{OllamaChatRequest, OllamaMessage, OllamaOptions, OllamaModelsResponse, PdfConversionResult, PdfPageInfo};
 use std::fs;
+use std::sync::Mutex;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use image::GenericImageView;
 use tauri_plugin_dialog::DialogExt;
 use tauri::Emitter;
+
+// Track temporary directories to clean them up later
+static TEMP_DIRS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Clean up old temporary image directories to prevent disk space leaks
+#[tauri::command]
+fn cleanup_temp_images() -> Result<(), String> {
+    let mut dirs = TEMP_DIRS.lock().map_err(|e| format!("Failed to lock temp dirs: {}", e))?;
+    
+    println!("[Cleanup] Cleaning up {} temp directories...", dirs.len());
+    
+    for dir_path in dirs.drain(..) {
+        if std::path::Path::new(&dir_path).exists() {
+            match fs::remove_dir_all(&dir_path) {
+                Ok(_) => println!("[Cleanup] Deleted: {}", dir_path),
+                Err(e) => println!("[Cleanup] Failed to delete {}: {}", dir_path, e),
+            }
+        }
+    }
+    
+    Ok(())
+}
 
 #[tauri::command]
 async fn check_ollama_connection() -> Result<bool, String> {
@@ -156,9 +179,19 @@ async fn convert_pdf_to_images(pdf_path: String, dpi: u32) -> Result<PdfConversi
 
     println!("[PDF] Converting PDF to JPEG images at {} DPI...", dpi);
 
+    // Clean up old temp directories first to prevent disk space leaks
+    let _ = cleanup_temp_images();
+
     // Create temp directory for page images
     let temp_dir = tempdir()
         .map_err(|e| format!("Failed to create temp dir: {}", e))?;
+    
+    // Track temp dir path for later cleanup (keep temp_dir alive!)
+    let temp_dir_path = temp_dir.path().to_string_lossy().to_string();
+    if let Ok(mut dirs) = TEMP_DIRS.lock() {
+        dirs.push(temp_dir_path.clone());
+        println!("[PDF] Tracking temp dir: {} (total tracked: {})", temp_dir_path, dirs.len());
+    }
 
     // Try pdftocairo first (part of poppler-utils)
     let output_prefix = temp_dir.path().join("page");
@@ -243,8 +276,11 @@ async fn convert_pdf_to_images(pdf_path: String, dpi: u32) -> Result<PdfConversi
             // Return first page path for frontend preview
             let preview_path = image_paths.first().cloned();
 
-            Ok(PdfConversionResult { 
-                pages, 
+            // Keep temp_dir alive until the end of the function
+            drop(temp_dir);
+
+            Ok(PdfConversionResult {
+                pages,
                 images: paths_as_base64,
                 preview_path,
             })
@@ -722,6 +758,7 @@ fn main() {
             send_to_ollama,
             read_file_as_base64,
             convert_pdf_to_images,
+            cleanup_temp_images,
             send_pdf_to_ollama,
             chat_with_ollama,
             aggregate_batch_results,
