@@ -3,7 +3,7 @@
     <!-- IDLE State - Drop Zone -->
     <div
       v-show="appState === 'IDLE'"
-      class="flex-1 flex items-start justify-start"
+      class="flex-1 flex items-center justify-center"
       :class="[
         isDragging
           ? 'border-primary bg-primary/10 scale-105 shadow-lg shadow-primary/20'
