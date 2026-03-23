@@ -142,11 +142,23 @@ sudo apt install poppler-utils
 - **Temp file cleanup:** Immediate deletion after each page
 - **Tested up to:** 50+ pages safely
 
+### AI Prompt Improvements
+- **No Echo/Duplication:** Aggregator no longer sends original prompt, preventing AI from echoing instructions
+- **Pure JSON Merge:** Aggregator uses strict rules to combine page results into one flat JSON object
+- **Merchant Definition:** Explicit rule that merchant is NEVER the bank name (e.g., ignore "Chase", "Bank of America")
+- **No Notes Field:** Removed `notes` field to prevent AI from filling it with garbage text
+
 ### Recent Improvements (Phase 16)
 - **Data URI Preview:** Rust generates `data:image/jpeg;base64,...` - no CSP issues
 - **Garbage Collector:** Auto-deletes temp files on app close
 - **Security:** Sensitive PDFs no longer linger in /tmp
 - **Asset Protocol Bypass:** No symlink routing problems
+
+### Recent Improvements (Phase 17)
+- **No More Echo:** Aggregator stops passing original prompt to prevent AI from echoing instructions
+- **Strict JSON Merger:** Aggregator now acts as a pure JSON combiner with strict rules
+- **Cleaner Prompt:** Removed `notes` field, added explicit merchant vs bank distinction
+- **Anti-Hallucination:** Explicit ban on guessing bank names (Chase, BoA) as merchants
 
 ### Recent Improvements (Phase 15)
 - **Strict JSON Output:** `format: "json"` prevents AI from truncating arrays

@@ -118,9 +118,18 @@ Build a blazing-fast, local-first underwriting workspace focused on deep-work an
 4. ✅ **Auto-Cleanup on Close** - Temp files deleted when app unmounts
 5. ✅ **Security Hardening** - Sensitive financial PDFs no longer linger in /tmp
 
+## 7g. Phase 17: JSON Merger & Prompt Cleanup ✅ COMPLETE
+
+**Completed:**
+1. ✅ **No More Echo** - Aggregator stops passing original prompt to prevent AI from echoing instructions back
+2. ✅ **Strict JSON Merger** - New aggregation prompt with 6 critical rules for pure JSON combining
+3. ✅ **Merchant Definition** - Explicit rule: merchant is NEVER the bank name (Chase, BoA, LendingClub)
+4. ✅ **Removed Notes Field** - Eliminated `notes` field to prevent AI hallucination
+5. ✅ **Placeholder Format** - Changed prompt to use `REPLACE_WITH_...` style for clearer extraction
+
 ## 8. Current Status
 
-**ALL PHASES COMPLETE (1-16)** - App features full MCA Underwriter Pivot, multi-page analysis, text-only chat, batch processing, event-driven architecture, strict JSON enforcement, Data URI preview, and automatic garbage collection for 50+ page PDFs.
+**ALL PHASES COMPLETE (1-17)** - App features full MCA Underwriter Pivot, multi-page analysis, text-only chat, batch processing, event-driven architecture, strict JSON enforcement, Data URI preview, automatic garbage collection, and clean JSON merger without echo for 50+ page PDFs.
 
 ### User Flow:
 1. Upload PDFs → View in full PDF viewer (60% width)
@@ -161,6 +170,7 @@ The application relies on highly specific prompting to extract true underwriting
 - [x] **Advanced JSON Parsing:** Update the UI cards to display the new "Positions" array, True Revenue, and exact Negative Days count.
 - [x] **Prompt Rewrite:** Overwrite the default prompt to enforce the rules in Section 11.
 - [x] **Multi-page full analysis (sequential processing)** - Each page analyzed individually, results aggregated
+- [x] **JSON Merger (Phase 17)** - Aggregator uses strict JSON merge rules, no echo of original prompt
 
 ### Medium Priority ✅ BATCH PROCESSING COMPLETE
 - [x] **Batch processing (multiple PDFs)** - Upload and analyze multiple bank statements in one session

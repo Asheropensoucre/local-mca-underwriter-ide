@@ -390,11 +390,11 @@ async fn analyze_single_page(
 }
 
 /// Aggregate results from multiple pages into final analysis
-/// Generic aggregator - works with any document type, not just MCA
+/// Strict JSON merger - combines page results without echoing the original prompt
 async fn aggregate_page_results(
     client: &reqwest::Client,
     model: &str,
-    original_prompt: &str,
+    _original_prompt: &str,
     page_results: &[String],
     temperature: f32,
     max_tokens: i32,
@@ -408,28 +408,23 @@ async fn aggregate_page_results(
         .collect::<Vec<_>>()
         .join("\n\n");
 
-    // Generic aggregation prompt - defers to original prompt for formatting rules
+    // We stop passing the original prompt here to prevent echo/duplication.
+    // We only tell the AI to merge the JSON it already generated.
     let aggregate_prompt = format!(
-        r#"You have analyzed a multi-page document. Below are the individual page analyses.
+        r#"You are a strict JSON data merger. I am providing you with the JSON outputs from multiple pages of a document. 
 
-YOUR TASK:
-Combine these page analyses into one cohesive final response.
-
-IMPORTANT:
-- Merge all findings from all pages into a single comprehensive analysis
-- You MUST strictly adhere to the formatting and rules requested in the original prompt
-- If the original prompt requested JSON, return ONLY valid JSON
-- Combine numerical values (sums, counts, etc.) appropriately across pages
-- Do not introduce any new information - only synthesize what was extracted
-
-ORIGINAL PROMPT (follow these rules and format):
-{}
+CRITICAL RULES:
+1. Combine all the page data into ONE single, flat, valid JSON object.
+2. If multiple pages mention the same merchant name, only output it once.
+3. Combine all items from the "positions" arrays into a single "positions" array.
+4. DO NOT output the words "=== PAGE ANALYSIS ===". Strip out all page dividers.
+5. DO NOT echo my prompts or ask follow-up questions.
+6. Output ONLY valid JSON brackets. No markdown, no conversational text.
 
 PAGE ANALYSES TO COMBINE:
 {}
 
-FINAL COMBINED RESPONSE (follow original prompt format exactly):"#,
-        original_prompt,
+MERGED JSON ONLY:"#,
         combined_context
     );
 
