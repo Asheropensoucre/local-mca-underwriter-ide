@@ -36,16 +36,17 @@ A blazing-fast, local-first underwriting workspace built specifically for the Me
 1. Upload PDF(s) → Rust converts to JPEGs (60% Width)
    - Single file or batch (3-6 months of statements)
    - Page 1 JPEG served as preview via convertFileSrc
-2. Convert to Images → pdftocairo (poppler-utils)
+2. Convert to Images → pdftocairo (poppler-utils, 72 DPI)
 3. Compress → Grayscale JPEG (saved to disk, not memory)
-4. Send to Ollama → Base64 encoded images (one at a time)
-5. Vision Model Analyzes → 5-10 minutes per page (hardware dependent)
-6. Live Progress Events → UI updates in real-time ("Page 3 of 9...")
-7. Multi-page Processing → Each page analyzed sequentially
-8. Result Aggregation → All page findings combined into final JSON
-9. Temp File Cleanup → Images deleted immediately after use
-10. Dynamic UI Shift → Dashboard expands to 70% width
-11. Results Displayed → MCA Data Cards + Follow-up Chat
+4. Read & Encode → Each JPEG read from disk, encoded to Base64
+5. Send to Ollama → Base64 images with format: "json" enforced
+6. Vision Model Analyzes → 5-10 minutes per page (hardware dependent)
+7. Live Progress Events → UI updates in real-time ("Page 3 of 9...")
+8. Multi-page Processing → Each page analyzed sequentially
+9. Result Aggregation → All page findings combined into final JSON
+10. Temp File Cleanup → Images deleted immediately after use
+11. Dynamic UI Shift → Dashboard expands to 70% width
+12. Results Displayed → MCA Data Cards + Follow-up Chat
 ```
 
 ## State Machine
@@ -140,6 +141,12 @@ sudo apt install poppler-utils
 - **Disk-based images:** No memory limits on large PDFs
 - **Temp file cleanup:** Immediate deletion after each page
 - **Tested up to:** 50+ pages safely
+
+### Recent Improvements (Phase 15)
+- **Strict JSON Output:** `format: "json"` prevents AI from truncating arrays
+- **Temp Permissions:** fs:allow-temp-read enables convertFileSrc to work
+- **Arc-Based TempDir:** Files persist until cleanup_temp_images() called
+- **Bundle Size:** 95% smaller (2.6MB → 111KB) after removing vue-pdf-embed
 
 ## Roadmap
 

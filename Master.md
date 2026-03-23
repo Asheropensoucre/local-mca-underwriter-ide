@@ -100,9 +100,18 @@ Build a blazing-fast, local-first underwriting workspace focused on deep-work an
 4. ✅ **Temp File Cleanup** - Images deleted immediately after each page to free disk space
 5. ✅ **Scales to 50+ Pages** - No more IPC memory limits or silent timeouts
 
+## 7e. Phase 15: Stability & JSON Enforcement ✅ COMPLETE
+
+**Completed:**
+1. ✅ **Strict JSON Output** - Added `format: "json"` to Ollama requests to prevent array truncation
+2. ✅ **Temp Folder Permissions** - Added fs:allow-temp-read for convertFileSrc to work
+3. ✅ **Arc-Based TempDir Management** - Temp files persist until cleanup_temp_images() called
+4. ✅ **Preview Image Loading** - Fixed race condition where files were deleted before frontend could load
+5. ✅ **Bundle Size Reduction** - Removed vue-pdf-embed (2.6MB → 111KB, 95% smaller)
+
 ## 8. Current Status
 
-**ALL PHASES COMPLETE (1-14)** - App features full MCA Underwriter Pivot, multi-page analysis, text-only chat, batch processing, and event-driven architecture for 50+ page PDFs.
+**ALL PHASES COMPLETE (1-15)** - App features full MCA Underwriter Pivot, multi-page analysis, text-only chat, batch processing, event-driven architecture, and strict JSON enforcement for 50+ page PDFs.
 
 ### User Flow:
 1. Upload PDFs → View in full PDF viewer (60% width)
