@@ -14,7 +14,7 @@
       @dragleave="isDragging = false"
       @drop.prevent="handleDrop"
     >
-      <div class="border-2 border-dashed rounded-xl p-16 text-left cursor-pointer w-full transition-all duration-200">
+      <div class="border-2 border-dashed rounded-xl p-16 text-left cursor-pointer max-w-3xl transition-all duration-200">
         <div class="space-y-6">
           <div class="flex items-start gap-4">
             <svg class="w-20 h-20 text-gray-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
