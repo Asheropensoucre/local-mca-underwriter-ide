@@ -166,6 +166,13 @@ sudo apt install poppler-utils
 - **Template Manager UI:** Dropdown selector, save/delete buttons in Prompt tab
 - **Enterprise Architecture:** All file I/O handled by Rust backend
 
+### Recent Improvements (Phase 19)
+- **Analysis History:** View and reload past analyses instantly
+- **Rust Persistence:** History stored in OS app data directory (analysis_history.json)
+- **History Tab UI:** List of past runs with date, file, merchant, risk score
+- **Auto-Save:** Every analysis automatically saved to history on completion
+- **Instant Reload:** Load button restores dashboard without re-running AI
+
 ### Recent Improvements (Phase 15)
 - **Strict JSON Output:** `format: "json"` prevents AI from truncating arrays
 - **Temp Permissions:** fs:allow-temp-read enables convertFileSrc to work
@@ -183,7 +190,7 @@ sudo apt install poppler-utils
 ### Medium Priority
 - [x] **Batch processing (multiple PDFs)** - Upload and analyze multiple bank statements in one session ✅ COMPLETE
 - [x] **Custom prompt templates (save/load)** - Save custom underwriting templates for different deal types ✅ COMPLETE
-- [ ] **Analysis history (local storage)** - Store past analyses locally for quick reference
+- [x] **Analysis history (local storage)** - Store past analyses locally for quick reference ✅ COMPLETE
 
 ### Low Priority
 - [ ] Streaming responses (show tokens as generated)
