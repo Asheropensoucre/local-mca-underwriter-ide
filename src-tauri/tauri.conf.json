@@ -31,5 +31,16 @@
     "icon": []
   },
   "plugins": {
+  },
+  "permissions": {
+    "core:event:allow-listen": {},
+    "core:event:default": {},
+    "core:event:allow-emit": {},
+    "core:webview:default": {},
+    "core:window:default": {},
+    "core:app:default": {},
+    "core:image:default": {},
+    "core:menu:default": {},
+    "core:tray:default": {}
   }
 }
