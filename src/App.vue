@@ -1,33 +1,9 @@
 <template>
   <div class="h-screen w-screen flex flex-row overflow-hidden bg-background text-gray-300">
-    <!-- Left Navigation Menu (Pane 1) -->
-    <div class="w-64 flex-shrink-0 h-full border-r border-border bg-surface flex flex-col">
-      <!-- Header -->
-      <div class="h-12 flex items-center px-4 border-b border-border">
-        <svg class="w-5 h-5 text-gray-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-        </svg>
-        <span class="ml-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Explorer</span>
-      </div>
-      
-      <!-- Navigation Items -->
-      <div class="flex-1 overflow-auto py-2">
-        <!-- Recent Files Section -->
-        <div class="px-3 mb-2">
-          <div class="flex items-center justify-between mb-1">
-            <span class="text-xs font-medium text-gray-500">Recent Files</span>
-          </div>
-          <div class="space-y-0.5">
-            <div class="px-2 py-1.5 text-xs text-gray-600 italic">No recent files</div>
-          </div>
-        </div>
-      </div>
-    </div>
-
     <!-- IDLE State - Drop Zone -->
     <div
       v-show="appState === 'IDLE'"
-      class="flex-1 border-2 border-dashed rounded-xl p-16 text-center cursor-pointer transition-all duration-200 flex items-center justify-center bg-background"
+      class="flex-1 flex items-center justify-center"
       :class="[
         isDragging
           ? 'border-primary bg-primary/10 scale-105 shadow-lg shadow-primary/20'
@@ -38,46 +14,48 @@
       @dragleave="isDragging = false"
       @drop.prevent="handleDrop"
     >
-      <div class="space-y-6 max-w-2xl">
-        <div>
-          <svg class="w-20 h-20 text-gray-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-          </svg>
-        </div>
-        <div>
-          <p class="text-xl font-medium text-gray-200">Drop Bank Statements Here</p>
-          <p class="text-sm text-gray-500 mt-2">or click to browse (select multiple months)</p>
-        </div>
-        <div class="flex gap-4">
-          <span class="px-3 py-1 bg-surface border border-border rounded text-xs text-gray-500">PDF</span>
-          <span class="px-3 py-1 bg-surface border border-border rounded text-xs text-gray-500">Multiple Files</span>
-        </div>
-        <p v-if="dropError" class="text-sm text-red-400">{{ dropError }}</p>
-
-        <!-- File Queue Preview -->
-        <div v-if="fileQueue.length > 0" class="text-left">
-          <p class="text-sm font-medium text-gray-400 mb-2">Selected Files ({{ fileQueue.length }}):</p>
-          <div class="max-h-48 overflow-auto space-y-1">
-            <div
-              v-for="(file, idx) in fileQueue"
-              :key="idx"
-              class="flex items-center justify-between bg-surface border border-border rounded px-3 py-2 text-sm"
-            >
-              <span class="text-gray-300 truncate flex-1">{{ file.name }}</span>
-              <button
-                @click.stop="removeFile(idx)"
-                class="ml-2 text-red-400 hover:text-red-300 text-xs"
-              >
-                ✕ Remove
-              </button>
-            </div>
+      <div class="border-2 border-dashed rounded-xl p-16 text-center cursor-pointer max-w-2xl transition-all duration-200">
+        <div class="space-y-6">
+          <div>
+            <svg class="w-20 h-20 text-gray-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+            </svg>
           </div>
-          <button
-            @click.stop="clearFileQueue"
-            class="mt-2 text-xs text-gray-500 hover:text-gray-400"
-          >
-            Clear All
-          </button>
+          <div>
+            <p class="text-xl font-medium text-gray-200">Drop Bank Statements Here</p>
+            <p class="text-sm text-gray-500 mt-2">or click to browse (select multiple months)</p>
+          </div>
+          <div class="flex gap-4">
+            <span class="px-3 py-1 bg-surface border border-border rounded text-xs text-gray-500">PDF</span>
+            <span class="px-3 py-1 bg-surface border border-border rounded text-xs text-gray-500">Multiple Files</span>
+          </div>
+          <p v-if="dropError" class="text-sm text-red-400">{{ dropError }}</p>
+
+          <!-- File Queue Preview -->
+          <div v-if="fileQueue.length > 0" class="text-left">
+            <p class="text-sm font-medium text-gray-400 mb-2">Selected Files ({{ fileQueue.length }}):</p>
+            <div class="max-h-48 overflow-auto space-y-1">
+              <div
+                v-for="(file, idx) in fileQueue"
+                :key="idx"
+                class="flex items-center justify-between bg-surface border border-border rounded px-3 py-2 text-sm"
+              >
+                <span class="text-gray-300 truncate flex-1">{{ file.name }}</span>
+                <button
+                  @click.stop="removeFile(idx)"
+                  class="ml-2 text-red-400 hover:text-red-300 text-xs"
+                >
+                  ✕ Remove
+                </button>
+              </div>
+            </div>
+            <button
+              @click.stop="clearFileQueue"
+              class="mt-2 text-xs text-gray-500 hover:text-gray-400"
+            >
+              Clear All
+            </button>
+          </div>
         </div>
       </div>
     </div>
