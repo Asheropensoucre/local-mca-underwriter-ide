@@ -819,25 +819,10 @@ const loadFileForPreview = async (index) => {
 
   console.log('[State] Loading PDF:', file.path)
 
-  try {
-    const { readFile } = await import('@tauri-apps/plugin-fs')
-    const pdfData = await readFile(file.path)
-    
-    // Clean up previous blob URL
-    if (pdfBlobUrl.value) {
-      URL.revokeObjectURL(pdfBlobUrl.value)
-    }
-    
-    // Create Blob and Object URL (Virtual File strategy)
-    const blob = new Blob([pdfData], { type: 'application/pdf' })
-    pdfBlobUrl.value = URL.createObjectURL(blob)
-    pdfSource.value = pdfBlobUrl.value
-    
-    console.log('[State] PDF loaded as Blob URL:', pdfSource.value)
-  } catch (err) {
-    console.error('Error reading PDF:', err)
-    errorMessage.value = 'Failed to load PDF file: ' + err.message
-    appState.value = 'ERROR'
+  // Clean up previous blob URL
+  if (pdfBlobUrl.value) {
+    URL.revokeObjectURL(pdfBlobUrl.value)
+    pdfBlobUrl.value = null
   }
 
   try {
@@ -845,12 +830,22 @@ const loadFileForPreview = async (index) => {
       pdfPath: file.path,
       dpi: 72
     })
+    
     fileQueue.value[index].pageCount = result.pages.length
     pdfPageCount.value = result.pages.length
+    
+    // Use the preview_path from Rust (page1.jpg)
+    if (result.preview_path) {
+      pdfSource.value = result.preview_path
+      console.log('[State] Preview image path:', result.preview_path)
+    } else {
+      console.warn('[State] No preview_path returned from Rust')
+    }
+    
     loadingProgress.value = 50
     loadingMessage.value = `Converting ${result.pages.length} page(s)...`
   } catch (err) {
-    console.error('Error getting page count:', err)
+    console.error('Error converting PDF:', err)
     pdfPageCount.value = 1
     fileQueue.value[index].pageCount = 1
   }

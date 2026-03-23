@@ -240,7 +240,14 @@ async fn convert_pdf_to_images(pdf_path: String, dpi: u32) -> Result<PdfConversi
                 .map(|p| BASE64.encode(p.as_bytes()))
                 .collect();
 
-            Ok(PdfConversionResult { pages, images: paths_as_base64 })
+            // Return first page path for frontend preview
+            let preview_path = image_paths.first().cloned();
+
+            Ok(PdfConversionResult { 
+                pages, 
+                images: paths_as_base64,
+                preview_path,
+            })
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);

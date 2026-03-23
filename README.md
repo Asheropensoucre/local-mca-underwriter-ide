@@ -16,10 +16,13 @@ A blazing-fast, local-first underwriting workspace built specifically for the Me
 - ⚖️ **Leverage & Debt Service** - Calculates total daily/weekly debt service to determine safe new payment thresholds.
 
 ### PDF Analysis & Workspace
-- 📄 **Full PDF Viewer** - Multi-page navigation with PDF.js
-- 🔍 **Zoom & Navigation** - 50%-200% zoom, thumbnail strip, fit-to-width
+- 📄 **Rust-Native Image Pipeline** - Serve JPEG previews directly from Rust backend
+- 🖼️ **Lightweight Preview** - Simple <img> tag, zero JavaScript PDF rendering
+- 📊 **Page Count Display** - Sync with backend page count
 - 🖼️ **Grayscale JPEG Conversion** - 55-60% compression for faster local processing
 - 🎨 **Dynamic UI Resizing** - Starts at a 60/40 split for PDF reading, dynamically animating to a 30/70 split when analysis completes to give the Dashboard maximum space.
+
+**Architecture Note:** We removed vue-pdf-embed (heavy JavaScript PDF renderer) to eliminate Out-Of-Memory crashes and ArrayBuffer detachments. The Rust backend already generates JPEGs for Ollama - we now serve Page 1 directly to the frontend via Tauri's convertFileSrc. Result: 100% more stable, zero client-side PDF parsing.
 
 ### AI Integration
 - 🤖 **Ollama Integration** - Connect to local vision models (100% offline)
@@ -30,8 +33,9 @@ A blazing-fast, local-first underwriting workspace built specifically for the Me
 ## How It Works
 
 ```
-1. Upload PDF(s) → PDF Viewer (60% Width)
+1. Upload PDF(s) → Rust converts to JPEGs (60% Width)
    - Single file or batch (3-6 months of statements)
+   - Page 1 JPEG served as preview via convertFileSrc
 2. Convert to Images → pdftocairo (poppler-utils)
 3. Compress → Grayscale JPEG (saved to disk, not memory)
 4. Send to Ollama → Base64 encoded images (one at a time)

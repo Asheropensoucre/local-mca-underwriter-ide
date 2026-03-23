@@ -52,5 +52,6 @@ pub struct PdfPageInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PdfConversionResult {
     pub pages: Vec<PdfPageInfo>,
-    pub images: Vec<String>, // base64 encoded
+    pub images: Vec<String>, // base64 encoded paths for Ollama
+    pub preview_path: Option<String>, // Absolute path to page1.jpg for frontend preview
 }
