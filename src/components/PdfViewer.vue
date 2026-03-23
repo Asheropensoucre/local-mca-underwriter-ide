@@ -16,33 +16,40 @@
     </div>
 
     <!-- Image Viewer -->
-    <div class="flex-1 overflow-auto bg-background/50 p-4 flex items-center justify-center" ref="viewerContainer">
+    <div class="flex-1 overflow-auto bg-background/50 p-4 flex items-center justify-center relative" ref="viewerContainer">
       <!-- Loading State -->
       <div v-if="!imageSrc" class="text-center">
         <div class="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent mx-auto mb-3"></div>
         <p class="text-sm text-gray-400">Loading Preview...</p>
+        <p class="text-xs text-gray-600 mt-2">Source: {{ source || 'none' }}</p>
       </div>
-      
+
       <!-- Image -->
       <img
-        v-else
+        v-if="imageSrc"
         :src="imageSrc"
         alt="PDF Page 1 Preview"
         class="max-w-full max-h-full object-contain shadow-2xl"
         @load="handleImageLoad"
         @error="handleImageError"
       />
+      
+      <!-- Error State -->
+      <div v-if="imageError" class="text-center text-red-400">
+        <p class="text-sm mb-2">Failed to load preview</p>
+        <p class="text-xs text-gray-600">{{ imageError }}</p>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { convertFileSrc } from '@tauri-apps/api/core'
 
 const props = defineProps({
   source: {
-    type: String, // Now expects a file path string, not ArrayBuffer
+    type: String, // Now expects a file path string
     required: true
   },
   pageCount: {
@@ -55,34 +62,47 @@ const emit = defineEmits(['error', 'load'])
 
 const viewerContainer = ref(null)
 const imageSrc = ref(null)
+const imageError = ref(null)
 const totalPages = ref(1)
 
-// Convert file path to Tauri URL
-const imageSrcComputed = computed(() => {
-  if (!props.source) return null
-  console.log('[PdfViewer] Converting file path to URL:', props.source)
-  return convertFileSrc(props.source)
-})
-
-// Watch for source changes
-const setupImage = () => {
-  if (props.source) {
-    imageSrc.value = imageSrcComputed.value
-    console.log('[PdfViewer] Image source set:', imageSrc.value)
+// Setup image from file path
+const setupImage = async () => {
+  imageError.value = null
+  
+  if (!props.source) {
+    console.warn('[PdfViewer] No source provided')
+    imageError.value = 'No file path provided'
+    return
+  }
+  
+  console.log('[PdfViewer] Setting up image from path:', props.source)
+  
+  try {
+    // Convert file path to Tauri URL
+    const url = convertFileSrc(props.source)
+    imageSrc.value = url
+    console.log('[PdfViewer] Image URL created:', url)
+  } catch (err) {
+    console.error('[PdfViewer] Failed to convert file path:', err)
+    imageError.value = err.message || 'Failed to load image'
+    emit('error', err)
   }
 }
 
 const handleImageLoad = (event) => {
   console.log('[PdfViewer] Image loaded successfully:', event.target.naturalWidth, 'x', event.target.naturalHeight)
+  imageError.value = null
   emit('load', {
     width: event.target.naturalWidth,
     height: event.target.naturalHeight
   })
 }
 
-const handleImageError = (error) => {
-  console.error('[PdfViewer] Image load error:', error)
-  emit('error', new Error('Failed to load PDF preview image'))
+const handleImageError = (event) => {
+  const errorMsg = `Failed to load: ${props.source}`
+  console.error('[PdfViewer] Image load error:', errorMsg, event)
+  imageError.value = errorMsg
+  emit('error', new Error(errorMsg))
 }
 
 // Sync page count from parent
@@ -91,21 +111,22 @@ if (props.pageCount > 0) {
 }
 
 onMounted(() => {
-  console.log('[PdfViewer] Component mounted')
+  console.log('[PdfViewer] Component mounted, source:', props.source)
   setupImage()
 })
 
 // Watch for source changes
-import { watch } from 'vue'
-watch(() => props.source, (newSource) => {
-  console.log('[PdfViewer] Source changed:', newSource)
-  if (newSource) {
-    setupImage()
+watch(() => props.source, (newSource, oldSource) => {
+  console.log('[PdfViewer] Source changed:', oldSource, '->', newSource)
+  if (newSource && newSource !== oldSource) {
+    imageSrc.value = null // Reset to show loading state
+    setTimeout(() => setupImage(), 10) // Small delay to ensure reactivity
   }
-})
+}, { immediate: false })
 
 onUnmounted(() => {
   console.log('[PdfViewer] Component unmounted')
   imageSrc.value = null
+  imageError.value = null
 })
 </script>

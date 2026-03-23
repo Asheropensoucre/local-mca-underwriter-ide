@@ -5,14 +5,16 @@ mod ollama;
 
 use ollama::{OllamaChatRequest, OllamaMessage, OllamaOptions, OllamaModelsResponse, PdfConversionResult, PdfPageInfo};
 use std::fs;
-use std::sync::Mutex;
+use std::sync::{Mutex, Arc};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use image::GenericImageView;
 use tauri_plugin_dialog::DialogExt;
 use tauri::Emitter;
+use tempfile::TempDir;
 
 // Track temporary directories to clean them up later
-static TEMP_DIRS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+// We need to store the TempDir itself, not just the path, to prevent auto-deletion
+static TEMP_DIRS: Mutex<Vec<Arc<TempDir>>> = Mutex::new(Vec::new());
 
 /// Clean up old temporary image directories to prevent disk space leaks
 #[tauri::command]
@@ -21,15 +23,10 @@ fn cleanup_temp_images() -> Result<(), String> {
     
     println!("[Cleanup] Cleaning up {} temp directories...", dirs.len());
     
-    for dir_path in dirs.drain(..) {
-        if std::path::Path::new(&dir_path).exists() {
-            match fs::remove_dir_all(&dir_path) {
-                Ok(_) => println!("[Cleanup] Deleted: {}", dir_path),
-                Err(e) => println!("[Cleanup] Failed to delete {}: {}", dir_path, e),
-            }
-        }
-    }
+    // Clear the vector - this will drop the Arcs and delete the temp dirs
+    dirs.clear();
     
+    println!("[Cleanup] Cleanup complete");
     Ok(())
 }
 
@@ -174,7 +171,6 @@ async fn test_ollama_model(model: String) -> Result<String, String> {
 #[tauri::command]
 async fn convert_pdf_to_images(pdf_path: String, dpi: u32) -> Result<PdfConversionResult, String> {
     use std::process::Command;
-    use tempfile::tempdir;
     use image::ImageFormat;
 
     println!("[PDF] Converting PDF to JPEG images at {} DPI...", dpi);
@@ -183,18 +179,18 @@ async fn convert_pdf_to_images(pdf_path: String, dpi: u32) -> Result<PdfConversi
     let _ = cleanup_temp_images();
 
     // Create temp directory for page images
-    let temp_dir = tempdir()
+    let temp_dir = TempDir::new()
         .map_err(|e| format!("Failed to create temp dir: {}", e))?;
     
-    // Track temp dir path for later cleanup (keep temp_dir alive!)
-    let temp_dir_path = temp_dir.path().to_string_lossy().to_string();
+    // Store Arc to temp_dir to prevent it from being deleted
+    let temp_dir_arc = Arc::new(temp_dir);
     if let Ok(mut dirs) = TEMP_DIRS.lock() {
-        dirs.push(temp_dir_path.clone());
-        println!("[PDF] Tracking temp dir: {} (total tracked: {})", temp_dir_path, dirs.len());
+        dirs.push(temp_dir_arc.clone());
+        println!("[PDF] Tracking temp dir (total tracked: {})", dirs.len());
     }
 
     // Try pdftocairo first (part of poppler-utils)
-    let output_prefix = temp_dir.path().join("page");
+    let output_prefix = temp_dir_arc.path().join("page");
     let output_pattern = output_prefix.to_str().unwrap();
 
     println!("[PDF] Running pdftocairo...");
@@ -237,17 +233,7 @@ async fn convert_pdf_to_images(pdf_path: String, dpi: u32) -> Result<PdfConversi
                     grayscale_img.save_with_format(&jpeg_path, ImageFormat::Jpeg)
                         .map_err(|e| format!("Failed to save page {} to JPEG: {}", page_num, e))?;
 
-                    let _compression_pct = if png_data.len() > jpeg_path.len() {
-                        ((png_data.len() - png_data.len()) as u64 * 100 / png_data.len() as u64) as usize
-                    } else {
-                        0
-                    };
-
-                    println!("[PDF] Page {}: PNG {}KB → JPEG saved to disk ({}KB estimated)",
-                        page_num,
-                        png_data.len() / 1024,
-                        png_data.len() / 1024 / 2  // Rough estimate
-                    );
+                    println!("[PDF] Page {}: JPEG saved to {}", page_num, jpeg_path);
 
                     pages.push(PdfPageInfo { page_number: page_num, width, height });
                     image_paths.push(jpeg_path);
@@ -261,24 +247,24 @@ async fn convert_pdf_to_images(pdf_path: String, dpi: u32) -> Result<PdfConversi
                 }
             }
 
-            println!("[PDF] Converted {} pages to JPEG (saved on disk)", pages.len());
+            println!("[PDF] Converted {} pages to JPEG", pages.len());
 
             if pages.is_empty() {
                 return Err("No pages were converted from PDF".to_string());
             }
 
-            // Return paths as base64-encoded strings for compatibility
-            // (The paths will be used directly in the new event-driven flow)
+            // Return paths as base64-encoded strings for Ollama
             let paths_as_base64: Vec<String> = image_paths.iter()
                 .map(|p| BASE64.encode(p.as_bytes()))
                 .collect();
 
-            // Return first page path for frontend preview
+            // Return first page path for frontend preview (absolute path)
             let preview_path = image_paths.first().cloned();
+            
+            println!("[PDF] Preview path: {:?}", preview_path);
 
-            // Keep temp_dir alive until the end of the function
-            drop(temp_dir);
-
+            // DON'T drop temp_dir_arc - it's stored in TEMP_DIRS and will be cleaned up later
+            
             Ok(PdfConversionResult {
                 pages,
                 images: paths_as_base64,
