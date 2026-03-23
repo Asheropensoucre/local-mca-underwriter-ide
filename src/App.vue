@@ -27,7 +27,7 @@
     <!-- IDLE State - Drop Zone -->
     <div
       v-show="appState === 'IDLE'"
-      class="border-2 border-dashed rounded-xl p-16 text-center cursor-pointer w-full transition-all duration-200 flex items-center justify-center"
+      class="flex-1 border-2 border-dashed rounded-xl p-16 text-center cursor-pointer transition-all duration-200 flex items-center justify-center bg-background"
       :class="[
         isDragging
           ? 'border-primary bg-primary/10 scale-105 shadow-lg shadow-primary/20'
