@@ -1,9 +1,9 @@
 <template>
-  <div class="min-h-screen bg-background text-gray-300 flex items-center justify-center p-8">
+  <div class="h-screen w-screen flex flex-row overflow-hidden bg-background text-gray-300">
     <!-- IDLE State - Drop Zone -->
     <div
       v-show="appState === 'IDLE'"
-      class="border-2 border-dashed rounded-xl p-16 text-center cursor-pointer max-w-2xl w-full transition-all duration-200"
+      class="border-2 border-dashed rounded-xl p-16 text-center cursor-pointer max-w-2xl w-full transition-all duration-200 m-auto"
       :class="[
         isDragging
           ? 'border-primary bg-primary/10 scale-105 shadow-lg shadow-primary/20'
@@ -29,13 +29,13 @@
           <span class="px-3 py-1 bg-surface border border-border rounded text-xs text-gray-500">Multiple Files</span>
         </div>
         <p v-if="dropError" class="text-sm text-red-400">{{ dropError }}</p>
-        
+
         <!-- File Queue Preview -->
         <div v-if="fileQueue.length > 0" class="text-left">
           <p class="text-sm font-medium text-gray-400 mb-2">Selected Files ({{ fileQueue.length }}):</p>
           <div class="max-h-48 overflow-auto space-y-1">
-            <div 
-              v-for="(file, idx) in fileQueue" 
+            <div
+              v-for="(file, idx) in fileQueue"
               :key="idx"
               class="flex items-center justify-between bg-surface border border-border rounded px-3 py-2 text-sm"
             >
@@ -59,10 +59,10 @@
     </div>
 
     <!-- Main Dashboard Layout - ALWAYS MOUNTED once file is loaded -->
-    <div v-show="appState !== 'IDLE'" class="w-full max-w-7xl h-[80vh] flex gap-4">
+    <div v-show="appState !== 'IDLE'" class="flex-1 flex flex-row h-full overflow-hidden">
       <!-- Left Pane - PDF Viewer (60% → 30% on COMPLETE) -->
       <div
-        class="bg-surface rounded-xl border border-border flex flex-col overflow-hidden transition-all duration-500 ease-in-out"
+        class="bg-surface border-r border-border flex flex-col overflow-hidden transition-all duration-500 ease-in-out"
         :class="appState === 'COMPLETE' ? 'w-[30%]' : 'w-[60%]'"
       >
         <!-- File Info Header -->
@@ -99,10 +99,9 @@
         </div>
       </div>
 
-      <!-- Right Sidebar (40% → 70% on COMPLETE) - AI Chat Assistant -->
-      <div 
-        class="bg-surface rounded-xl border border-border flex flex-col overflow-hidden transition-all duration-500 ease-in-out"
-        :class="appState === 'COMPLETE' ? 'w-[70%]' : 'w-[40%]'"
+      <!-- Right Sidebar - AI Chat Assistant -->
+      <div
+        class="w-[400px] h-full flex-shrink-0 border-l border-border bg-surface flex flex-col"
       >
         <!-- Tab Navigation -->
         <div class="flex border-b border-border">

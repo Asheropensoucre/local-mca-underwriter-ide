@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>MCA Underwriter Workspace - IDE</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@300;400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#58a6ff",
+                        "background-dark": "#0b0e14",
+                        "surface": "#161b22",
+                        "border": "#30363d",
+                        "accent-muted": "#21262d"
+                    },
+                    fontFamily: {
+                        "display": ["Public Sans", "sans-serif"],
+                        "mono": ["JetBrains Mono", "monospace"]
+                    },
+                    borderRadius: {
+                        "DEFAULT": "0.375rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                },
+            },
+        }
+    </script>
+<style>
+        body {
+            font-family: "Public Sans", sans-serif;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #0b0e14;
+        }
+        .material-symbols-outlined {
+            font-size: 20px;
+        }
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0b0e14;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #30363d;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #484f58;
+        }
+        .mono-text {
+            font-family: "JetBrains Mono", monospace;
+        }
+    </style>
+</head>
+<body class="bg-background-dark text-slate-400">
+<div class="h-screen w-screen flex flex-row overflow-hidden font-display">
+<!-- Activity Bar (Far Left) -->
+<aside class="w-12 flex-shrink-0 bg-background-dark border-r border-border flex flex-col items-center py-4 gap-4">
+<div class="text-primary mb-2">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">layers</span>
+</div>
+<div class="text-slate-500 hover:text-slate-300 cursor-pointer">
+<span class="material-symbols-outlined">dashboard</span>
+</div>
+<div class="text-slate-500 hover:text-slate-300 cursor-pointer">
+<span class="material-symbols-outlined">description</span>
+</div>
+<div class="text-primary cursor-pointer border-l-2 border-primary pl-1 -ml-1">
+<span class="material-symbols-outlined">account_balance</span>
+</div>
+<div class="mt-auto flex flex-col gap-4 text-slate-600">
+<div class="hover:text-slate-300 cursor-pointer">
+<span class="material-symbols-outlined">settings</span>
+</div>
+<div class="size-6 rounded-full bg-accent-muted overflow-hidden">
+<img alt="Profile" data-alt="User profile avatar small circle" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAqbP8kgpycCArdG1d1VXO-y23rPBOkLwRG1YfyDJHvdBBOMRRXMZVNnzp6u_5xCG67HRWUqpz7FEPMAH5MiIVeN_iSANJVMOmXlb1wmcGOZzD9ZlsYhRqDy4nwIqAoSBNiVx_NSAHjEuT5xBaTrAJntzchmLoOJUEMofz8jo_w7BeJh98zLVlliEc2ab_f5UgYoqr3Uq5nkflJj72ijtZfKyq0HIkSeofFdUhU5bElokPrLbiNg53UK3ZVszcvgeJOzCEKFwS-lJE"/>
+</div>
+</div>
+</aside>
+<!-- Main Editor Area (Dashboard) -->
+<main class="flex-1 flex flex-col min-w-0 bg-background-dark">
+<!-- IDE Style Header / Tabs -->
+<header class="h-10 flex-shrink-0 flex items-center bg-background-dark border-b border-border px-4 justify-between">
+<div class="flex h-full items-center">
+<div class="flex h-full items-center px-4 bg-surface border-x border-border text-xs font-medium text-slate-200 border-t-2 border-t-primary">
+<span class="mono-text">Bank Analytics.json</span>
+<span class="material-symbols-outlined ml-2 opacity-50 text-[14px]">close</span>
+</div>
+<div class="flex h-full items-center px-4 hover:bg-surface/50 cursor-pointer text-xs text-slate-500 border-r border-border">
+<span class="mono-text">Position Table</span>
+</div>
+</div>
+<div class="flex items-center gap-3">
+<div class="relative flex items-center">
+<span class="material-symbols-outlined absolute left-2 text-slate-600 text-[16px]">search</span>
+<input class="bg-surface border border-border rounded text-[11px] py-1 pl-8 pr-2 w-48 focus:outline-none focus:border-primary/50 text-slate-300" placeholder="Search data..." type="text"/>
+</div>
+<span class="material-symbols-outlined text-slate-600 hover:text-slate-300 cursor-pointer">more_vert</span>
+</div>
+</header>
+<!-- Main Scrollable Content -->
+<div class="flex-1 overflow-auto p-6 space-y-8">
+<!-- Summary Metrics Grid -->
+<div>
+<h2 class="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-4 mono-text">Merchant Performance Overview</h2>
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+<div class="bg-surface border border-border rounded-lg p-4 flex flex-col gap-1">
+<span class="text-[10px] text-slate-500 font-bold mono-text uppercase">Avg Monthly Deposit</span>
+<div class="flex items-end gap-2">
+<span class="text-xl font-bold text-slate-100 mono-text">$42,500.00</span>
+<span class="text-emerald-400 text-[10px] font-bold pb-1 mono-text">+12%</span>
+</div>
+</div>
+<div class="bg-surface border border-border rounded-lg p-4 flex flex-col gap-1">
+<span class="text-[10px] text-slate-500 font-bold mono-text uppercase">Negative Days</span>
+<div class="flex items-end gap-2">
+<span class="text-xl font-bold text-slate-100 mono-text">2</span>
+<span class="text-orange-400 text-[10px] font-bold pb-1 mono-text">-5%</span>
+</div>
+</div>
+<div class="bg-surface border border-border rounded-lg p-4 flex flex-col gap-1">
+<span class="text-[10px] text-slate-500 font-bold mono-text uppercase">NSF Count (L90D)</span>
+<div class="flex items-end gap-2">
+<span class="text-xl font-bold text-slate-100 mono-text">1</span>
+<span class="text-orange-400 text-[10px] font-bold pb-1 mono-text">-10%</span>
+</div>
+</div>
+<div class="bg-surface border border-border rounded-lg p-4 flex flex-col gap-1">
+<span class="text-[10px] text-slate-500 font-bold mono-text uppercase">Ending Balance</span>
+<div class="flex items-end gap-2">
+<span class="text-xl font-bold text-slate-100 mono-text">$12,340.50</span>
+<span class="text-emerald-400 text-[10px] font-bold pb-1 mono-text">+8%</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Position Table Section -->
+<div class="flex-1">
+<div class="flex items-center justify-between mb-4">
+<h2 class="text-[10px] font-bold uppercase tracking-widest text-slate-500 mono-text">Active Positions &amp; Exposure</h2>
+<button class="text-[10px] font-bold text-primary hover:text-primary/80 flex items-center gap-1 mono-text uppercase">
+<span class="material-symbols-outlined text-[14px]">download</span> Export CSV
+                    </button>
+</div>
+<div class="overflow-x-auto border border-border rounded-lg overflow-hidden">
+<table class="w-full text-left text-[11px] border-collapse mono-text">
+<thead class="bg-surface text-slate-500 font-bold border-b border-border">
+<tr>
+<th class="px-4 py-3 border-r border-border uppercase">Funder Name</th>
+<th class="px-4 py-3 border-r border-border text-right uppercase">Daily Payment</th>
+<th class="px-4 py-3 border-r border-border text-right uppercase">Balance Owed</th>
+<th class="px-4 py-3 border-r border-border text-center uppercase">Position</th>
+<th class="px-4 py-3 text-center uppercase">Status</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-border bg-background-dark/50">
+<tr class="hover:bg-surface/50">
+<td class="px-4 py-3 border-r border-border text-slate-200">Everest Funding</td>
+<td class="px-4 py-3 border-r border-border text-right text-slate-300">$450.00</td>
+<td class="px-4 py-3 border-r border-border text-right text-slate-300">$24,100.00</td>
+<td class="px-4 py-3 border-r border-border text-center text-slate-300">1st</td>
+<td class="px-4 py-3 text-center">
+<span class="px-2 py-0.5 rounded border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-[9px] font-bold">ACTIVE</span>
+</td>
+</tr>
+<tr class="hover:bg-surface/50">
+<td class="px-4 py-3 border-r border-border text-slate-200">Yellowstone Capital</td>
+<td class="px-4 py-3 border-r border-border text-right text-slate-300">$210.00</td>
+<td class="px-4 py-3 border-r border-border text-right text-slate-300">$8,450.00</td>
+<td class="px-4 py-3 border-r border-border text-center text-slate-300">2nd</td>
+<td class="px-4 py-3 text-center">
+<span class="px-2 py-0.5 rounded border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-[9px] font-bold">ACTIVE</span>
+</td>
+</tr>
+<tr class="hover:bg-surface/50">
+<td class="px-4 py-3 border-r border-border text-slate-200">Cloudfund</td>
+<td class="px-4 py-3 border-r border-border text-right text-slate-300">$185.00</td>
+<td class="px-4 py-3 border-r border-border text-right text-slate-300">$3,200.00</td>
+<td class="px-4 py-3 border-r border-border text-center text-slate-300">3rd</td>
+<td class="px-4 py-3 text-center">
+<span class="px-2 py-0.5 rounded border border-orange-500/30 bg-orange-500/10 text-orange-400 text-[9px] font-bold">DEFAULT RISK</span>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<!-- Trend Line Placeholder -->
+<div class="h-64 border border-border bg-surface rounded-lg relative overflow-hidden">
+<div class="absolute inset-0 opacity-5 flex items-center justify-center pointer-events-none">
+<span class="text-4xl font-bold tracking-tighter mono-text">FINANCIAL TREND GRAPH</span>
+</div>
+<div class="p-4 border-b border-border bg-background-dark/30 flex justify-between items-center">
+<span class="text-[10px] font-bold text-slate-500 uppercase mono-text">Daily Balance Trend (L30D)</span>
+<div class="flex gap-2">
+<div class="w-2 h-2 rounded-full bg-primary"></div>
+<div class="w-2 h-2 rounded-full bg-slate-700"></div>
+</div>
+</div>
+<div class="w-full h-full flex items-end px-4 pb-12 gap-2">
+<!-- Mock chart bars using blue accent -->
+<div class="bg-primary/10 flex-1 h-[40%] rounded-t-sm"></div>
+<div class="bg-primary/10 flex-1 h-[45%] rounded-t-sm"></div>
+<div class="bg-primary/10 flex-1 h-[38%] rounded-t-sm"></div>
+<div class="bg-primary/10 flex-1 h-[55%] rounded-t-sm"></div>
+<div class="bg-primary/20 flex-1 h-[60%] rounded-t-sm"></div>
+<div class="bg-primary/20 flex-1 h-[65%] rounded-t-sm"></div>
+<div class="bg-primary/40 flex-1 h-[70%] border-t border-primary rounded-t-sm"></div>
+<div class="bg-primary/40 flex-1 h-[75%] border-t border-primary rounded-t-sm"></div>
+<div class="bg-primary/40 flex-1 h-[68%] border-t border-primary rounded-t-sm"></div>
+<div class="bg-primary/40 flex-1 h-[62%] border-t border-primary rounded-t-sm"></div>
+</div>
+</div>
+</div>
+<!-- Bottom Status Bar -->
+<footer class="h-6 bg-background-dark border-t border-border flex-shrink-0 flex items-center justify-between px-3 text-[10px] text-slate-500 font-medium">
+<div class="flex items-center gap-4">
+<div class="flex items-center gap-1">
+<span class="material-symbols-outlined text-[12px] text-primary">sync</span>
+<span class="mono-text">Ready</span>
+</div>
+<div class="flex items-center gap-1">
+<span class="mono-text uppercase">Underwriter: Sarah Jenkins</span>
+</div>
+</div>
+<div class="flex items-center gap-4 mono-text uppercase">
+<span>UTF-8</span>
+<span>JSON</span>
+<span class="flex items-center gap-1">
+<span class="material-symbols-outlined text-[12px] text-emerald-500">check_circle</span>
+                    Verified
+                </span>
+</div>
+</footer>
+</main>
+<!-- Right Side Sidebar (AI Assistant) -->
+<aside class="w-[400px] flex-shrink-0 flex flex-col bg-surface border-l border-border h-full">
+<!-- Sidebar Tabs - Refactored to match reference style -->
+<div class="h-12 flex-shrink-0 border-b border-border flex px-6">
+<div class="flex items-center h-full gap-8">
+<div class="h-full flex items-center text-xs font-medium text-primary border-b-2 border-primary cursor-pointer px-1">
+                    Underwrite
+                </div>
+<div class="h-full flex items-center text-xs font-medium text-slate-500 hover:text-slate-300 cursor-pointer px-1">
+                    Prompt
+                </div>
+<div class="h-full flex items-center text-xs font-medium text-slate-500 hover:text-slate-300 cursor-pointer px-1">
+                    Settings
+                </div>
+</div>
+<div class="flex-1 flex items-center justify-end gap-2 text-slate-600">
+<span class="material-symbols-outlined hover:text-slate-300 cursor-pointer text-[18px]">history</span>
+<span class="material-symbols-outlined hover:text-slate-300 cursor-pointer text-[18px]">close</span>
+</div>
+</div>
+<!-- Chat Content -->
+<div class="flex-1 overflow-y-auto p-4 space-y-6">
+<!-- AI Message -->
+<div class="flex gap-3">
+<div class="size-8 rounded bg-primary/10 border border-primary/20 flex items-center justify-center text-primary shrink-0">
+<span class="material-symbols-outlined text-[20px]">bolt</span>
+</div>
+<div class="flex flex-col gap-2">
+<div class="text-[10px] font-bold text-slate-500 mono-text uppercase">Claude-3.5-Sonnet</div>
+<div class="text-[13px] leading-relaxed text-slate-300 bg-background-dark border border-border p-4 rounded-lg">
+                        I've analyzed the bank statements for <span class="text-primary font-medium">ABC Logistics LLC</span>. 
+                        <br/><br/>
+<span class="font-bold block mb-1 text-slate-100">Key Risk Findings:</span>
+                        • NSF detected on 08/14 ($45.00 fee)<br/>
+                        • Daily ending balance dropped below $1k twice in the last 15 days.<br/>
+                        • Debt service coverage ratio is currently 1.2x.
+                    </div>
+</div>
+</div>
+<!-- User Message -->
+<div class="flex gap-3 justify-end">
+<div class="flex flex-col gap-2 items-end">
+<div class="text-[10px] font-bold text-slate-500 mono-text uppercase">You</div>
+<div class="text-[13px] leading-relaxed text-slate-300 bg-primary/5 border border-primary/20 p-4 rounded-lg">
+                        What is their average daily balance excluding the $10k transfer on 08/20?
+                    </div>
+</div>
+<div class="size-8 rounded bg-accent-muted border border-border flex items-center justify-center text-slate-400 shrink-0 overflow-hidden">
+<img alt="Me" data-alt="User avatar icon placeholder" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCJ6BSkFwTgG7eU1_l-kDRs-99VHQtvMRAKCnQwkH8aPxNRQP7EHkzMxwWHqRTifKBF32osBys88W028eub3wEhy_T7Q_E2ZqP7b5ULv51ns60F5F5a6oSZTRVUnlfqKb62a1K5eY984ebi6LSF88Mdb0yDp_Q8Uo1LDcH3DVAdZPO4xATrg5dlPp3i3XVigJECbrtBt6zONGxvijmzaSfn_WxdzLvLGCkFynNBGiuUD3Vpz_vm2ZN4QrRGfy1kv-1KOJAhmHN0H6M"/>
+</div>
+</div>
+<!-- AI Typing Indicator/Response -->
+<div class="flex gap-3">
+<div class="size-8 rounded bg-primary/10 border border-primary/20 flex items-center justify-center text-primary shrink-0">
+<span class="material-symbols-outlined text-[20px]">bolt</span>
+</div>
+<div class="flex flex-col gap-2 flex-1">
+<div class="text-[10px] font-bold text-slate-500 mono-text uppercase">Claude-3.5-Sonnet</div>
+<div class="text-[13px] leading-relaxed text-slate-300 bg-background-dark border border-border p-4 rounded-lg">
+                        Excluding the $10,000 credit on 08/20, the adjusted average daily balance for the month of August is <span class="font-bold text-white mono-text">$6,420.15</span>. 
+                        <br/><br/>
+                        Without this transfer, they would have likely hit negative on the 21st when the $1,200 payroll cleared.
+                    </div>
+</div>
+</div>
+</div>
+<!-- Input Area -->
+<div class="p-4 border-t border-border bg-background-dark/30">
+<div class="relative">
+<textarea class="w-full bg-surface border border-border rounded-lg text-sm p-3 pr-10 focus:outline-none focus:border-primary/40 text-slate-300 resize-none h-24" placeholder="Ask about bank metrics or risk..."></textarea>
+<button class="absolute right-3 bottom-3 text-primary hover:text-primary/80">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">send</span>
+</button>
+</div>
+<div class="mt-2 flex items-center gap-4">
+<button class="text-[10px] font-bold text-slate-500 hover:text-slate-300 flex items-center gap-1 uppercase mono-text">
+<span class="material-symbols-outlined text-[14px]">attach_file</span> Attach
+                </button>
+<button class="text-[10px] font-bold text-slate-500 hover:text-slate-300 flex items-center gap-1 uppercase mono-text">
+<span class="material-symbols-outlined text-[14px]">history_edu</span> Summarize
+                </button>
+</div>
+</div>
+</aside>
+</div>
+</body></html>
