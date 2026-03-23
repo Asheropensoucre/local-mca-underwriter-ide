@@ -77,9 +77,27 @@ Build a blazing-fast, local-first underwriting workspace focused on deep-work an
 4. ✅ **Anti-Hallucination Rules** - CRITICAL FALLBACK RULES prevent fake lender data on non-bank docs
 5. ✅ **Generic Backend Aggregator** - Works with any document type, defers to original prompt for formatting
 
+## 7c. Phase 13: Batch Processing ✅ COMPLETE
+
+**Completed:**
+1. ✅ **Multiple File Upload** - Select 3-6 months of bank statements at once
+2. ✅ **File Queue UI** - Preview, remove individual files, clear all
+3. ✅ **Sequential Batch Analysis** - Process each PDF file one at a time
+4. ✅ **Combined Master Report** - All files aggregated into ONE cohesive merchant profile (MCA standard)
+5. ✅ **Batch Progress Tracking** - Shows "File X of Y" during analysis
+
+## 7d. Phase 14: Event-Driven Architecture ✅ COMPLETE
+
+**Completed:**
+1. ✅ **Disk-Based Image Storage** - JPEGs saved to temp files instead of base64 in memory
+2. ✅ **Live Progress Events** - `analysis-progress` events: start, page_start, page_complete, aggregating
+3. ✅ **Real-Time UI Updates** - Frontend listens and updates progress bar live
+4. ✅ **Temp File Cleanup** - Images deleted immediately after each page to free disk space
+5. ✅ **Scales to 50+ Pages** - No more IPC memory limits or silent timeouts
+
 ## 8. Current Status
 
-**ALL PHASES COMPLETE** - App features full MCA Underwriter Pivot, multi-page analysis, text-only chat, and robust prompt architecture.
+**ALL PHASES COMPLETE (1-14)** - App features full MCA Underwriter Pivot, multi-page analysis, text-only chat, batch processing, and event-driven architecture for 50+ page PDFs.
 
 ### User Flow:
 1. Upload PDFs → View in full PDF viewer (60% width)
@@ -121,8 +139,8 @@ The application relies on highly specific prompting to extract true underwriting
 - [x] **Prompt Rewrite:** Overwrite the default prompt to enforce the rules in Section 11.
 - [x] **Multi-page full analysis (sequential processing)** - Each page analyzed individually, results aggregated
 
-### Medium Priority (NEXT FOCUS)
-- [ ] **Batch processing (multiple PDFs)** - Upload and analyze multiple bank statements in one session
+### Medium Priority ✅ BATCH PROCESSING COMPLETE
+- [x] **Batch processing (multiple PDFs)** - Upload and analyze multiple bank statements in one session
 - [ ] **Custom prompt templates (save/load)** - Save custom underwriting templates for different deal types
 - [ ] **Analysis history (local storage)** - Store past analyses locally for quick reference
 
@@ -151,6 +169,7 @@ Before any release:
 - 3-page PDF @ 72 DPI: 3-4 seconds
 - Grayscale conversion: <1 second per page
 - JPEG compression: <1 second per page
+- **Disk-based storage:** No memory limits on large PDFs
 
 ### Ollama Processing
 - llama3.2-vision: 5-10 minutes per page (hardware dependent)
@@ -161,3 +180,4 @@ Before any release:
 - App baseline: ~150MB
 - PDF viewer: +50MB per large PDF
 - Ollama processing: Model-dependent (2-8GB)
+- **Event-driven architecture:** Scales to 50+ pages safely

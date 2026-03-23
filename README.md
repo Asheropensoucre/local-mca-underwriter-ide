@@ -30,15 +30,18 @@ A blazing-fast, local-first underwriting workspace built specifically for the Me
 ## How It Works
 
 ```
-1. Upload PDF → PDF Viewer (60% Width)
+1. Upload PDF(s) → PDF Viewer (60% Width)
+   - Single file or batch (3-6 months of statements)
 2. Convert to Images → pdftocairo (poppler-utils)
-3. Compress → Grayscale JPEG (55-60% smaller)
-4. Send to Ollama → Base64 encoded images
+3. Compress → Grayscale JPEG (saved to disk, not memory)
+4. Send to Ollama → Base64 encoded images (one at a time)
 5. Vision Model Analyzes → 5-10 minutes per page (hardware dependent)
-6. Multi-page Processing → Each page analyzed sequentially
-7. Result Aggregation → All page findings combined into final JSON
-8. Dynamic UI Shift → Dashboard expands to 70% width
-9. Results Displayed → MCA Data Cards + Follow-up Chat
+6. Live Progress Events → UI updates in real-time ("Page 3 of 9...")
+7. Multi-page Processing → Each page analyzed sequentially
+8. Result Aggregation → All page findings combined into final JSON
+9. Temp File Cleanup → Images deleted immediately after use
+10. Dynamic UI Shift → Dashboard expands to 70% width
+11. Results Displayed → MCA Data Cards + Follow-up Chat
 ```
 
 ## State Machine
@@ -127,6 +130,12 @@ sudo apt install poppler-utils
 - Ollama Analysis: 5-10 minutes per page (hardware dependent)
 - Aggregation Pass: ~1 minute
 - **Total:** ~5-10 minutes per page (e.g., 3-page PDF = 15-30 minutes)
+- **Event-Driven:** Live progress updates, no silent timeouts
+
+### Scalability
+- **Disk-based images:** No memory limits on large PDFs
+- **Temp file cleanup:** Immediate deletion after each page
+- **Tested up to:** 50+ pages safely
 
 ## Roadmap
 
@@ -136,10 +145,13 @@ sudo apt install poppler-utils
 - [x] **Prompt Rewrite:** Overwrite default prompt for strict MCA logic extraction.
 - [x] **Multi-page full analysis** - Sequential page processing with result aggregation
 
-### Medium Priority (NEXT FOCUS)
-- [ ] **Batch processing (multiple PDFs)** - Upload and analyze multiple bank statements in one session
+### Medium Priority
+- [x] **Batch processing (multiple PDFs)** - Upload and analyze multiple bank statements in one session ✅ COMPLETE
 - [ ] **Custom prompt templates (save/load)** - Save custom underwriting templates for different deal types
 - [ ] **Analysis history (local storage)** - Store past analyses locally for quick reference
+
+### Low Priority
+- [ ] Streaming responses (show tokens as generated)
 
 ## License
 
