@@ -144,6 +144,132 @@ fn delete_template(app: tauri::AppHandle, name: String) -> Result<(), String> {
     Ok(())
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// ANALYSIS HISTORY MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct HistoryEntry {
+    id: String,
+    timestamp: String,
+    file_name: String,
+    merchant_name: Option<String>,
+    risk_score: Option<String>,
+    parsed_data: serde_json::Value,
+}
+
+/// Get the path to the analysis_history.json file
+fn get_history_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    
+    fs::create_dir_all(&app_data_dir)
+        .map_err(|e| format!("Failed to create app data dir: {}", e))?;
+    
+    Ok(app_data_dir.join("analysis_history.json"))
+}
+
+/// Load history from disk
+fn load_history(app: &tauri::AppHandle) -> Result<Vec<HistoryEntry>, String> {
+    let history_path = get_history_path(app)?;
+    
+    if !history_path.exists() {
+        return Ok(Vec::new());
+    }
+    
+    let content = fs::read_to_string(&history_path)
+        .map_err(|e| format!("Failed to read history file: {}", e))?;
+    
+    let history: Vec<HistoryEntry> = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse history: {}", e))?;
+    
+    Ok(history)
+}
+
+/// Save history to disk
+fn save_history_to_disk(app: &tauri::AppHandle, history: &[HistoryEntry]) -> Result<(), String> {
+    let history_path = get_history_path(app)?;
+    
+    let content = serde_json::to_string_pretty(history)
+        .map_err(|e| format!("Failed to serialize history: {}", e))?;
+    
+    fs::write(&history_path, content)
+        .map_err(|e| format!("Failed to write history file: {}", e))?;
+    
+    Ok(())
+}
+
+/// Get all analysis history entries (sorted by timestamp, newest first)
+#[tauri::command]
+fn get_history(app: tauri::AppHandle) -> Result<Vec<HistoryEntry>, String> {
+    let mut history = load_history(&app)?;
+    
+    // Sort by timestamp descending (newest first)
+    history.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    
+    Ok(history)
+}
+
+/// Save a new analysis history entry
+#[tauri::command]
+fn save_history_entry(
+    app: tauri::AppHandle,
+    file_name: String,
+    merchant_name: Option<String>,
+    risk_score: Option<String>,
+    parsed_data: serde_json::Value,
+) -> Result<(), String> {
+    let mut history = load_history(&app)?;
+    
+    // Generate unique ID from timestamp
+    let timestamp = chrono::Utc::now().to_rfc3339();
+    let id = format!("{}_{}", timestamp, file_name.replace(" ", "_"));
+    
+    let entry = HistoryEntry {
+        id,
+        timestamp,
+        file_name: file_name.clone(),
+        merchant_name,
+        risk_score,
+        parsed_data,
+    };
+    
+    history.push(entry);
+    save_history_to_disk(&app, &history)?;
+    
+    println!("[History] Saved analysis for: {}", file_name);
+    Ok(())
+}
+
+/// Delete a single history entry
+#[tauri::command]
+fn delete_history_entry(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let mut history = load_history(&app)?;
+    
+    let original_len = history.len();
+    history.retain(|e| e.id != id);
+    
+    if history.len() == original_len {
+        return Err(format!("History entry '{}' not found", id));
+    }
+    
+    save_history_to_disk(&app, &history)?;
+    
+    println!("[History] Deleted entry: {}", id);
+    Ok(())
+}
+
+/// Clear all history entries
+#[tauri::command]
+fn clear_all_history(app: tauri::AppHandle) -> Result<(), String> {
+    save_history_to_disk(&app, &[])?;
+    
+    println!("[History] Cleared all history");
+    Ok(())
+}
+
 #[tauri::command]
 async fn check_ollama_connection() -> Result<bool, String> {
     let client = reqwest::Client::new();
@@ -903,7 +1029,11 @@ fn main() {
             export_csv,
             get_templates,
             save_template,
-            delete_template
+            delete_template,
+            get_history,
+            save_history_entry,
+            delete_history_entry,
+            clear_all_history
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

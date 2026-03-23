@@ -571,6 +571,58 @@
               </select>
             </div>
           </div>
+
+          <!-- History Tab -->
+          <div v-if="activeTab === 'history'" class="space-y-4 h-full flex flex-col">
+            <!-- Header with Clear All Button -->
+            <div class="flex items-center justify-between">
+              <h4 class="text-sm font-medium text-gray-300">Analysis History</h4>
+              <button
+                @click="clearAllHistory"
+                :disabled="analysisHistory.length === 0"
+                class="px-3 py-1.5 bg-red-900/50 hover:bg-red-800/50 border border-red-700 rounded-lg text-xs text-red-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                🗑️ Clear All
+              </button>
+            </div>
+
+            <!-- History List -->
+            <div class="flex-1 overflow-auto space-y-2">
+              <div v-if="analysisHistory.length === 0" class="text-center py-12 text-gray-500 text-sm">
+                No analysis history yet.<br/>Run an analysis to see it here.
+              </div>
+              <div
+                v-for="entry in analysisHistory"
+                :key="entry.id"
+                class="bg-surface border border-border rounded-lg p-3 hover:border-primary/50 transition-colors"
+              >
+                <div class="flex items-start justify-between gap-3">
+                  <div class="flex-1 min-w-0">
+                    <p class="text-sm font-medium text-gray-200 truncate">{{ entry.file_name }}</p>
+                    <p class="text-xs text-gray-500 mt-0.5">{{ formatHistoryDate(entry.timestamp) }}</p>
+                    <div class="flex items-center gap-3 mt-2">
+                      <span class="text-xs text-gray-400">Merchant: <span class="text-gray-300">{{ entry.merchant_name || 'N/A' }}</span></span>
+                      <span class="text-xs text-gray-400">Risk: <span :class="getRiskScoreColor(entry.risk_score)" class="font-medium">{{ entry.risk_score || 'N/A' }}</span></span>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <button
+                      @click="loadHistoryEntry(entry)"
+                      class="px-3 py-1.5 bg-primary hover:bg-blue-600 rounded-lg text-xs text-white font-medium transition-colors"
+                    >
+                      📂 Load
+                    </button>
+                    <button
+                      @click="deleteHistoryEntry(entry.id)"
+                      class="px-3 py-1.5 bg-surface hover:bg-border border border-border rounded-lg text-xs text-gray-300 transition-colors"
+                    >
+                      🗑️
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -649,6 +701,9 @@ const savedTemplates = ref([]) // Array of { name, instructions }
 const selectedTemplateName = ref('')
 const newTemplateName = ref('')
 
+// Analysis history state
+const analysisHistory = ref([]) // Array of HistoryEntry
+
 // ═══════════════════════════════════════════════════════════════════════════
 // CURSOR-STYLE PROMPT ARCHITECTURE
 // System prompt is hardcoded to ensure consistent JSON output
@@ -718,7 +773,8 @@ const filePath = computed(() => {
 const tabs = [
   { id: 'underwrite', label: 'Underwrite' },
   { id: 'prompt', label: 'Prompt' },
-  { id: 'settings', label: 'Settings' }
+  { id: 'settings', label: 'Settings' },
+  { id: 'history', label: 'History' }
 ]
 
 const resetCustomInstructions = () => {
@@ -767,7 +823,7 @@ const saveNewTemplate = async () => {
 // Delete the selected template
 const deleteSelectedTemplate = async () => {
   if (!selectedTemplateName.value) return
-  
+
   try {
     await invoke('delete_template', { name: selectedTemplateName.value })
     await loadTemplates() // Refresh the list
@@ -775,6 +831,91 @@ const deleteSelectedTemplate = async () => {
     resetCustomInstructions() // Reset to default
   } catch (error) {
     console.error('Failed to delete template:', error)
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ANALYSIS HISTORY MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Load all history from Rust backend
+const loadHistory = async () => {
+  try {
+    analysisHistory.value = await invoke('get_history')
+  } catch (error) {
+    console.error('Failed to load history:', error)
+  }
+}
+
+// Format history entry timestamp to readable date
+const formatHistoryDate = (timestamp) => {
+  const date = new Date(timestamp)
+  return date.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+}
+
+// Load a history entry and display it
+const loadHistoryEntry = (entry) => {
+  // Set the parsed data from history
+  parsedData.value = entry.parsed_data
+  rawResponse.value = JSON.stringify(entry.parsed_data, null, 2)
+  
+  // Set file name from history entry
+  // Note: We can't restore the actual file path, but we show the filename
+  fileName.value = entry.file_name
+  
+  // Switch to COMPLETE state to show the dashboard
+  appState.value = 'COMPLETE'
+  activeTab.value = 'underwrite' // Switch to Underwrite tab to show the data
+  
+  console.log('[History] Loaded entry:', entry.id)
+}
+
+// Delete a single history entry
+const deleteHistoryEntry = async (id) => {
+  try {
+    await invoke('delete_history_entry', { id })
+    await loadHistory() // Refresh the list
+  } catch (error) {
+    console.error('Failed to delete history entry:', error)
+  }
+}
+
+// Clear all history
+const clearAllHistory = async () => {
+  try {
+    await invoke('clear_all_history')
+    await loadHistory() // Refresh the list
+  } catch (error) {
+    console.error('Failed to clear history:', error)
+  }
+}
+
+// Save current analysis to history
+const saveCurrentAnalysisToHistory = async () => {
+  if (!parsedData.value || !fileName.value) return
+  
+  try {
+    const merchantName = parsedData.value.merchant_info?.name || 
+                         parsedData.value.business?.name || 
+                         null
+    const riskScore = parsedData.value.risk?.score || null
+    
+    await invoke('save_history_entry', {
+      fileName: fileName.value,
+      merchantName,
+      riskScore,
+      parsedData: parsedData.value
+    })
+    await loadHistory() // Refresh the list
+    console.log('[History] Saved current analysis')
+  } catch (error) {
+    console.error('Failed to save to history:', error)
   }
 }
 
@@ -808,6 +949,7 @@ const clearFileQueue = () => {
 onMounted(async () => {
   await checkOllamaConnection()
   await loadTemplates() // Load saved prompt templates
+  await loadHistory() // Load analysis history
   // Set up event listeners (non-blocking, don't await)
   setupAnalysisEventListeners()
 })
@@ -1051,6 +1193,9 @@ const handleUnderwrite = async () => {
 
       appState.value = 'COMPLETE'
       activeTab.value = 'underwrite'
+      
+      // Auto-save to history
+      saveCurrentAnalysisToHistory()
 
       // Add automatic greeting to chat
       chatMessages.value.push({
