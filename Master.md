@@ -127,9 +127,18 @@ Build a blazing-fast, local-first underwriting workspace focused on deep-work an
 4. ✅ **Removed Notes Field** - Eliminated `notes` field to prevent AI hallucination
 5. ✅ **Placeholder Format** - Changed prompt to use `REPLACE_WITH_...` style for clearer extraction
 
+## 7h. Phase 18: Custom Prompt Templates ✅ COMPLETE
+
+**Completed:**
+1. ✅ **Rust Backend Commands** - `get_templates`, `save_template`, `delete_template` using Tauri IPC
+2. ✅ **OS App Data Storage** - Templates saved to `templates.json` in native OS app data directory
+3. ✅ **Template Manager UI** - Dropdown selector, save/delete buttons in Prompt tab
+4. ✅ **Enterprise Architecture** - All file I/O handled by Rust (no browser LocalStorage)
+5. ✅ **Auto-Load on Mount** - Templates load automatically when app starts
+
 ## 8. Current Status
 
-**ALL PHASES COMPLETE (1-17)** - App features full MCA Underwriter Pivot, multi-page analysis, text-only chat, batch processing, event-driven architecture, strict JSON enforcement, Data URI preview, automatic garbage collection, and clean JSON merger without echo for 50+ page PDFs.
+**ALL PHASES COMPLETE (1-18)** - App features full MCA Underwriter Pivot, multi-page analysis, text-only chat, batch processing, event-driven architecture, strict JSON enforcement, Data URI preview, automatic garbage collection, clean JSON merger without echo, and custom prompt templates with Rust persistence for 50+ page PDFs.
 
 ### User Flow:
 1. Upload PDFs → View in full PDF viewer (60% width)
@@ -172,9 +181,9 @@ The application relies on highly specific prompting to extract true underwriting
 - [x] **Multi-page full analysis (sequential processing)** - Each page analyzed individually, results aggregated
 - [x] **JSON Merger (Phase 17)** - Aggregator uses strict JSON merge rules, no echo of original prompt
 
-### Medium Priority ✅ BATCH PROCESSING COMPLETE
+### Medium Priority ✅ BATCH PROCESSING & TEMPLATES COMPLETE
 - [x] **Batch processing (multiple PDFs)** - Upload and analyze multiple bank statements in one session
-- [ ] **Custom prompt templates (save/load)** - Save custom underwriting templates for different deal types
+- [x] **Custom prompt templates (save/load)** - Save custom underwriting templates for different deal types
 - [ ] **Analysis history (local storage)** - Store past analyses locally for quick reference
 
 ### Low Priority

@@ -160,6 +160,12 @@ sudo apt install poppler-utils
 - **Cleaner Prompt:** Removed `notes` field, added explicit merchant vs bank distinction
 - **Anti-Hallucination:** Explicit ban on guessing bank names (Chase, BoA) as merchants
 
+### Recent Improvements (Phase 18)
+- **Custom Prompt Templates:** Save and load custom underwriting instructions
+- **Rust Persistence:** Templates stored in OS app data directory (not LocalStorage)
+- **Template Manager UI:** Dropdown selector, save/delete buttons in Prompt tab
+- **Enterprise Architecture:** All file I/O handled by Rust backend
+
 ### Recent Improvements (Phase 15)
 - **Strict JSON Output:** `format: "json"` prevents AI from truncating arrays
 - **Temp Permissions:** fs:allow-temp-read enables convertFileSrc to work
@@ -176,7 +182,7 @@ sudo apt install poppler-utils
 
 ### Medium Priority
 - [x] **Batch processing (multiple PDFs)** - Upload and analyze multiple bank statements in one session ✅ COMPLETE
-- [ ] **Custom prompt templates (save/load)** - Save custom underwriting templates for different deal types
+- [x] **Custom prompt templates (save/load)** - Save custom underwriting templates for different deal types ✅ COMPLETE
 - [ ] **Analysis history (local storage)** - Store past analyses locally for quick reference
 
 ### Low Priority
