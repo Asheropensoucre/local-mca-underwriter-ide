@@ -535,9 +535,10 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import PdfViewer from './components/PdfViewer.vue'
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -577,6 +578,10 @@ const loadingProgress = ref(0)
 const loadingMessage = ref('')
 const totalPages = ref(0)
 const currentPage = ref(0)
+
+// Event-driven analysis state
+const analysisUnlisten = ref(null) // Function to unsubscribe from events
+const pageResults = ref([]) // Accumulated results from each page event
 
 // Ollama state
 const ollamaConnected = ref(false)
@@ -683,10 +688,55 @@ const clearFileQueue = () => {
   pdfPageCount.value = 0
 }
 
-// Check Ollama connection on mount
+// Check Ollama connection on mount and set up event listeners
 onMounted(async () => {
   await checkOllamaConnection()
+  setupAnalysisEventListeners()
 })
+
+// Clean up event listeners on unmount
+onUnmounted(() => {
+  if (analysisUnlisten.value) {
+    analysisUnlisten.value()
+  }
+})
+
+// Set up Tauri event listeners for analysis progress
+const setupAnalysisEventListeners = async () => {
+  // Listen for analysis-progress events
+  analysisUnlisten.value = await listen('analysis-progress', (event) => {
+    const payload = event.payload
+    
+    if (payload.type === 'start') {
+      totalPages.value = payload.total_pages
+      currentPage.value = 0
+      pageResults.value = []
+      loadingMessage.value = payload.message
+      console.log('[Event] Analysis started:', payload)
+    }
+    
+    if (payload.type === 'page_start') {
+      currentPage.value = payload.current_page
+      loadingMessage.value = payload.message
+      console.log('[Event] Page start:', payload)
+    }
+    
+    if (payload.type === 'page_complete') {
+      currentPage.value = payload.current_page
+      pageResults.value.push(payload.page_result)
+      loadingMessage.value = payload.message
+      console.log('[Event] Page complete:', payload)
+    }
+    
+    if (payload.type === 'aggregating') {
+      loadingMessage.value = payload.message
+      currentPage.value = payload.total_pages
+      console.log('[Event] Aggregating:', payload)
+    }
+  })
+  
+  console.log('[Event] Analysis progress listener registered')
+}
 
 const checkOllamaConnection = async () => {
   isCheckingConnection.value = true
@@ -820,7 +870,7 @@ const handleUnderwrite = async () => {
     appState.value = 'ERROR'
     return
   }
-  
+
   if (fileQueue.value.length === 0) {
     errorMessage.value = 'No files selected. Please upload at least one PDF.'
     appState.value = 'ERROR'
@@ -830,22 +880,48 @@ const handleUnderwrite = async () => {
   appState.value = 'ANALYZING'
   loadingProgress.value = 0
   batchResults.value = [] // Reset batch results
-  
+  pageResults.value = [] // Reset page results for events
+
   console.log('[Batch] Starting batch analysis of', fileQueue.value.length, 'files...')
+
+  // Set up one-time listener for analysis-complete
+  const completeUnlisten = await listen('analysis-complete', (event) => {
+    const payload = event.payload
+    console.log('[Event] Analysis complete:', payload)
+    
+    // Store the final result
+    rawResponse.value = payload.result
+    analysisResult.value = payload.result
+    parsedData.value = parseJsonFromResponse(payload.result)
+    
+    console.log('[Batch] Parsed master dashboard data:', parsedData.value)
+    
+    appState.value = 'COMPLETE'
+    activeTab.value = 'underwrite'
+    
+    // Add automatic greeting to chat
+    chatMessages.value.push({
+      role: 'assistant',
+      content: `✅ Combined analysis of ${fileQueue.value.length} file(s) complete. The dashboard shows aggregated metrics across all statements. What specific questions do you have about this merchant?`
+    })
+    
+    console.log('[State] Batch analysis complete')
+    console.log('[State] UI State:', { appState: appState.value, activeTab: activeTab.value })
+  })
 
   try {
     // Process each file in the queue sequentially
     for (let i = 0; i < fileQueue.value.length; i++) {
       currentFileIndex.value = i
       const file = fileQueue.value[i]
-      
+
       loadingMessage.value = `Analyzing file ${i + 1} of ${fileQueue.value.length}: ${file.name}...`
       totalPages.value = fileQueue.value.length
       currentPage.value = i
-      
+
       console.log('[Batch] Processing file', i + 1, '/', fileQueue.value.length, '-', file.name)
-      
-      // Analyze this file
+
+      // Analyze this file - events will update UI in real-time
       const result = await invoke('send_pdf_to_ollama', {
         model: selectedModel.value,
         prompt: buildFullPrompt(),
@@ -853,17 +929,17 @@ const handleUnderwrite = async () => {
         temperature: modelConfig.value.temperature,
         maxTokens: modelConfig.value.maxTokens
       })
-      
+
       batchResults.value.push(result)
       console.log('[Batch] File', i + 1, 'complete -', result.length, 'chars')
     }
-    
+
     // All files processed - now aggregate into one master result
     loadingMessage.value = `Combining ${fileQueue.value.length} files into master report...`
     currentPage.value = fileQueue.value.length
-    
+
     console.log('[Batch] All files analyzed, aggregating results...')
-    
+
     // Use the Rust aggregator to combine all results
     const combinedResult = await invoke('aggregate_batch_results', {
       model: selectedModel.value,
@@ -872,27 +948,13 @@ const handleUnderwrite = async () => {
       temperature: modelConfig.value.temperature,
       maxTokens: modelConfig.value.maxTokens
     })
-    
+
     console.log('[Batch] Aggregation complete -', combinedResult.length, 'chars')
-    
+
     loadingProgress.value = 100
-    rawResponse.value = combinedResult
-    analysisResult.value = combinedResult
-    parsedData.value = parseJsonFromResponse(combinedResult)
-    
-    console.log('[Batch] Parsed master dashboard data:', parsedData.value)
 
-    appState.value = 'COMPLETE'
-    activeTab.value = 'underwrite'
-
-    // Add automatic greeting to chat
-    chatMessages.value.push({
-      role: 'assistant',
-      content: `✅ Combined analysis of ${fileQueue.value.length} file(s) complete. The dashboard shows aggregated metrics across all statements. What specific questions do you have about this merchant?`
-    })
-
-    console.log('[State] Batch analysis complete')
-    console.log('[State] UI State:', { appState: appState.value, activeTab: activeTab.value })
+    // Clean up the complete listener
+    completeUnlisten()
 
   } catch (error) {
     console.error('Underwrite error:', error)

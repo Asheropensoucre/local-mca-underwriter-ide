@@ -8,6 +8,7 @@ use std::fs;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use image::GenericImageView;
 use tauri_plugin_dialog::DialogExt;
+use tauri::Emitter;
 
 #[tauri::command]
 async fn check_ollama_connection() -> Result<bool, String> {
@@ -143,26 +144,26 @@ async fn test_ollama_model(model: String) -> Result<String, String> {
     Ok(result.message.content)
 }
 
-/// Convert PDF to temporary JPEG images and return Base64 strings
-/// Uses JPEG compression to reduce payload size (~30KB per page vs ~130KB for PNG)
+/// Convert PDF to temporary JPEG images on disk
+/// Returns file paths instead of base64 to avoid memory limits
 #[tauri::command]
 async fn convert_pdf_to_images(pdf_path: String, dpi: u32) -> Result<PdfConversionResult, String> {
     use std::process::Command;
     use tempfile::tempdir;
     use image::ImageFormat;
-    
+
     println!("[PDF] Converting PDF to JPEG images at {} DPI...", dpi);
-    
+
     // Create temp directory for page images
     let temp_dir = tempdir()
         .map_err(|e| format!("Failed to create temp dir: {}", e))?;
-    
+
     // Try pdftocairo first (part of poppler-utils)
     let output_prefix = temp_dir.path().join("page");
     let output_pattern = output_prefix.to_str().unwrap();
-    
+
     println!("[PDF] Running pdftocairo...");
-    
+
     let result = Command::new("pdftocairo")
         .args([
             "-png",  // Convert to PNG first, then we'll compress to JPEG
@@ -171,74 +172,73 @@ async fn convert_pdf_to_images(pdf_path: String, dpi: u32) -> Result<PdfConversi
             output_pattern
         ])
         .output();
-    
+
     match result {
         Ok(output) if output.status.success() => {
             let mut pages = Vec::new();
-            let mut images = Vec::new();
+            let mut image_paths = Vec::new();
             let mut page_num = 1;
-            
+
             println!("[PDF] Conversion successful, compressing to JPEG...");
-            
+
             loop {
                 let png_path = format!("{}-{}.png", output_pattern, page_num);
                 if std::path::Path::new(&png_path).exists() {
                     println!("[PDF] Processing page {}...", page_num);
-                    
+
                     // Read PNG
                     let png_data = fs::read(&png_path)
                         .map_err(|e| format!("Failed to read page {}: {}", page_num, e))?;
-                    
+
                     let img = image::load_from_memory(&png_data)
                         .map_err(|e| format!("Failed to decode image: {}", e))?;
                     let (width, height) = img.dimensions();
-                    
+
                     // Convert to grayscale for smaller file size (bank statements are B&W anyway)
                     let grayscale_img = img.grayscale();
-                    
-                    // Convert to JPEG with 80% quality for compression
-                    let mut jpeg_data: Vec<u8> = Vec::new();
-                    grayscale_img.write_to(
-                        &mut std::io::Cursor::new(&mut jpeg_data),
-                        ImageFormat::Jpeg,
-                    )
-                    .map_err(|e| format!("Failed to compress page {} to JPEG: {}", page_num, e))?;
-                    
-                    // Encode JPEG to Base64
-                    let base64_image = BASE64.encode(&jpeg_data);
-                    
-                    let compression_pct = if png_data.len() > jpeg_data.len() {
-                        ((png_data.len() - jpeg_data.len()) as u64 * 100 / png_data.len() as u64) as usize
+
+                    // Save JPEG to disk (don't keep in memory)
+                    let jpeg_path = format!("{}-{}.jpg", output_pattern, page_num);
+                    grayscale_img.save_with_format(&jpeg_path, ImageFormat::Jpeg)
+                        .map_err(|e| format!("Failed to save page {} to JPEG: {}", page_num, e))?;
+
+                    let _compression_pct = if png_data.len() > jpeg_path.len() {
+                        ((png_data.len() - png_data.len()) as u64 * 100 / png_data.len() as u64) as usize
                     } else {
                         0
                     };
-                    
-                    println!("[PDF] Page {}: PNG {}KB → Grayscale JPEG {}KB (compressed {}%)", 
+
+                    println!("[PDF] Page {}: PNG {}KB → JPEG saved to disk ({}KB estimated)",
                         page_num,
                         png_data.len() / 1024,
-                        jpeg_data.len() / 1024,
-                        compression_pct
+                        png_data.len() / 1024 / 2  // Rough estimate
                     );
-                    
+
                     pages.push(PdfPageInfo { page_number: page_num, width, height });
-                    images.push(base64_image);
-                    
-                    // Clean up temp PNG
+                    image_paths.push(jpeg_path);
+
+                    // Clean up temp PNG immediately
                     let _ = fs::remove_file(&png_path);
-                    
+
                     page_num += 1;
                 } else {
                     break;
                 }
             }
-            
-            println!("[PDF] Converted {} pages to JPEG", pages.len());
-            
+
+            println!("[PDF] Converted {} pages to JPEG (saved on disk)", pages.len());
+
             if pages.is_empty() {
                 return Err("No pages were converted from PDF".to_string());
             }
-            
-            Ok(PdfConversionResult { pages, images })
+
+            // Return paths as base64-encoded strings for compatibility
+            // (The paths will be used directly in the new event-driven flow)
+            let paths_as_base64: Vec<String> = image_paths.iter()
+                .map(|p| BASE64.encode(p.as_bytes()))
+                .collect();
+
+            Ok(PdfConversionResult { pages, images: paths_as_base64 })
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -384,54 +384,104 @@ FINAL COMBINED RESPONSE (follow original prompt format exactly):"#,
     Ok(result.message.content)
 }
 
+/// Event-driven PDF analysis with live progress events
+/// Emits analysis-progress after each page, analysis-complete when done
 #[tauri::command]
 async fn send_pdf_to_ollama(
+    app: tauri::AppHandle,
     model: String,
     prompt: String,
     pdf_path: String,
     temperature: f32,
     max_tokens: i32,
 ) -> Result<String, String> {
-    // Convert PDF to JPEG images (compressed Base64)
-    let conversion = convert_pdf_to_images(pdf_path.clone(), 72).await?;
-    let total_pages = conversion.images.len();
+    use std::path::Path;
+    
+    println!("[Event-Driven] Starting PDF analysis: {}", pdf_path);
 
-    println!("[Multi-page] PDF has {} pages - processing all pages sequentially", total_pages);
+    // Convert PDF to JPEG images on disk
+    let conversion = convert_pdf_to_images(pdf_path.clone(), 72).await?;
+    let total_pages = conversion.pages.len();
+
+    println!("[Event-Driven] PDF has {} pages - images saved to disk", total_pages);
+
+    // Emit start event
+    let _ = app.emit("analysis-progress", serde_json::json!({
+        "type": "start",
+        "total_pages": total_pages,
+        "message": format!("Starting analysis of {} pages...", total_pages)
+    }));
 
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(900)) // 15 minute total timeout for multi-page
+        .timeout(std::time::Duration::from_secs(900))
         .connect_timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
-    // Process each page sequentially
+    // Process each page sequentially with event emission
     let mut page_results: Vec<String> = Vec::with_capacity(total_pages);
+    let mut temp_files: Vec<String> = Vec::new();
 
-    for (idx, base64_image) in conversion.images.iter().enumerate() {
+    // Decode image paths from base64
+    let image_paths: Vec<String> = conversion.images.iter()
+        .filter_map(|b64| String::from_utf8(BASE64.decode(b64).ok()?).ok())
+        .collect();
+
+    for (idx, image_path) in image_paths.iter().enumerate() {
         let page_num = idx + 1;
-        
-        // Per-page timeout: 5 minutes per page
-        let page_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(300))
-            .build()
-            .map_err(|e| format!("Failed to create page client: {}", e))?;
+        temp_files.push(image_path.clone());
 
+        println!("[Event-Driven] Processing page {}/{}: {}", page_num, total_pages, image_path);
+
+        // Emit page start event
+        let _ = app.emit("analysis-progress", serde_json::json!({
+            "type": "page_start",
+            "current_page": page_num,
+            "total_pages": total_pages,
+            "message": format!("Analyzing page {} of {}...", page_num, total_pages)
+        }));
+
+        // Read image and encode to base64 for this page only
+        let image_data = fs::read(image_path)
+            .map_err(|e| format!("Failed to read image {}: {}", image_path, e))?;
+        let base64_image = BASE64.encode(&image_data);
+
+        // Analyze this page
         let page_result = analyze_single_page(
-            &page_client,
+            &client,
             &model,
             &prompt,
-            base64_image,
+            &base64_image,
             temperature,
             max_tokens,
             page_num,
             total_pages,
         ).await?;
 
-        page_results.push(page_result);
-        println!("[Multi-page] Page {}/{} complete", page_num, total_pages);
+        page_results.push(page_result.clone());
+
+        // Emit page complete event WITH the result
+        let _ = app.emit("analysis-progress", serde_json::json!({
+            "type": "page_complete",
+            "current_page": page_num,
+            "total_pages": total_pages,
+            "page_result": page_result,
+            "message": format!("Page {} complete", page_num)
+        }));
+
+        // Delete this page's image file immediately to free disk space
+        let _ = fs::remove_file(image_path);
+        println!("[Event-Driven] Deleted temp file: {}", image_path);
     }
 
-    println!("[Multi-page] All {} pages analyzed, aggregating results...", total_pages);
+    println!("[Event-Driven] All {} pages analyzed, aggregating results...", total_pages);
+
+    // Emit aggregation start event
+    let _ = app.emit("analysis-progress", serde_json::json!({
+        "type": "aggregating",
+        "total_pages": total_pages,
+        "message": "Combining all pages into final report..."
+    }));
 
     // Aggregate all page results into final analysis
     let final_result = aggregate_page_results(
@@ -443,7 +493,23 @@ async fn send_pdf_to_ollama(
         max_tokens,
     ).await?;
 
-    println!("[Multi-page] Analysis complete! Final response length: {} chars", final_result.len());
+    // Clean up any remaining temp files (including temp dir)
+    for temp_file in &temp_files {
+        if Path::new(temp_file).exists() {
+            let _ = fs::remove_file(temp_file);
+            println!("[Event-Driven] Cleaned up temp file: {}", temp_file);
+        }
+    }
+
+    println!("[Event-Driven] Analysis complete! Final response length: {} chars", final_result.len());
+
+    // Emit completion event
+    let _ = app.emit("analysis-complete", serde_json::json!({
+        "type": "complete",
+        "result": final_result,
+        "total_pages": total_pages,
+        "message": "Analysis complete!"
+    }));
 
     Ok(final_result)
 }
