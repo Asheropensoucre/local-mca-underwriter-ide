@@ -87,12 +87,15 @@
             <span class="text-sm text-gray-400">{{ pdfPageCount }} page{{ pdfPageCount > 1 ? 's' : '' }}</span>
           </div>
         </div>
-        <!-- PDF Viewer Component -->
-        <div v-if="pdfSource" class="flex-1 overflow-hidden">
+        <!-- PDF Viewer Component - Only render when not processing to free RAM -->
+        <div v-if="appState !== 'ANALYZING' && appState !== 'PROCESSING' && pdfSource" class="flex-1 overflow-hidden">
           <PdfViewer :source="pdfSource" :page-count="pdfPageCount" />
         </div>
-        <div v-else class="flex-1 flex items-center justify-center bg-background/50 m-4 rounded-lg border border-border border-dashed">
+        <div v-else-if="!pdfSource" class="flex-1 flex items-center justify-center bg-background/50 m-4 rounded-lg border border-border border-dashed">
           <p class="text-gray-500 text-sm">PDF loaded (viewer pending)</p>
+        </div>
+        <div v-else class="flex-1 flex items-center justify-center bg-background/50 m-4 rounded-lg border border-border border-dashed">
+          <p class="text-gray-500 text-sm">PDF viewer paused during analysis to free memory...</p>
         </div>
       </div>
 
@@ -552,7 +555,8 @@ const errorMessage = ref('')
 const fileQueue = ref([]) // Array of { path: string, name: string, pageCount: number }
 const currentFileIndex = ref(0) // Current file being processed
 const pdfPageCount = ref(0)
-const pdfSource = ref(null)
+const pdfSource = ref(null) // Blob URL for PDF (not Uint8Array)
+const pdfBlobUrl = ref(null) // Track blob URL for cleanup
 
 // Batch processing state
 const isBatchProcessing = ref(false)
@@ -695,10 +699,15 @@ onMounted(async () => {
   setupAnalysisEventListeners()
 })
 
-// Clean up event listeners on unmount
+// Clean up event listeners and blob URLs on unmount
 onUnmounted(() => {
   if (analysisUnlisten.value) {
     analysisUnlisten.value()
+  }
+  // Clean up blob URL to prevent memory leaks
+  if (pdfBlobUrl.value) {
+    URL.revokeObjectURL(pdfBlobUrl.value)
+    pdfBlobUrl.value = null
   }
 })
 
@@ -813,9 +822,18 @@ const loadFileForPreview = async (index) => {
   try {
     const { readFile } = await import('@tauri-apps/plugin-fs')
     const pdfData = await readFile(file.path)
-    // Create a proper copy of the data to avoid ArrayBuffer detachment
-    pdfSource.value = new Uint8Array(pdfData).slice(0)
-    console.log('[State] PDF loaded:', pdfSource.value.length, 'bytes')
+    
+    // Clean up previous blob URL
+    if (pdfBlobUrl.value) {
+      URL.revokeObjectURL(pdfBlobUrl.value)
+    }
+    
+    // Create Blob and Object URL (Virtual File strategy)
+    const blob = new Blob([pdfData], { type: 'application/pdf' })
+    pdfBlobUrl.value = URL.createObjectURL(blob)
+    pdfSource.value = pdfBlobUrl.value
+    
+    console.log('[State] PDF loaded as Blob URL:', pdfSource.value)
   } catch (err) {
     console.error('Error reading PDF:', err)
     errorMessage.value = 'Failed to load PDF file: ' + err.message

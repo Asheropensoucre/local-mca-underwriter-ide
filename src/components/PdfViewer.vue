@@ -58,40 +58,25 @@
       </div>
     </div>
     
-    <!-- PDF Viewer -->
+    <!-- PDF Viewer - Single Page Mode -->
     <div class="flex-1 overflow-auto bg-background/50 p-4" ref="viewerContainer">
+      <!-- Loading Overlay -->
+      <div v-if="isLoading || !pdfSource" class="absolute inset-0 flex items-center justify-center bg-background/80 z-10">
+        <div class="text-center">
+          <div class="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent mx-auto mb-3"></div>
+          <p class="text-sm text-gray-400">Loading PDF...</p>
+        </div>
+      </div>
+      
       <vue-pdf-embed
         ref="pdfRef"
         :source="pdfSource"
-        :page="currentPage"
+        :page="1"
         :rotation="rotation"
         class="mx-auto shadow-2xl"
         @rendering="handleRendered"
         @error="handleError"
       />
-      <div v-if="isLoading" class="flex items-center justify-center h-full">
-        <div class="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent"></div>
-      </div>
-    </div>
-    
-    <!-- Thumbnail Strip - Only show for PDFs with 2-20 pages -->
-    <div v-if="totalPages > 1 && totalPages <= 20" class="border-t border-border bg-surface p-3">
-      <div class="flex gap-2 overflow-x-auto pb-2">
-        <button
-          v-for="page in totalPages"
-          :key="page"
-          @click="goToPage(page)"
-          class="flex-shrink-0 border-2 rounded overflow-hidden transition-colors"
-          :class="currentPage === page ? 'border-primary' : 'border-border hover:border-gray-600'"
-        >
-          <div class="w-16 h-20 bg-background flex items-center justify-center text-xs text-gray-600">
-            {{ page }}
-          </div>
-        </button>
-      </div>
-      <p v-if="totalPages > 20" class="text-xs text-gray-500 mt-2">
-        {{ totalPages }} pages - use page navigation buttons
-      </p>
     </div>
   </div>
 </template>
@@ -153,11 +138,6 @@ const handleError = (error) => {
   console.error('[PdfViewer] Render error:', error)
   isLoading.value = false
   emit('error', error)
-}
-
-const goToPage = (page) => {
-  console.log('[PdfViewer] Going to page:', page)
-  currentPage.value = page
 }
 
 const prevPage = () => {
