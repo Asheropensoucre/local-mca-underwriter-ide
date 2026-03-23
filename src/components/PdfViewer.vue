@@ -67,16 +67,20 @@
         :rotation="rotation"
         class="mx-auto shadow-2xl"
         @rendering="handleRendered"
+        @error="handleError"
       />
+      <div v-if="isLoading" class="flex items-center justify-center h-full">
+        <div class="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent"></div>
+      </div>
     </div>
     
-    <!-- Thumbnail Strip -->
-    <div v-if="totalPages > 1" class="border-t border-border bg-surface p-3">
+    <!-- Thumbnail Strip - Only show for PDFs with 2-20 pages -->
+    <div v-if="totalPages > 1 && totalPages <= 20" class="border-t border-border bg-surface p-3">
       <div class="flex gap-2 overflow-x-auto pb-2">
         <button
           v-for="page in totalPages"
           :key="page"
-          @click="currentPage = page"
+          @click="goToPage(page)"
           class="flex-shrink-0 border-2 rounded overflow-hidden transition-colors"
           :class="currentPage === page ? 'border-primary' : 'border-border hover:border-gray-600'"
         >
@@ -85,12 +89,15 @@
           </div>
         </button>
       </div>
+      <p v-if="totalPages > 20" class="text-xs text-gray-500 mt-2">
+        {{ totalPages }} pages - use page navigation buttons
+      </p>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import VuePdfEmbed from 'vue-pdf-embed'
 
 const props = defineProps({
@@ -104,49 +111,85 @@ const props = defineProps({
   }
 })
 
+const emit = defineEmits(['error'])
+
 const pdfRef = ref(null)
 const viewerContainer = ref(null)
 const currentPage = ref(1)
 const totalPages = ref(1)
 const zoom = ref(1)
 const rotation = ref(0)
+const isLoading = ref(false)
 
 const pdfSource = computed(() => props.source)
+
+// Log when source changes
+watch(() => props.source, (newSource) => {
+  console.log('[PdfViewer] Source changed:', newSource ? 'loaded' : 'empty')
+  if (newSource) {
+    isLoading.value = true
+  }
+}, { immediate: true })
 
 // Sync page count from parent if available
 watch(() => props.pageCount, (newCount) => {
   if (newCount && newCount > 0) {
     totalPages.value = newCount
+    console.log('[PdfViewer] Page count from parent:', newCount)
   }
 }, { immediate: true })
 
 const handleRendered = (pdfDocument) => {
+  console.log('[PdfViewer] Rendered:', pdfDocument)
+  isLoading.value = false
+  
   if (pdfDocument && pdfDocument.numPages) {
     totalPages.value = pdfDocument.numPages
+    console.log('[PdfViewer] Total pages from PDF:', pdfDocument.numPages)
   }
+}
+
+const handleError = (error) => {
+  console.error('[PdfViewer] Render error:', error)
+  isLoading.value = false
+  emit('error', error)
+}
+
+const goToPage = (page) => {
+  console.log('[PdfViewer] Going to page:', page)
+  currentPage.value = page
 }
 
 const prevPage = () => {
   if (currentPage.value > 1) {
     currentPage.value--
+    console.log('[PdfViewer] Previous page:', currentPage.value)
   }
 }
 
 const nextPage = () => {
   if (currentPage.value < totalPages.value) {
     currentPage.value++
+    console.log('[PdfViewer] Next page:', currentPage.value)
   }
 }
 
 const zoomIn = () => {
   zoom.value = Math.min(zoom.value + 0.25, 2)
+  console.log('[PdfViewer] Zoom in:', zoom.value)
 }
 
 const zoomOut = () => {
   zoom.value = Math.max(zoom.value - 0.25, 0.5)
+  console.log('[PdfViewer] Zoom out:', zoom.value)
 }
 
 const resetZoom = () => {
   zoom.value = 1
+  console.log('[PdfViewer] Zoom reset:', zoom.value)
 }
+
+onMounted(() => {
+  console.log('[PdfViewer] Component mounted')
+})
 </script>
