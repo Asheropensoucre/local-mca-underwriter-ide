@@ -1,9 +1,54 @@
 <template>
   <div class="h-screen w-screen flex flex-row overflow-hidden bg-background text-gray-300">
+    <!-- Left Navigation Menu (Pane 1) -->
+    <div class="w-16 md:w-64 flex-shrink-0 h-full border-r border-border bg-surface flex flex-col">
+      <!-- Header -->
+      <div class="h-12 flex items-center px-4 border-b border-border">
+        <svg class="w-5 h-5 text-gray-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+        </svg>
+        <span class="ml-3 text-xs font-semibold text-gray-400 uppercase tracking-wider hidden md:block">Explorer</span>
+      </div>
+      
+      <!-- Navigation Items -->
+      <div class="flex-1 overflow-auto py-2">
+        <!-- Recent Files Section -->
+        <div class="px-3 mb-2">
+          <div class="flex items-center justify-between mb-1">
+            <span class="text-xs font-medium text-gray-500 hidden md:block">Recent Files</span>
+          </div>
+          <div class="space-y-0.5">
+            <div class="px-2 py-1.5 text-xs text-gray-600 italic hidden md:block">No recent files</div>
+          </div>
+        </div>
+        
+        <!-- Saved Templates Section -->
+        <div class="px-3 mt-4">
+          <div class="flex items-center justify-between mb-1">
+            <span class="text-xs font-medium text-gray-500 hidden md:block">Templates</span>
+          </div>
+          <div class="space-y-0.5">
+            <div class="px-2 py-1.5 text-xs text-gray-600 italic hidden md:block">No saved templates</div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Bottom Actions -->
+      <div class="p-2 border-t border-border">
+        <button class="w-full flex items-center justify-center md:justify-start gap-2 px-2 py-1.5 text-xs text-gray-400 hover:text-gray-200 hover:bg-border rounded transition-colors">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+          </svg>
+          <span class="hidden md:block">Settings</span>
+        </button>
+      </div>
+    </div>
+
     <!-- IDLE State - Drop Zone -->
     <div
       v-show="appState === 'IDLE'"
-      class="border-2 border-dashed rounded-xl p-16 text-center cursor-pointer max-w-2xl w-full transition-all duration-200 m-auto"
+      class="border-2 border-dashed rounded-xl p-16 text-center cursor-pointer w-full transition-all duration-200 m-auto"
       :class="[
         isDragging
           ? 'border-primary bg-primary/10 scale-105 shadow-lg shadow-primary/20'
@@ -91,11 +136,11 @@
         <div v-if="appState !== 'ANALYZING' && appState !== 'PROCESSING' && pdfSource" class="flex-1 overflow-hidden">
           <PdfViewer :preview-image="pdfSource" :page-count="pdfPageCount" />
         </div>
-        <div v-else-if="!pdfSource" class="flex-1 flex items-center justify-center bg-background/50 m-4 rounded-lg border border-border border-dashed">
-          <p class="text-gray-500 text-sm">PDF loaded (viewer pending)</p>
+        <div v-else-if="!pdfSource" class="flex-1 flex bg-background/50 m-4 rounded-lg border border-border border-dashed">
+          <p class="text-gray-500 text-sm m-auto">PDF loaded (viewer pending)</p>
         </div>
-        <div v-else class="flex-1 flex items-center justify-center bg-background/50 m-4 rounded-lg border border-border border-dashed">
-          <p class="text-gray-500 text-sm">PDF viewer paused during analysis to free memory...</p>
+        <div v-else class="flex-1 flex bg-background/50 m-4 rounded-lg border border-border border-dashed">
+          <p class="text-gray-500 text-sm m-auto">PDF viewer paused during analysis to free memory...</p>
         </div>
       </div>
 
@@ -168,19 +213,19 @@
             </button>
 
             <!-- ANALYZING State - Loading Spinner with Multi-page Progress -->
-            <div v-if="appState === 'ANALYZING'" class="flex-1 flex flex-col items-center justify-center bg-background border border-border rounded-lg p-8">
-              <div class="relative mb-4">
-                <div class="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent"></div>
+            <div v-if="appState === 'ANALYZING'" class="flex-1 flex flex-col bg-background border border-border rounded-lg p-8">
+              <div class="relative mb-4 flex">
+                <div class="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent m-auto"></div>
               </div>
-              <p class="text-gray-300 font-medium mb-2">{{ loadingMessage }}</p>
+              <p class="text-gray-300 font-medium mb-2 text-center">{{ loadingMessage }}</p>
               <!-- Multi-page Progress -->
-              <div v-if="totalPages > 1" class="w-full max-w-xs mt-4">
+              <div v-if="totalPages > 1" class="w-full mt-4">
                 <div class="flex justify-between text-xs text-gray-500 mb-1">
                   <span>Page {{ currentPage }} of {{ totalPages }}</span>
                   <span>{{ Math.round((currentPage / totalPages) * 100) }}%</span>
                 </div>
                 <div class="w-full h-2 bg-slate-700 rounded-full overflow-hidden">
-                  <div 
+                  <div
                     class="h-full bg-primary transition-all duration-500"
                     :style="{ width: (currentPage / totalPages * 100) + '%' }"
                   ></div>
@@ -194,16 +239,18 @@
             </div>
 
             <!-- ERROR State - Error Display in Chat Area -->
-            <div v-else-if="appState === 'ERROR'" class="flex-1 flex flex-col items-center justify-center bg-background border border-border rounded-lg p-8">
-              <div class="text-red-400 text-4xl mb-4">❌</div>
-              <p class="text-lg font-medium text-red-300 mb-2">Analysis Failed</p>
+            <div v-else-if="appState === 'ERROR'" class="flex-1 flex flex-col bg-background border border-border rounded-lg p-8">
+              <div class="text-red-400 text-4xl mb-4 text-center">❌</div>
+              <p class="text-lg font-medium text-red-300 mb-2 text-center">Analysis Failed</p>
               <p class="text-sm text-gray-400 text-center mb-4">{{ errorMessage }}</p>
-              <button
-                @click="handleUnderwrite"
-                class="px-4 py-2 bg-primary hover:bg-blue-600 rounded-lg text-white text-sm font-medium transition-colors"
-              >
-                Try Again
-              </button>
+              <div class="flex justify-center">
+                <button
+                  @click="handleUnderwrite"
+                  class="px-4 py-2 bg-primary hover:bg-blue-600 rounded-lg text-white text-sm font-medium transition-colors"
+                >
+                  Try Again
+                </button>
+              </div>
             </div>
 
             <!-- COMPLETE State - NEW MCA Dashboard Cards -->
@@ -461,8 +508,8 @@
             </div>
 
             <!-- READY State - Waiting for Analysis -->
-            <div v-else class="flex-1 flex flex-col items-center justify-center bg-background border border-border rounded-lg p-8">
-              <div class="text-center space-y-3">
+            <div v-else class="flex-1 flex flex-col bg-background border border-border rounded-lg p-8">
+              <div class="text-center space-y-3 m-auto">
                 <svg class="w-12 h-12 text-gray-600 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
                 </svg>
