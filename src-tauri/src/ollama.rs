@@ -18,6 +18,8 @@ pub struct OllamaChatRequest {
     pub messages: Vec<OllamaMessage>,
     pub stream: bool,
     pub options: Option<OllamaOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>, // Set to "json" to enforce JSON output
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

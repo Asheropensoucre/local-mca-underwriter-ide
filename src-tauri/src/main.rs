@@ -96,6 +96,7 @@ async fn send_to_ollama(
             num_predict: Some(max_tokens),
             num_ctx: Some(8192),
         }),
+        format: None,
     };
 
     let response = client
@@ -142,6 +143,7 @@ async fn test_ollama_model(model: String) -> Result<String, String> {
             num_predict: Some(10),
             num_ctx: Some(4096),
         }),
+        format: None,
     };
 
     let response = client
@@ -312,6 +314,7 @@ async fn analyze_single_page(
             num_predict: Some(max_tokens),
             num_ctx: Some(8192), // 8K context for individual page analysis
         }),
+        format: Some("json".to_string()), // Enforce JSON output
     };
 
     println!("[Multi-page] Analyzing page {}/{}...", page_num, total_pages);
@@ -394,6 +397,7 @@ FINAL COMBINED RESPONSE (follow original prompt format exactly):"#,
             num_predict: Some(max_tokens),
             num_ctx: Some(16384), // 16K context for large multi-page aggregation
         }),
+        format: Some("json".to_string()), // Enforce JSON output
     };
 
     let response = client
@@ -609,6 +613,7 @@ async fn chat_with_ollama(
             num_predict: Some(max_tokens),
             num_ctx: Some(8192), // 8K context for chat responses
         }),
+        format: None,
     };
 
     println!("[Chat] Sending request to Ollama...");
