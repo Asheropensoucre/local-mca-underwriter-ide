@@ -888,25 +888,36 @@ const handleUnderwrite = async () => {
   const completeUnlisten = await listen('analysis-complete', (event) => {
     const payload = event.payload
     console.log('[Event] Analysis complete:', payload)
-    
-    // Store the final result
-    rawResponse.value = payload.result
-    analysisResult.value = payload.result
-    parsedData.value = parseJsonFromResponse(payload.result)
-    
-    console.log('[Batch] Parsed master dashboard data:', parsedData.value)
-    
-    appState.value = 'COMPLETE'
-    activeTab.value = 'underwrite'
-    
-    // Add automatic greeting to chat
-    chatMessages.value.push({
-      role: 'assistant',
-      content: `✅ Combined analysis of ${fileQueue.value.length} file(s) complete. The dashboard shows aggregated metrics across all statements. What specific questions do you have about this merchant?`
-    })
-    
-    console.log('[State] Batch analysis complete')
-    console.log('[State] UI State:', { appState: appState.value, activeTab: activeTab.value })
+
+    try {
+      // Store the final result
+      rawResponse.value = payload.result
+      analysisResult.value = payload.result
+      parsedData.value = parseJsonFromResponse(payload.result)
+
+      // Check if parsing succeeded
+      if (!parsedData.value) {
+        throw new Error('Failed to parse AI response. The document may be too large or the AI output was invalid.')
+      }
+
+      console.log('[Batch] Parsed master dashboard data:', parsedData.value)
+
+      appState.value = 'COMPLETE'
+      activeTab.value = 'underwrite'
+
+      // Add automatic greeting to chat
+      chatMessages.value.push({
+        role: 'assistant',
+        content: `✅ Combined analysis of ${fileQueue.value.length} file(s) complete. The dashboard shows aggregated metrics across all statements. What specific questions do you have about this merchant?`
+      })
+
+      console.log('[State] Batch analysis complete')
+      console.log('[State] UI State:', { appState: appState.value, activeTab: activeTab.value })
+    } catch (parseError) {
+      console.error('Parse error:', parseError)
+      appState.value = 'ERROR'
+      errorMessage.value = parseError.message || 'Failed to parse AI response. The document may be too large or the AI output was invalid.'
+    }
   })
 
   try {
@@ -921,17 +932,22 @@ const handleUnderwrite = async () => {
 
       console.log('[Batch] Processing file', i + 1, '/', fileQueue.value.length, '-', file.name)
 
-      // Analyze this file - events will update UI in real-time
-      const result = await invoke('send_pdf_to_ollama', {
-        model: selectedModel.value,
-        prompt: buildFullPrompt(),
-        pdfPath: file.path,
-        temperature: modelConfig.value.temperature,
-        maxTokens: modelConfig.value.maxTokens
-      })
+      try {
+        // Analyze this file - events will update UI in real-time
+        const result = await invoke('send_pdf_to_ollama', {
+          model: selectedModel.value,
+          prompt: buildFullPrompt(),
+          pdfPath: file.path,
+          temperature: modelConfig.value.temperature,
+          maxTokens: modelConfig.value.maxTokens
+        })
 
-      batchResults.value.push(result)
-      console.log('[Batch] File', i + 1, 'complete -', result.length, 'chars')
+        batchResults.value.push(result)
+        console.log('[Batch] File', i + 1, 'complete -', result.length, 'chars')
+      } catch (fileError) {
+        console.error(`[Batch] File ${i + 1} error:`, fileError)
+        throw new Error(`Failed to analyze file ${i + 1} (${file.name}): ${fileError}`)
+      }
     }
 
     // All files processed - now aggregate into one master result
@@ -940,21 +956,26 @@ const handleUnderwrite = async () => {
 
     console.log('[Batch] All files analyzed, aggregating results...')
 
-    // Use the Rust aggregator to combine all results
-    const combinedResult = await invoke('aggregate_batch_results', {
-      model: selectedModel.value,
-      originalPrompt: buildFullPrompt(),
-      pageResults: batchResults.value,
-      temperature: modelConfig.value.temperature,
-      maxTokens: modelConfig.value.maxTokens
-    })
+    try {
+      // Use the Rust aggregator to combine all results
+      const combinedResult = await invoke('aggregate_batch_results', {
+        model: selectedModel.value,
+        originalPrompt: buildFullPrompt(),
+        pageResults: batchResults.value,
+        temperature: modelConfig.value.temperature,
+        maxTokens: modelConfig.value.maxTokens
+      })
 
-    console.log('[Batch] Aggregation complete -', combinedResult.length, 'chars')
+      console.log('[Batch] Aggregation complete -', combinedResult.length, 'chars')
 
-    loadingProgress.value = 100
+      loadingProgress.value = 100
 
-    // Clean up the complete listener
-    completeUnlisten()
+      // Clean up the complete listener
+      completeUnlisten()
+    } catch (aggError) {
+      console.error('[Batch] Aggregation error:', aggError)
+      throw new Error(`Failed to combine results: ${aggError}. The document may be too large or the AI output was invalid.`)
+    }
 
   } catch (error) {
     console.error('Underwrite error:', error)

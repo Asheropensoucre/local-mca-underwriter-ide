@@ -32,6 +32,7 @@ pub struct OllamaMessage {
 pub struct OllamaOptions {
     pub temperature: Option<f32>,
     pub num_predict: Option<i32>,
+    pub num_ctx: Option<i32>, // Context window size (default 2048, set to 16384 for large docs)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

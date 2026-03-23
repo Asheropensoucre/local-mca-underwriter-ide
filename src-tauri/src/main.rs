@@ -74,6 +74,7 @@ async fn send_to_ollama(
         options: Some(OllamaOptions {
             temperature: Some(temperature),
             num_predict: Some(max_tokens),
+            num_ctx: Some(8192),
         }),
     };
 
@@ -119,6 +120,7 @@ async fn test_ollama_model(model: String) -> Result<String, String> {
         options: Some(OllamaOptions {
             temperature: Some(0.1),
             num_predict: Some(10),
+            num_ctx: Some(4096),
         }),
     };
 
@@ -279,6 +281,7 @@ async fn analyze_single_page(
         options: Some(OllamaOptions {
             temperature: Some(temperature),
             num_predict: Some(max_tokens),
+            num_ctx: Some(8192), // 8K context for individual page analysis
         }),
     };
 
@@ -360,6 +363,7 @@ FINAL COMBINED RESPONSE (follow original prompt format exactly):"#,
         options: Some(OllamaOptions {
             temperature: Some(temperature),
             num_predict: Some(max_tokens),
+            num_ctx: Some(16384), // 16K context for large multi-page aggregation
         }),
     };
 
@@ -542,6 +546,7 @@ async fn chat_with_ollama(
         options: Some(OllamaOptions {
             temperature: Some(temperature),
             num_predict: Some(max_tokens),
+            num_ctx: Some(8192), // 8K context for chat responses
         }),
     };
 
