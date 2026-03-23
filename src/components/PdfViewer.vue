@@ -18,15 +18,15 @@
     <!-- Image Viewer -->
     <div class="flex-1 overflow-auto bg-background/50 p-4 flex items-center justify-center relative" ref="viewerContainer">
       <!-- Loading State -->
-      <div v-if="!imageSrc && !imageError" class="text-center">
+      <div v-if="!previewImage && !imageError" class="text-center">
         <div class="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent mx-auto mb-3"></div>
         <p class="text-sm text-gray-400">Loading Preview...</p>
       </div>
 
-      <!-- Image - Use convertFileSrc to convert system path to asset:// URL -->
+      <!-- Image - Data URI binds directly, no convertFileSrc needed -->
       <img
-        v-if="imageSrc"
-        :src="imageSrc"
+        v-if="previewImage"
+        :src="previewImage"
         alt="PDF Page 1 Preview"
         class="max-w-full max-h-full object-contain shadow-2xl"
         @load="handleImageLoad"
@@ -36,19 +36,18 @@
       <!-- Error State -->
       <div v-if="imageError" class="text-center text-red-400">
         <p class="text-sm mb-2">Failed to load preview</p>
-        <p class="text-xs text-gray-600 break-all max-w-md">{{ imageError }}</p>
+        <p class="text-xs text-gray-600">{{ imageError }}</p>
       </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted } from 'vue'
-import { convertFileSrc } from '@tauri-apps/api/core'
+import { ref, watch, onMounted } from 'vue'
 
 const props = defineProps({
-  source: {
-    type: String, // File path string from Rust
+  previewImage: {
+    type: String, // Data URI string (data:image/jpeg;base64,...)
     required: true
   },
   pageCount: {
@@ -59,44 +58,8 @@ const props = defineProps({
 
 const emit = defineEmits(['error', 'load'])
 
-const imageSrc = ref(null)
 const imageError = ref(null)
 const totalPages = ref(1)
-
-// Convert file path to Tauri asset URL using convertFileSrc
-// This is REQUIRED - Tauri blocks direct file:// access
-const imageSrcComputed = computed(() => {
-  if (!props.source) {
-    console.warn('[PdfViewer] No source path provided')
-    return null
-  }
-  
-  try {
-    const url = convertFileSrc(props.source)
-    console.log('[PdfViewer] Converted path to URL:', url)
-    return url
-  } catch (err) {
-    console.error('[PdfViewer] convertFileSrc failed:', err)
-    imageError.value = `Failed to convert path: ${err.message}`
-    return null
-  }
-})
-
-// Setup image when source changes
-const setupImage = () => {
-  imageError.value = null
-  
-  if (!props.source) {
-    imageSrc.value = null
-    imageError.value = 'No file path provided'
-    return
-  }
-  
-  console.log('[PdfViewer] Setting up image from path:', props.source)
-  
-  // Use the computed value which calls convertFileSrc
-  imageSrc.value = imageSrcComputed.value
-}
 
 const handleImageLoad = (event) => {
   console.log('[PdfViewer] Image loaded:', event.target.naturalWidth, 'x', event.target.naturalHeight)
@@ -108,7 +71,7 @@ const handleImageLoad = (event) => {
 }
 
 const handleImageError = (event) => {
-  const errorMsg = `Failed to load: ${props.source}`
+  const errorMsg = 'Failed to load preview image'
   console.error('[PdfViewer] Image error:', errorMsg, event)
   imageError.value = errorMsg
   emit('error', new Error(errorMsg))
@@ -120,16 +83,12 @@ if (props.pageCount > 0) {
 }
 
 onMounted(() => {
-  console.log('[PdfViewer] Mounted, source:', props.source)
-  setupImage()
+  console.log('[PdfViewer] Mounted, previewImage length:', props.previewImage?.length || 0)
 })
 
-// Watch for source changes and reload image
-watch(() => props.source, (newSource, oldSource) => {
-  console.log('[PdfViewer] Source changed:', oldSource, '->', newSource)
-  if (newSource && newSource !== oldSource) {
-    imageSrc.value = null // Reset to show loading
-    setTimeout(() => setupImage(), 50) // Small delay for reactivity
-  }
+// Watch for preview image changes
+watch(() => props.previewImage, (newImage, oldImage) => {
+  console.log('[PdfViewer] Preview image changed:', oldImage ? 'old' : 'none', '->', newImage ? 'new (' + newImage.length + ' chars)' : 'none')
+  imageError.value = null
 })
 </script>

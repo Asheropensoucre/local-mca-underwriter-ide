@@ -89,7 +89,7 @@
         </div>
         <!-- PDF Viewer Component - Only render when not processing to free RAM -->
         <div v-if="appState !== 'ANALYZING' && appState !== 'PROCESSING' && pdfSource" class="flex-1 overflow-hidden">
-          <PdfViewer :source="pdfSource" :page-count="pdfPageCount" />
+          <PdfViewer :preview-image="pdfSource" :page-count="pdfPageCount" />
         </div>
         <div v-else-if="!pdfSource" class="flex-1 flex items-center justify-center bg-background/50 m-4 rounded-lg border border-border border-dashed">
           <p class="text-gray-500 text-sm">PDF loaded (viewer pending)</p>
@@ -700,7 +700,7 @@ onMounted(async () => {
 })
 
 // Clean up event listeners and blob URLs on unmount
-onUnmounted(() => {
+onUnmounted(async () => {
   if (analysisUnlisten.value) {
     analysisUnlisten.value()
   }
@@ -708,6 +708,13 @@ onUnmounted(() => {
   if (pdfBlobUrl.value) {
     URL.revokeObjectURL(pdfBlobUrl.value)
     pdfBlobUrl.value = null
+  }
+  // Call Rust garbage collector to delete temp files
+  try {
+    const count = await invoke('cleanup_temp_files')
+    console.log('[GarbageCollector] Deleted', count, 'temp directories on app close')
+  } catch (err) {
+    console.error('[GarbageCollector] Cleanup failed:', err)
   }
 })
 
@@ -830,18 +837,22 @@ const loadFileForPreview = async (index) => {
       pdfPath: file.path,
       dpi: 72
     })
-    
+
     fileQueue.value[index].pageCount = result.pages.length
     pdfPageCount.value = result.pages.length
-    
-    // Use the preview_path from Rust (page1.jpg)
-    if (result.preview_path) {
+
+    // Use the Data URI from Rust (no CSP issues!)
+    if (result.preview_image_data_uri) {
+      pdfSource.value = result.preview_image_data_uri
+      console.log('[State] Preview Data URI loaded:', result.preview_image_data_uri.length, 'chars')
+    } else if (result.preview_path) {
+      // Fallback to path if Data URI failed
       pdfSource.value = result.preview_path
-      console.log('[State] Preview image path:', result.preview_path)
+      console.log('[State] Fallback to preview path:', result.preview_path)
     } else {
-      console.warn('[State] No preview_path returned from Rust')
+      console.warn('[State] No preview data available')
     }
-    
+
     loadingProgress.value = 50
     loadingMessage.value = `Converting ${result.pages.length} page(s)...`
   } catch (err) {

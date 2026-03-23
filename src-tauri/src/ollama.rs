@@ -55,5 +55,6 @@ pub struct PdfPageInfo {
 pub struct PdfConversionResult {
     pub pages: Vec<PdfPageInfo>,
     pub images: Vec<String>, // base64 encoded paths for Ollama
-    pub preview_path: Option<String>, // Absolute path to page1.jpg for frontend preview
+    pub preview_path: Option<String>, // Absolute path to page1.jpg (for debugging)
+    pub preview_image_data_uri: Option<String>, // Data URI for frontend preview (data:image/jpeg;base64,...)
 }

@@ -20,14 +20,28 @@ static TEMP_DIRS: Mutex<Vec<Arc<TempDir>>> = Mutex::new(Vec::new());
 #[tauri::command]
 fn cleanup_temp_images() -> Result<(), String> {
     let mut dirs = TEMP_DIRS.lock().map_err(|e| format!("Failed to lock temp dirs: {}", e))?;
-    
+
     println!("[Cleanup] Cleaning up {} temp directories...", dirs.len());
-    
+
     // Clear the vector - this will drop the Arcs and delete the temp dirs
     dirs.clear();
-    
+
     println!("[Cleanup] Cleanup complete");
     Ok(())
+}
+
+/// Clean up temp files and return count of deleted directories
+#[tauri::command]
+fn cleanup_temp_files() -> Result<usize, String> {
+    let mut dirs = TEMP_DIRS.lock().map_err(|e| format!("Failed to lock temp dirs: {}", e))?;
+    let count = dirs.len();
+    
+    println!("[GarbageCollector] Deleting {} temp directories...", count);
+    
+    dirs.clear();
+    
+    println!("[GarbageCollector] Cleanup complete");
+    Ok(count)
 }
 
 #[tauri::command]
@@ -260,14 +274,35 @@ async fn convert_pdf_to_images(pdf_path: String, dpi: u32) -> Result<PdfConversi
                 .map(|p| BASE64.encode(p.as_bytes()))
                 .collect();
 
-            // Return first page path for frontend preview (absolute path)
+            // Generate Data URI for frontend preview from page-1.jpg
+            let preview_image_data_uri = if let Some(first_page_path) = image_paths.first() {
+                println!("[PDF] Generating Data URI from: {}", first_page_path);
+                
+                match fs::read(first_page_path) {
+                    Ok(image_bytes) => {
+                        let base64_string = BASE64.encode(&image_bytes);
+                        let data_uri = format!("data:image/jpeg;base64,{}", base64_string);
+                        println!("[PDF] Data URI generated: {} bytes", data_uri.len());
+                        Some(data_uri)
+                    }
+                    Err(e) => {
+                        println!("[PDF] Failed to read preview image: {}", e);
+                        None
+                    }
+                }
+            } else {
+                println!("[PDF] No image paths available for Data URI");
+                None
+            };
+
+            // Return first page path for frontend preview (absolute path, for debugging)
             let preview_path = image_paths.first().cloned();
-            
+
             // Log the actual file path and check if it exists
             if let Some(ref path) = preview_path {
                 println!("[PDF] Preview path: {}", path);
                 println!("[PDF] Preview file exists: {}", std::path::Path::new(path).exists());
-                
+
                 // Get file size for debugging
                 if let Ok(metadata) = std::fs::metadata(path) {
                     println!("[PDF] Preview file size: {} bytes", metadata.len());
@@ -284,6 +319,7 @@ async fn convert_pdf_to_images(pdf_path: String, dpi: u32) -> Result<PdfConversi
                 pages,
                 images: paths_as_base64,
                 preview_path,
+                preview_image_data_uri,
             })
         }
         Ok(output) => {
@@ -763,6 +799,7 @@ fn main() {
             read_file_as_base64,
             convert_pdf_to_images,
             cleanup_temp_images,
+            cleanup_temp_files,
             send_pdf_to_ollama,
             chat_with_ollama,
             aggregate_batch_results,
