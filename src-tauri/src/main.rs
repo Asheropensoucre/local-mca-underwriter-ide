@@ -426,16 +426,44 @@ async fn send_pdf_to_ollama(
     let mut page_results: Vec<String> = Vec::with_capacity(total_pages);
     let mut temp_files: Vec<String> = Vec::new();
 
-    // Decode image paths from base64
+    // Decode image paths from base64 - with proper error handling
     let image_paths: Vec<String> = conversion.images.iter()
-        .filter_map(|b64| String::from_utf8(BASE64.decode(b64).ok()?).ok())
+        .enumerate()
+        .filter_map(|(idx, b64)| {
+            match BASE64.decode(b64) {
+                Ok(bytes) => match String::from_utf8(bytes) {
+                    Ok(path) => Some(path),
+                    Err(e) => {
+                        println!("[Event-Driven] Failed to decode path for page {}: {}", idx + 1, e);
+                        None
+                    }
+                },
+                Err(e) => {
+                    println!("[Event-Driven] Failed to base64 decode path for page {}: {}", idx + 1, e);
+                    None
+                }
+            }
+        })
         .collect();
+
+    println!("[Event-Driven] Successfully decoded {} image paths out of {}", image_paths.len(), conversion.images.len());
+
+    if image_paths.len() != total_pages {
+        return Err(format!("Failed to decode all image paths: {} of {}", image_paths.len(), total_pages));
+    }
 
     for (idx, image_path) in image_paths.iter().enumerate() {
         let page_num = idx + 1;
         temp_files.push(image_path.clone());
 
         println!("[Event-Driven] Processing page {}/{}: {}", page_num, total_pages, image_path);
+
+        // Check if file exists before trying to read
+        if !std::path::Path::new(image_path).exists() {
+            let err = format!("Image file not found: {}", image_path);
+            println!("[Event-Driven] ERROR: {}", err);
+            return Err(err);
+        }
 
         // Emit page start event
         let _ = app.emit("analysis-progress", serde_json::json!({
@@ -450,6 +478,8 @@ async fn send_pdf_to_ollama(
             .map_err(|e| format!("Failed to read image {}: {}", image_path, e))?;
         let base64_image = BASE64.encode(&image_data);
 
+        println!("[Event-Driven] Page {} image loaded: {} bytes", page_num, image_data.len());
+
         // Analyze this page
         let page_result = analyze_single_page(
             &client,
@@ -463,6 +493,8 @@ async fn send_pdf_to_ollama(
         ).await?;
 
         page_results.push(page_result.clone());
+
+        println!("[Event-Driven] Page {} analysis complete: {} chars", page_num, page_result.len());
 
         // Emit page complete event WITH the result
         let _ = app.emit("analysis-progress", serde_json::json!({

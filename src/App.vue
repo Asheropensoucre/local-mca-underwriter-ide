@@ -691,7 +691,7 @@ const clearFileQueue = () => {
 // Check Ollama connection on mount and set up event listeners
 onMounted(async () => {
   await checkOllamaConnection()
-  setupAnalysisEventListeners()
+  await setupAnalysisEventListeners()
 })
 
 // Clean up event listeners on unmount
@@ -703,39 +703,47 @@ onUnmounted(() => {
 
 // Set up Tauri event listeners for analysis progress
 const setupAnalysisEventListeners = async () => {
-  // Listen for analysis-progress events
-  analysisUnlisten.value = await listen('analysis-progress', (event) => {
-    const payload = event.payload
+  try {
+    // Listen for analysis-progress events
+    analysisUnlisten.value = await listen('analysis-progress', (event) => {
+      const payload = event.payload
+      
+      console.log('[Event] Received:', payload.type, payload)
+      
+      if (payload.type === 'start') {
+        totalPages.value = payload.total_pages
+        currentPage.value = 0
+        pageResults.value = []
+        loadingMessage.value = payload.message
+        console.log('[Event] Analysis started:', payload)
+      }
+      
+      if (payload.type === 'page_start') {
+        currentPage.value = payload.current_page
+        loadingMessage.value = payload.message
+        console.log('[Event] Page start:', payload)
+      }
+      
+      if (payload.type === 'page_complete') {
+        currentPage.value = payload.current_page
+        pageResults.value.push(payload.page_result)
+        loadingMessage.value = payload.message
+        console.log('[Event] Page complete:', payload)
+      }
+      
+      if (payload.type === 'aggregating') {
+        loadingMessage.value = payload.message
+        currentPage.value = payload.total_pages
+        console.log('[Event] Aggregating:', payload)
+      }
+    })
     
-    if (payload.type === 'start') {
-      totalPages.value = payload.total_pages
-      currentPage.value = 0
-      pageResults.value = []
-      loadingMessage.value = payload.message
-      console.log('[Event] Analysis started:', payload)
-    }
-    
-    if (payload.type === 'page_start') {
-      currentPage.value = payload.current_page
-      loadingMessage.value = payload.message
-      console.log('[Event] Page start:', payload)
-    }
-    
-    if (payload.type === 'page_complete') {
-      currentPage.value = payload.current_page
-      pageResults.value.push(payload.page_result)
-      loadingMessage.value = payload.message
-      console.log('[Event] Page complete:', payload)
-    }
-    
-    if (payload.type === 'aggregating') {
-      loadingMessage.value = payload.message
-      currentPage.value = payload.total_pages
-      console.log('[Event] Aggregating:', payload)
-    }
-  })
-  
-  console.log('[Event] Analysis progress listener registered')
+    console.log('[Event] Analysis progress listener registered successfully')
+  } catch (error) {
+    console.error('[Event] Failed to set up analysis progress listener:', error)
+    errorMessage.value = 'Failed to set up progress monitoring. Please refresh the page.'
+    appState.value = 'ERROR'
+  }
 }
 
 const checkOllamaConnection = async () => {
