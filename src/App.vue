@@ -804,20 +804,24 @@ const openFileDialog = async () => {
 // Load a file from queue for PDF preview
 const loadFileForPreview = async (index) => {
   if (index >= fileQueue.value.length) return
-  
+
   const file = fileQueue.value[index]
   currentFileIndex.value = index
-  
+
   console.log('[State] Loading PDF:', file.path)
-  
+
   try {
     const { readFile } = await import('@tauri-apps/plugin-fs')
     const pdfData = await readFile(file.path)
-    pdfSource.value = new Uint8Array(pdfData)
+    // Create a proper copy of the data to avoid ArrayBuffer detachment
+    pdfSource.value = new Uint8Array(pdfData).slice(0)
+    console.log('[State] PDF loaded:', pdfSource.value.length, 'bytes')
   } catch (err) {
     console.error('Error reading PDF:', err)
+    errorMessage.value = 'Failed to load PDF file: ' + err.message
+    appState.value = 'ERROR'
   }
-  
+
   try {
     const result = await invoke('convert_pdf_to_images', {
       pdfPath: file.path,
@@ -832,11 +836,11 @@ const loadFileForPreview = async (index) => {
     pdfPageCount.value = 1
     fileQueue.value[index].pageCount = 1
   }
-  
+
   appState.value = 'LOADING_PDF'
   loadingProgress.value = 0
   loadingMessage.value = 'Loading PDF...'
-  
+
   setTimeout(() => {
     loadingProgress.value = 100
     appState.value = 'READY'
