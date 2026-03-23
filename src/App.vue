@@ -3,7 +3,7 @@
     <!-- IDLE State - Drop Zone -->
     <div
       v-show="appState === 'IDLE'"
-      class="flex-1 flex items-center justify-center"
+      class="flex-1 flex items-start justify-start p-6"
       :class="[
         isDragging
           ? 'border-primary bg-primary/10 scale-105 shadow-lg shadow-primary/20'
@@ -14,22 +14,22 @@
       @dragleave="isDragging = false"
       @drop.prevent="handleDrop"
     >
-      <div class="border-2 border-dashed rounded-xl p-16 text-center cursor-pointer max-w-2xl transition-all duration-200">
+      <div class="border-2 border-dashed rounded-xl p-16 text-left cursor-pointer w-full transition-all duration-200">
         <div class="space-y-6">
-          <div>
-            <svg class="w-20 h-20 text-gray-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div class="flex items-start gap-4">
+            <svg class="w-20 h-20 text-gray-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
             </svg>
-          </div>
-          <div>
-            <p class="text-xl font-medium text-gray-200">Drop Bank Statements Here</p>
-            <p class="text-sm text-gray-500 mt-2">or click to browse (select multiple months)</p>
+            <div class="text-left">
+              <p class="text-xl font-medium text-gray-200">Drop Bank Statements Here</p>
+              <p class="text-sm text-gray-500 mt-2">or click to browse (select multiple months)</p>
+            </div>
           </div>
           <div class="flex gap-4">
             <span class="px-3 py-1 bg-surface border border-border rounded text-xs text-gray-500">PDF</span>
             <span class="px-3 py-1 bg-surface border border-border rounded text-xs text-gray-500">Multiple Files</span>
           </div>
-          <p v-if="dropError" class="text-sm text-red-400">{{ dropError }}</p>
+          <p v-if="dropError" class="text-sm text-red-400 text-left">{{ dropError }}</p>
 
           <!-- File Queue Preview -->
           <div v-if="fileQueue.length > 0" class="text-left">
@@ -171,42 +171,46 @@
 
             <!-- ANALYZING State - Loading Spinner with Multi-page Progress -->
             <div v-if="appState === 'ANALYZING'" class="flex-1 flex flex-col bg-background border border-border rounded-lg p-8">
-              <div class="relative mb-4 flex">
-                <div class="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent m-auto"></div>
-              </div>
-              <p class="text-gray-300 font-medium mb-2 text-center">{{ loadingMessage }}</p>
-              <!-- Multi-page Progress -->
-              <div v-if="totalPages > 1" class="w-full mt-4">
-                <div class="flex justify-between text-xs text-gray-500 mb-1">
-                  <span>Page {{ currentPage }} of {{ totalPages }}</span>
-                  <span>{{ Math.round((currentPage / totalPages) * 100) }}%</span>
+              <div class="flex items-start gap-4 mb-4">
+                <div class="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent flex-shrink-0"></div>
+                <div class="text-left">
+                  <p class="text-gray-300 font-medium mb-2">{{ loadingMessage }}</p>
+                  <!-- Multi-page Progress -->
+                  <div v-if="totalPages > 1" class="w-full mt-4">
+                    <div class="flex justify-between text-xs text-gray-500 mb-1">
+                      <span>Page {{ currentPage }} of {{ totalPages }}</span>
+                      <span>{{ Math.round((currentPage / totalPages) * 100) }}%</span>
+                    </div>
+                    <div class="w-full h-2 bg-slate-700 rounded-full overflow-hidden">
+                      <div
+                        class="h-full bg-primary transition-all duration-500"
+                        :style="{ width: (currentPage / totalPages * 100) + '%' }"
+                      ></div>
+                    </div>
+                    <p class="text-xs text-gray-600 mt-2">
+                      <span v-if="currentPage < totalPages">Analyzing page {{ currentPage }}...</span>
+                      <span v-else>Aggregating results...</span>
+                    </p>
+                  </div>
+                  <p v-else class="text-xs text-gray-500">This may take 5-10 minutes for AI analysis (hardware dependent)</p>
                 </div>
-                <div class="w-full h-2 bg-slate-700 rounded-full overflow-hidden">
-                  <div
-                    class="h-full bg-primary transition-all duration-500"
-                    :style="{ width: (currentPage / totalPages * 100) + '%' }"
-                  ></div>
-                </div>
-                <p class="text-xs text-gray-600 mt-2 text-center">
-                  <span v-if="currentPage < totalPages">Analyzing page {{ currentPage }}...</span>
-                  <span v-else>Aggregating results...</span>
-                </p>
               </div>
-              <p v-else class="text-xs text-gray-500 text-center">This may take 5-10 minutes for AI analysis (hardware dependent)</p>
             </div>
 
             <!-- ERROR State - Error Display in Chat Area -->
             <div v-else-if="appState === 'ERROR'" class="flex-1 flex flex-col bg-background border border-border rounded-lg p-8">
-              <div class="text-red-400 text-4xl mb-4 text-center">❌</div>
-              <p class="text-lg font-medium text-red-300 mb-2 text-center">Analysis Failed</p>
-              <p class="text-sm text-gray-400 text-center mb-4">{{ errorMessage }}</p>
-              <div class="flex justify-center">
-                <button
-                  @click="handleUnderwrite"
-                  class="px-4 py-2 bg-primary hover:bg-blue-600 rounded-lg text-white text-sm font-medium transition-colors"
-                >
-                  Try Again
-                </button>
+              <div class="flex items-start gap-3">
+                <div class="text-red-400 text-4xl flex-shrink-0">❌</div>
+                <div class="text-left flex-1">
+                  <p class="text-lg font-medium text-red-300 mb-2">Analysis Failed</p>
+                  <p class="text-sm text-gray-400 mb-4">{{ errorMessage }}</p>
+                  <button
+                    @click="handleUnderwrite"
+                    class="px-4 py-2 bg-primary hover:bg-blue-600 rounded-lg text-white text-sm font-medium transition-colors"
+                  >
+                    Try Again
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -466,11 +470,13 @@
 
             <!-- READY State - Waiting for Analysis -->
             <div v-else class="flex-1 flex flex-col bg-background border border-border rounded-lg p-8">
-              <div class="text-center space-y-3 m-auto">
-                <svg class="w-12 h-12 text-gray-600 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <div class="flex items-start gap-3">
+                <svg class="w-12 h-12 text-gray-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
                 </svg>
-                <p class="text-gray-500 text-sm">Click "Underwrite File" to analyze</p>
+                <div class="text-left">
+                  <p class="text-gray-500 text-sm">Click "Underwrite File" to analyze</p>
+                </div>
               </div>
             </div>
           </div>
