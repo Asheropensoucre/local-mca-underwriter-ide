@@ -19,6 +19,16 @@ use std::collections::HashMap;
 // We need to store the TempDir itself, not just the path, to prevent auto-deletion
 static TEMP_DIRS: Mutex<Vec<Arc<TempDir>>> = Mutex::new(Vec::new());
 
+// Regex for stripping think tags from Qwen3-VL responses
+lazy_static::lazy_static! {
+    static ref THINK_TAG_REGEX: regex::Regex = regex::Regex::new(r"(?s)<think>.*?</think>").unwrap();
+}
+
+/// Strip <think>...</think> tags from model responses (Qwen3-VL thinking models)
+fn strip_think_tags(response: &str) -> String {
+    THINK_TAG_REGEX.replace_all(response, "").trim().to_string()
+}
+
 /// Clean up old temporary image directories to prevent disk space leaks
 #[tauri::command]
 fn cleanup_temp_images() -> Result<(), String> {
@@ -570,10 +580,17 @@ async fn analyze_single_page(
     total_pages: usize,
 ) -> Result<String, String> {
     let page_prompt = if total_pages > 1 {
-        format!("Page {} of {}. {}\n\nExtract data from this page only. Be thorough.", 
+        format!("Page {} of {}. {}\n\nExtract data from this page only. Be thorough.",
             page_num, total_pages, prompt)
     } else {
         prompt.to_string()
+    };
+
+    // For thinking models like Qwen3-VL, don't send format: "json" as it can conflict
+    let format_json = if !model.to_lowercase().contains("qwen3") {
+        Some("json".to_string())
+    } else {
+        None
     };
 
     let request = OllamaChatRequest {
@@ -589,7 +606,7 @@ async fn analyze_single_page(
             num_predict: Some(max_tokens),
             num_ctx: Some(8192), // 8K context for individual page analysis
         }),
-        format: Some("json".to_string()), // Enforce JSON output
+        format: format_json,
     };
 
     println!("[Multi-page] Analyzing page {}/{}...", page_num, total_pages);
@@ -612,7 +629,10 @@ async fn analyze_single_page(
         .await
         .map_err(|e| format!("Page {} - Failed to parse response: {}", page_num, e))?;
 
-    Ok(result.message.content)
+    // Strip think tags from Qwen3-VL responses
+    let cleaned_response = strip_think_tags(&result.message.content);
+
+    Ok(cleaned_response)
 }
 
 /// Aggregate results from multiple pages into final analysis
@@ -637,7 +657,7 @@ async fn aggregate_page_results(
     // We stop passing the original prompt here to prevent echo/duplication.
     // We only tell the AI to merge the JSON it already generated.
     let aggregate_prompt = format!(
-        r#"You are a strict JSON data merger. I am providing you with the JSON outputs from multiple pages of a document. 
+        r#"You are a strict JSON data merger. I am providing you with the JSON outputs from multiple pages of a document.
 
 CRITICAL RULES:
 1. Combine all the page data into ONE single, flat, valid JSON object.
@@ -654,6 +674,13 @@ MERGED JSON ONLY:"#,
         combined_context
     );
 
+    // For thinking models like Qwen3-VL, don't send format: "json" as it can conflict
+    let format_json = if !model.to_lowercase().contains("qwen3") {
+        Some("json".to_string())
+    } else {
+        None
+    };
+
     let request = OllamaChatRequest {
         model: model.to_string(),
         messages: vec![OllamaMessage {
@@ -667,7 +694,7 @@ MERGED JSON ONLY:"#,
             num_predict: Some(max_tokens),
             num_ctx: Some(16384), // 16K context for large multi-page aggregation
         }),
-        format: Some("json".to_string()), // Enforce JSON output
+        format: format_json,
     };
 
     let response = client
@@ -688,7 +715,10 @@ MERGED JSON ONLY:"#,
         .await
         .map_err(|e| format!("Failed to parse aggregation response: {}", e))?;
 
-    Ok(result.message.content)
+    // Strip think tags from Qwen3-VL responses
+    let cleaned_response = strip_think_tags(&result.message.content);
+
+    Ok(cleaned_response)
 }
 
 /// Event-driven PDF analysis with live progress events
