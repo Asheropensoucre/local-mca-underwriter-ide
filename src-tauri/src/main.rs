@@ -430,10 +430,16 @@ async fn test_ollama_model(model: String) -> Result<OllamaResponse, String> {
             format!("Failed to parse response: {}", e)
         })?;
 
+    // DEBUG: Log raw response to see what Ollama actually returns
+    println!("[Test] RAW response from Ollama ({} chars):", result.message.content.len());
+    println!("[Test] === RAW CONTENT START ===");
+    println!("{}", result.message.content);
+    println!("[Test] === RAW CONTENT END ===");
+
     // Extract thoughts and content (for thinking models like Qwen3-VL)
     let extracted = extract_thoughts_and_content(&result.message.content);
 
-    println!("[Test] Success: {} (thoughts: {} chars)", extracted.content, extracted.thoughts.as_ref().map(|t| t.len()).unwrap_or(0));
+    println!("[Test] Success: '{}' (thoughts: {} chars)", extracted.content, extracted.thoughts.as_ref().map(|t| t.len()).unwrap_or(0));
     Ok(extracted)
 }
 
