@@ -243,14 +243,16 @@ Before any release:
 - qwen3-vl: Supported with visible thinking process
 
 ### Thinking Model Support (Qwen3-VL, DeepSeek-R1, O1, etc.)
-- **Think-Tag Extraction:** Captures <think>...</think> tags and displays them in UI
-- **JSON Output Preserved:** All models send `format: "json"` for structured output
+- **Streaming API:** Uses Ollama streaming to capture thinking in real-time
+- **Thinking Field Extraction:** Captures `thinking` field from streaming chunks (not <think> tags)
 - **Live Thoughts Display:** Users see AI reasoning in real-time during analysis
 - **Purple "AI Thinking Process" Panel:** Shows thoughts during ANALYZING state
 - **Test Result Display:** Test button shows both thoughts and response in UI
 - **Auto-Enable Toggle:** Thoughts toggle auto-enables for thinking models (qwen3, deepseek, o1, r1)
 - **User Control:** Toggle to show/hide thoughts panel, persisted to localStorage
 - **Applied To:** `send_to_ollama`, `test_ollama_model`, `chat_with_ollama`, `analyze_single_page`, `aggregate_page_results`
+- **Timeout:** 180s for thinking models (thinking can take time)
+- **Token Limit:** 500 tokens for thinking models (thinking + response)
 
 ### Recent Features (Latest)
 - **Test Result Display:** Shows AI thoughts + response below Test button
