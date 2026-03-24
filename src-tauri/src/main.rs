@@ -1045,43 +1045,63 @@ async fn send_pdf_to_ollama(
         println!("[Event-Driven] Deleted temp file: {}", image_path);
     }
 
-    println!("[Event-Driven] All {} pages analyzed, aggregating results...", total_pages);
+    // For single-page PDFs, skip aggregation and use the result directly
+    let final_response = if total_pages == 1 {
+        println!("[Event-Driven] Single page PDF - skipping aggregation");
 
-    // Emit aggregation start event
-    let _ = app.emit("analysis-progress", serde_json::json!({
-        "type": "aggregating",
-        "total_pages": total_pages,
-        "message": "Combining all pages into final report..."
-    }));
-
-    // Aggregate all page results into final analysis
-    let final_response = aggregate_page_results(
-        &client,
-        &model,
-        &prompt,
-        &page_results,
-        temperature,
-        max_tokens,
-    ).await?;
-
-    // Emit aggregation thoughts if present
-    if let Some(ref thoughts) = final_response.thoughts {
-        let _ = app.emit("analysis-progress", serde_json::json!({
-            "type": "thoughts",
-            "current_page": total_pages,
-            "total_pages": total_pages,
-            "thoughts": thoughts,
-            "message": "Aggregation thinking..."
-        }));
-    }
-
-    // Clean up any remaining temp files (including temp dir)
-    for temp_file in &temp_files {
-        if Path::new(temp_file).exists() {
-            let _ = fs::remove_file(temp_file);
-            println!("[Event-Driven] Cleaned up temp file: {}", temp_file);
+        // Clean up any remaining temp files
+        for temp_file in &temp_files {
+            if Path::new(temp_file).exists() {
+                let _ = fs::remove_file(temp_file);
+                println!("[Event-Driven] Cleaned up temp file: {}", temp_file);
+            }
         }
-    }
+
+        OllamaResponse {
+            thoughts: None,
+            content: page_results.remove(0),
+        }
+    } else {
+        println!("[Event-Driven] All {} pages analyzed, aggregating results...", total_pages);
+
+        // Emit aggregation start event
+        let _ = app.emit("analysis-progress", serde_json::json!({
+            "type": "aggregating",
+            "total_pages": total_pages,
+            "message": "Combining all pages into final report..."
+        }));
+
+        // Aggregate all page results into final analysis
+        let final_response = aggregate_page_results(
+            &client,
+            &model,
+            &prompt,
+            &page_results,
+            temperature,
+            max_tokens,
+        ).await?;
+
+        // Emit aggregation thoughts if present
+        if let Some(ref thoughts) = final_response.thoughts {
+            let _ = app.emit("analysis-progress", serde_json::json!({
+                "type": "thoughts",
+                "current_page": total_pages,
+                "total_pages": total_pages,
+                "thoughts": thoughts,
+                "message": "Aggregation thinking..."
+            }));
+        }
+
+        // Clean up any remaining temp files (including temp dir)
+        for temp_file in &temp_files {
+            if Path::new(temp_file).exists() {
+                let _ = fs::remove_file(temp_file);
+                println!("[Event-Driven] Cleaned up temp file: {}", temp_file);
+            }
+        }
+
+        final_response
+    };
 
     println!("[Event-Driven] Analysis complete! Final response length: {} chars", final_response.content.len());
 
