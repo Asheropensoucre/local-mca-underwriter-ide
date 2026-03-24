@@ -3,7 +3,7 @@
 
 mod ollama;
 
-use ollama::{OllamaChatRequest, OllamaMessage, OllamaOptions, OllamaModelsResponse, OllamaResponse, PdfConversionResult, PdfPageInfo};
+use ollama::{OllamaChatRequest, OllamaMessage, OllamaOptions, OllamaModelsResponse, OllamaResponse, OllamaStreamChunk, PdfConversionResult, PdfPageInfo};
 use std::fs;
 use std::sync::{Mutex, Arc};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
@@ -655,8 +655,9 @@ async fn convert_pdf_to_images(pdf_path: String, dpi: u32) -> Result<PdfConversi
     }
 }
 
-/// Analyze a single page with Ollama
+/// Analyze a single page with Ollama using streaming
 /// Returns OllamaResponse with both thoughts and content
+/// Emits live streaming events for thoughts and tokens
 async fn analyze_single_page(
     client: &reqwest::Client,
     model: &str,
@@ -666,6 +667,7 @@ async fn analyze_single_page(
     max_tokens: i32,
     page_num: usize,
     total_pages: usize,
+    app: &tauri::AppHandle,
 ) -> Result<OllamaResponse, String> {
     let page_prompt = if total_pages > 1 {
         format!("Page {} of {}. {}\n\nExtract data from this page only. Be thorough.",
@@ -674,8 +676,7 @@ async fn analyze_single_page(
         prompt.to_string()
     };
 
-    // Always use non-streaming for page analysis - more stable
-    // Thinking models will still work, we just won't capture thoughts during page analysis
+    // Always use streaming for live feedback
     let request = OllamaChatRequest {
         model: model.to_string(),
         messages: vec![OllamaMessage {
@@ -683,7 +684,7 @@ async fn analyze_single_page(
             content: page_prompt,
             images: Some(vec![base64_image.to_string()]),
         }],
-        stream: false, // Always use non-streaming for stability
+        stream: true, // Always use streaming for live feedback
         options: Some(OllamaOptions {
             temperature: Some(temperature),
             num_predict: Some(max_tokens),
@@ -692,7 +693,7 @@ async fn analyze_single_page(
         format: Some("json".to_string()), // Always request JSON for page analysis
     };
 
-    println!("[Multi-page] Analyzing page {}/{}...", page_num, total_pages);
+    println!("[Multi-page] Analyzing page {}/{} with streaming...", page_num, total_pages);
 
     let response = client
         .post("http://localhost:11434/api/chat")
@@ -701,21 +702,64 @@ async fn analyze_single_page(
         .await
         .map_err(|e| format!("Page {} request failed: {}", page_num, e))?;
 
-    let status = response.status();
-    if !status.is_success() {
-        let error_text = response.text().await.unwrap_or_default();
-        return Err(format!("Page {} - Ollama returned status {}: {}", page_num, status, error_text));
+    use futures_util::StreamExt;
+    let mut stream = response.bytes_stream();
+
+    let mut full_content = String::new();
+    let mut full_thinking = String::new();
+    let mut chunk_count = 0;
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("Stream error on page {}: {}", page_num, e))?;
+        let text = String::from_utf8_lossy(&chunk);
+
+        if let Ok(chunk_data) = serde_json::from_str::<OllamaStreamChunk>(&text) {
+            // Extract thinking field if present
+            if let Some(thinking) = chunk_data.message.as_ref().and_then(|m| m.thinking.as_ref()) {
+                full_thinking.push_str(thinking);
+                
+                // Emit thinking event for live display
+                let _ = app.emit("stream-thought", serde_json::json!({
+                    "type": "thought",
+                    "page": page_num,
+                    "thinking": thinking
+                }));
+            }
+
+            // Extract content field if present
+            if let Some(content) = chunk_data.message.as_ref().and_then(|m| m.content.as_ref()) {
+                full_content.push_str(content);
+                
+                // Emit content event for live display
+                let _ = app.emit("stream-token", serde_json::json!({
+                    "type": "token",
+                    "page": page_num,
+                    "content": content
+                }));
+            }
+
+            // Check if done
+            if chunk_data.done {
+                chunk_count += 1;
+                println!("[Multi-page] Page {} stream complete - {} chunks", page_num, chunk_count);
+                break;
+            }
+        }
     }
 
-    let result: ollama::OllamaChatResponse = response
-        .json()
-        .await
-        .map_err(|e| format!("Page {} - Failed to parse response: {}", page_num, e))?;
+    // Build response with thoughts
+    let extracted = if !full_thinking.is_empty() {
+        OllamaResponse {
+            thoughts: Some(full_thinking),
+            content: full_content,
+        }
+    } else {
+        // Fall back to regex extraction for <think> tags
+        extract_thoughts_and_content(&full_content)
+    };
 
-    // Extract thoughts and content (for thinking models like Qwen3-VL)
-    let extracted = extract_thoughts_and_content(&result.message.content);
-
-    println!("[Multi-page] Page {} analysis complete: {} chars", page_num, extracted.content.len());
+    println!("[Multi-page] Page {} analysis complete: {} chars (thinking: {} chars)", 
+        page_num, extracted.content.len(), extracted.thoughts.as_ref().map(|t| t.len()).unwrap_or(0));
 
     Ok(extracted)
 }
@@ -886,8 +930,21 @@ async fn send_pdf_to_ollama(
         "message": format!("Starting analysis of {} pages...", total_pages)
     }));
 
+    // Use extended timeout for thinking models (no effective timeout)
+    let timeout_secs = if model.to_lowercase().contains("qwen3")
+        || model.to_lowercase().contains("deepseek")
+        || model.to_lowercase().contains("o1")
+        || model.to_lowercase().contains("r1")
+    {
+        3600 // 60 minutes for thinking models
+    } else {
+        900 // 15 minutes for regular models
+    };
+
+    println!("[Event-Driven] Using {} second timeout for model: {}", timeout_secs, model);
+
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(900))
+        .timeout(std::time::Duration::from_secs(timeout_secs))
         .connect_timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
@@ -950,7 +1007,7 @@ async fn send_pdf_to_ollama(
 
         println!("[Event-Driven] Page {} image loaded: {} bytes", page_num, image_data.len());
 
-        // Analyze this page
+        // Analyze this page with streaming
         let page_response = analyze_single_page(
             &client,
             &model,
@@ -960,6 +1017,7 @@ async fn send_pdf_to_ollama(
             max_tokens,
             page_num,
             total_pages,
+            &app,
         ).await?;
 
         page_results.push(page_response.content.clone());
@@ -1051,8 +1109,10 @@ async fn send_pdf_to_ollama(
 
 /// Text-only chat with Ollama - no images, pure text-to-text
 /// Used for follow-up questions after initial analysis
+/// Emits streaming events for live thought and token display
 #[tauri::command]
 async fn chat_with_ollama(
+    app: tauri::AppHandle,
     model: String,
     prompt: String,
     temperature: f32,
@@ -1066,8 +1126,11 @@ async fn chat_with_ollama(
         || model.to_lowercase().contains("o1")
         || model.to_lowercase().contains("r1");
 
+    // Use extended timeout for thinking models
+    let timeout_secs = if is_thinking_model { 3600 } else { 120 };
+
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120)) // 2 minute timeout for text chat
+        .timeout(std::time::Duration::from_secs(timeout_secs))
         .connect_timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
@@ -1079,7 +1142,7 @@ async fn chat_with_ollama(
             content: prompt,
             images: None, // No images - text only!
         }],
-        stream: is_thinking_model, // Use streaming for thinking models
+        stream: true, // Always use streaming for live feedback
         options: Some(OllamaOptions {
             temperature: Some(temperature),
             num_predict: Some(max_tokens),
@@ -1088,7 +1151,7 @@ async fn chat_with_ollama(
         format: None,
     };
 
-    println!("[Chat] Sending request to Ollama...");
+    println!("[Chat] Sending request to Ollama with streaming...");
 
     let response = client
         .post("http://localhost:11434/api/chat")
@@ -1100,60 +1163,63 @@ async fn chat_with_ollama(
             format!("Failed to send request: {}", e)
         })?;
 
+    use futures_util::StreamExt;
+    let mut stream = response.bytes_stream();
+
     let mut full_content = String::new();
+    let mut full_thinking = String::new();
+    let mut chunk_count = 0;
 
-    if is_thinking_model {
-        // Streaming mode for thinking models
-        println!("[Chat] Using streaming mode for thinking model...");
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("Chat stream error: {}", e))?;
+        let text = String::from_utf8_lossy(&chunk);
 
-        use futures_util::StreamExt;
-        let mut stream = response.bytes_stream();
+        if let Ok(chunk_data) = serde_json::from_str::<OllamaStreamChunk>(&text) {
+            // Extract thinking field if present
+            if let Some(thinking) = chunk_data.message.as_ref().and_then(|m| m.thinking.as_ref()) {
+                full_thinking.push_str(thinking);
+                
+                // Emit thinking event for live display
+                let _ = app.emit("stream-thought", serde_json::json!({
+                    "type": "thought",
+                    "thinking": thinking
+                }));
+            }
 
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| format!("Stream error: {}", e))?;
-            let text = String::from_utf8_lossy(&chunk);
+            // Extract content field if present
+            if let Some(content) = chunk_data.message.as_ref().and_then(|m| m.content.as_ref()) {
+                full_content.push_str(content);
+                
+                // Emit content event for live display
+                let _ = app.emit("stream-token", serde_json::json!({
+                    "type": "token",
+                    "content": content
+                }));
+            }
 
-            if let Ok(chunk_data) = serde_json::from_str::<serde_json::Value>(&text) {
-                // Extract content field
-                if let Some(content) = chunk_data
-                    .get("message")
-                    .and_then(|m| m.get("content"))
-                    .and_then(|c| c.as_str())
-                {
-                    full_content.push_str(content);
-                }
-
-                // Check if done
-                if chunk_data.get("done").and_then(|d| d.as_bool()) == Some(true) {
-                    break;
-                }
+            // Check if done
+            if chunk_data.done {
+                chunk_count += 1;
+                println!("[Chat] Stream complete - {} chunks", chunk_count);
+                break;
             }
         }
-
-        println!("[Chat] Streaming complete: {} chars", full_content.len());
-    } else {
-        // Non-streaming mode for regular models
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            println!("[Chat] Error response: {}", error_text);
-            return Err(format!("Ollama returned status {}: {}", status, error_text));
-        }
-
-        let result: ollama::OllamaChatResponse = response
-            .json()
-            .await
-            .map_err(|e| {
-                println!("[Chat] Failed to parse JSON: {}", e);
-                format!("Failed to parse response: {}", e)
-            })?;
-
-        full_content = result.message.content;
     }
 
-    println!("[Chat] Response received: {} chars", full_content.len());
+    // Build response with thoughts
+    let result = if !full_thinking.is_empty() {
+        OllamaResponse {
+            thoughts: Some(full_thinking),
+            content: full_content,
+        }
+    } else {
+        extract_thoughts_and_content(&full_content)
+    };
 
-    Ok(full_content)
+    println!("[Chat] Response received: {} chars (thinking: {} chars)", 
+        result.content.len(), result.thoughts.as_ref().map(|t| t.len()).unwrap_or(0));
+
+    Ok(result.content)
 }
 
 /// Aggregate batch results from multiple PDF files into one master report

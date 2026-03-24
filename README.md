@@ -10,26 +10,25 @@ A blazing-fast, local-first underwriting workspace built specifically for the Me
 ## Features
 
 ### Advanced MCA Underwriting Logic
-- 🏦 **Position Detection** - Identifies known MCA lenders (OnDeck, Kabbage, etc.) and flags recurring daily/weekly ACH withdrawals as assumed positions.
+- 🏦 **Position Detection** - Identifies known MCA lenders and flags recurring daily/weekly ACH withdrawals as assumed positions.
 - 💰 **True Revenue Calculation** - Excludes incoming loan and advance deposits to determine true business revenue.
 - 📉 **Negative Days Analysis** - Accurately counts days where the "Daily Ending Balance" fell below $0.00 (not just NSF fee occurrences).
 - ⚖️ **Leverage & Debt Service** - Calculates total daily/weekly debt service to determine safe new payment thresholds.
 
 ### PDF Analysis & Workspace
 - 📄 **Rust-Native Image Pipeline** - Serve JPEG previews directly from Rust backend
-- 🖼️ **Lightweight Preview** - Simple <img> tag, zero JavaScript PDF rendering
+- 🖼️ **Lightweight Preview** - Simple <img> tag, The Rust backend already generates JPEGs for Ollama - we now serve Page 1 directly to the frontend via Tauri's convertFileSrc. Result: 100% more stable, zero client-side PDF parsing.
 - 📊 **Page Count Display** - Sync with backend page count
 - 🖼️ **Grayscale JPEG Conversion** - 55-60% compression for faster local processing
 - 🎨 **Dynamic UI Resizing** - Starts at a 60/40 split for PDF reading, dynamically animating to a 30/70 split when analysis completes so the Dashboard has maximum space. The right sidebar is fluid (flex-1) and expands to fill all available width.
 
-**Architecture Note:** We removed vue-pdf-embed (heavy JavaScript PDF renderer) to eliminate Out-Of-Memory crashes and ArrayBuffer detachments. The Rust backend already generates JPEGs for Ollama - we now serve Page 1 directly to the frontend via Tauri's convertFileSrc. Result: 100% more stable, zero client-side PDF parsing.
 
 ### AI Integration
 - 🤖 **Ollama Integration** - Connect to local vision models (100% offline)
 - 📡 **Connection Status** - Real-time indicator with test button (shows thoughts + response)
-- 🧠 **Vision Model Support** - Optimized for **Qwen 2.5-VL** (Highly Recommended), Qwen3-VL, DeepSeek-R1, llama3.2-vision, llava
+- 🧠 **Vision Model Support** - Optimized for **Qwen3-VL** (Highly Recommended), Qwen2.5-VL, llama3.2-vision, llava
 - 📝 **AI Chat Assistant** - Conversational interface for follow-up questions and parsed data cards
-- 💭 **Thinking Model Support** - Qwen3-VL/DeepSeek-R1 thinking process displayed live in purple panel
+- 💭 **Thinking Model Support** - Qwen3-VL or other thinking VL models the thinking process displayed live in purple panel
 - 🎯 **Smart Toggle** - Auto-enables for thinking models, persists preference
 
 ## How It Works

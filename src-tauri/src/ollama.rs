@@ -65,3 +65,19 @@ pub struct OllamaResponse {
     pub thoughts: Option<String>, // Thinking process (if model is a thinking model)
     pub content: String,          // Actual response content (JSON for analysis)
 }
+
+/// Streaming chunk from Ollama API
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OllamaStreamChunk {
+    pub model: String,
+    pub message: Option<OllamaStreamMessage>,
+    pub done: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OllamaStreamMessage {
+    pub role: String,
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>, // Thinking field for thinking models
+}

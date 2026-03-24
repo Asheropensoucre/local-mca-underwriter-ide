@@ -1112,6 +1112,28 @@ const setupAnalysisEventListeners = () => {
     console.error('[Event] Failed to set up analysis progress listener:', error)
     // Don't crash the app - just log the error
   })
+
+  // Set up streaming event listeners for live thought/token display
+  listen('stream-thought', (event) => {
+    const payload = event.payload
+    console.log('[Stream] Thinking:', payload)
+    
+    // Append thinking to aiThoughts for live display
+    if (payload.thinking) {
+      aiThoughts.value += payload.thinking
+      isThinkingModelDetected.value = true
+    }
+  }).catch((error) => {
+    console.error('[Stream] Failed to set up thought listener:', error)
+  })
+
+  listen('stream-token', (event) => {
+    const payload = event.payload
+    // For now, just log tokens - full streaming display needs more work
+    // console.log('[Stream] Token:', payload.content)
+  }).catch((error) => {
+    console.error('[Stream] Failed to set up token listener:', error)
+  })
 }
 
 const checkOllamaConnection = async () => {

@@ -237,18 +237,18 @@ Before any release:
 - **Disk-based storage:** No memory limits on large PDFs
 
 ### Ollama Processing
-- llama3.2-vision: 5-10 minutes per page (hardware dependent)
-- llava: 5-10 minutes per page (hardware dependent)
-- qwen2.5-vl: Best small model to use (Highly Recommended)
-- qwen3-vl: Supported with visible thinking process
+- llama3.2-vision 
+- llava
+- qwen2.5-vl
+- qwen3-vl
 
-### Thinking Model Support (Qwen3-VL, DeepSeek-R1, O1, etc.)
+### Thinking Model Support (Qwen3-VL, maybe be others untested)
 - **Streaming API:** Uses Ollama streaming to capture thinking in real-time
 - **Thinking Field Extraction:** Captures `thinking` field from streaming chunks (not <think> tags)
 - **Live Thoughts Display:** Users see AI reasoning in real-time during analysis
 - **Purple "AI Thinking Process" Panel:** Shows thoughts during ANALYZING state
 - **Test Result Display:** Test button shows both thoughts and response in UI
-- **Auto-Enable Toggle:** Thoughts toggle auto-enables for thinking models (qwen3, deepseek, o1, r1)
+- **Auto-Enable Toggle:** Thoughts toggle auto-enables for thinking models
 - **User Control:** Toggle to show/hide thoughts panel, persisted to localStorage
 - **Applied To:** `send_to_ollama`, `test_ollama_model`, `chat_with_ollama`, `analyze_single_page`, `aggregate_page_results`
 - **Timeout:** 180s for thinking models (thinking can take time)
@@ -257,10 +257,10 @@ Before any release:
 ### Recent Features (Latest)
 - **Test Result Display:** Shows AI thoughts + response below Test button
 - **Auto-Detect Thinking Models:** Badge appears when thinking model detected
-- **Smart Toggle:** Auto-enables for qwen3/deepseek/o1/r1 models
+- **Smart Toggle:** Auto-enables for qwen3-VL
 
 ### Memory Usage
 - App baseline: ~150MB
 - PDF viewer: +50MB per large PDF
-- Ollama processing: Model-dependent (2-8GB)
+- Ollama processing: Model-dependent (2-30GB) 'or higher untesed'
 - **Event-driven architecture:** Scales to 50+ pages safely
