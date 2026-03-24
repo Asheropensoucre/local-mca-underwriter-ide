@@ -387,7 +387,7 @@ async fn read_file_as_base64(file_path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn test_ollama_model(model: String) -> Result<String, String> {
+async fn test_ollama_model(model: String) -> Result<OllamaResponse, String> {
     println!("[Test] Testing Ollama model: {}", model);
 
     // Increase timeout for thinking models (qwen3-vl can take 30+ seconds to think)
@@ -433,8 +433,8 @@ async fn test_ollama_model(model: String) -> Result<String, String> {
     // Extract thoughts and content (for thinking models like Qwen3-VL)
     let extracted = extract_thoughts_and_content(&result.message.content);
 
-    println!("[Test] Success: {}", extracted.content);
-    Ok(extracted.content)
+    println!("[Test] Success: {} (thoughts: {} chars)", extracted.content, extracted.thoughts.as_ref().map(|t| t.len()).unwrap_or(0));
+    Ok(extracted)
 }
 
 /// Convert PDF to temporary JPEG images on disk
