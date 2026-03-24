@@ -334,7 +334,7 @@ async fn send_to_ollama(
     };
 
     let request = OllamaChatRequest {
-        model,
+        model: model.clone(),
         messages: vec![OllamaMessage {
             role: "user".to_string(),
             content: prompt,
@@ -361,7 +361,10 @@ async fn send_to_ollama(
         .await
         .map_err(|e| format!("Failed to parse response: {}", e))?;
 
-    Ok(result.message.content)
+    // Strip think tags from qwen3 thinking models
+    let cleaned_response = strip_think_tags(&result.message.content);
+
+    Ok(cleaned_response)
 }
 
 #[tauri::command]

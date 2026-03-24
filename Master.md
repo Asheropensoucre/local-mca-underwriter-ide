@@ -240,6 +240,13 @@ Before any release:
 - llama3.2-vision: 5-10 minutes per page (hardware dependent)
 - llava: 5-10 minutes per page (hardware dependent)
 - qwen2.5-vl: Best small model to use (Highly Recommended)
+- qwen3-vl: Supported with think-tag stripping (thinking models get 90s timeout)
+
+### Thinking Model Support (Qwen3-VL)
+- **Think-Tag Stripping:** Automatically removes <think>...</think> tags from responses
+- **Conditional JSON Format:** `format: "json"` skipped for qwen3 models to prevent conflicts
+- **Extended Timeout:** 90s timeout for test connection (thinking takes time)
+- **Applied To:** `send_to_ollama`, `test_ollama_model`, `chat_with_ollama`, `analyze_single_page`, `aggregate_page_results`
 
 ### Memory Usage
 - App baseline: ~150MB

@@ -27,8 +27,9 @@ A blazing-fast, local-first underwriting workspace built specifically for the Me
 ### AI Integration
 - 🤖 **Ollama Integration** - Connect to local vision models (100% offline)
 - 📡 **Connection Status** - Real-time indicator with test button
-- 🧠 **Vision Model Support** - Optimized for **Qwen 2.5-VL** (Highly Recommended), llama3.2-vision, llava
+- 🧠 **Vision Model Support** - Optimized for **Qwen 2.5-VL** (Highly Recommended), Qwen3-VL, llama3.2-vision, llava
 - 📝 **AI Chat Assistant** - Conversational interface for follow-up questions and parsed data cards
+- 💭 **Thinking Model Support** - Qwen3-VL think tags automatically stripped, extended timeouts for thinking phase
 
 ## How It Works
 
@@ -90,8 +91,11 @@ sudo apt install -y \
 3. Install a vision model:
    ```bash
    ollama pull qwen2.5-vl        # Best small model (Highly Recommended)
+   ollama pull qwen3-vl          # Thinking model (supported with auto think-tag stripping)
    ollama pull llama3.2-vision   # Alternative
    ```
+
+**Note on Qwen3-VL:** This is a thinking model that outputs <think>...</think> tags before its response. The app automatically strips these tags and applies extended timeouts (90s) for the thinking phase.
 
 ## Installation
 
