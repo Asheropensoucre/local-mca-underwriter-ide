@@ -435,25 +435,35 @@ async fn test_ollama_model(model: String) -> Result<OllamaResponse, String> {
         
         use futures_util::StreamExt;
         let mut stream = response.bytes_stream();
+        let mut chunk_count = 0;
         
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|e| format!("Stream error: {}", e))?;
             let text = String::from_utf8_lossy(&chunk);
+            chunk_count += 1;
+            
+            println!("[Test] Chunk {} ({} bytes): {}", chunk_count, chunk.len(), text.trim());
             
             // Parse each chunk as JSON
             if let Ok(chunk_data) = serde_json::from_str::<serde_json::Value>(&text) {
+                println!("[Test] Parsed chunk: has_message={}", chunk_data.get("message").is_some());
                 if let Some(message) = chunk_data.get("message").and_then(|m| m.get("content")) {
                     if let Some(content_str) = message.as_str() {
                         full_content.push_str(content_str);
+                        println!("[Test] Accumulated content: {} chars", full_content.len());
                     }
                 }
                 // Check if done
                 if chunk_data.get("done").and_then(|d| d.as_bool()) == Some(true) {
-                    println!("[Test] Stream completed");
+                    println!("[Test] Stream completed - done=true");
                     break;
                 }
+            } else {
+                println!("[Test] Failed to parse chunk as JSON");
             }
         }
+        
+        println!("[Test] Total chunks received: {}", chunk_count);
     } else {
         // Non-streaming mode for regular models
         let result: ollama::OllamaChatResponse = response
