@@ -397,7 +397,7 @@ async fn test_ollama_model(model: String) -> Result<OllamaResponse, String> {
         || model.to_lowercase().contains("r1");
 
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120)) // 2 minute timeout for thinking models
+        .timeout(std::time::Duration::from_secs(180)) // 3 minute timeout for thinking models
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
@@ -411,7 +411,7 @@ async fn test_ollama_model(model: String) -> Result<OllamaResponse, String> {
         stream: is_thinking_model, // Use streaming for thinking models
         options: Some(OllamaOptions {
             temperature: Some(0.1),
-            num_predict: Some(50), // Increase for thinking models
+            num_predict: Some(500), // Increased for thinking models (thinking + response)
             num_ctx: Some(4096),
         }),
         format: None,
@@ -428,6 +428,7 @@ async fn test_ollama_model(model: String) -> Result<OllamaResponse, String> {
         })?;
 
     let mut full_content = String::new();
+    let mut thinking_content = String::new();
 
     if is_thinking_model {
         // Streaming mode for thinking models
@@ -442,28 +443,40 @@ async fn test_ollama_model(model: String) -> Result<OllamaResponse, String> {
             let text = String::from_utf8_lossy(&chunk);
             chunk_count += 1;
             
-            println!("[Test] Chunk {} ({} bytes): {}", chunk_count, chunk.len(), text.trim());
-            
             // Parse each chunk as JSON
             if let Ok(chunk_data) = serde_json::from_str::<serde_json::Value>(&text) {
-                println!("[Test] Parsed chunk: has_message={}", chunk_data.get("message").is_some());
-                if let Some(message) = chunk_data.get("message").and_then(|m| m.get("content")) {
-                    if let Some(content_str) = message.as_str() {
-                        full_content.push_str(content_str);
-                        println!("[Test] Accumulated content: {} chars", full_content.len());
-                    }
+                // Extract thinking field (for qwen3, deepseek, etc.)
+                if let Some(thinking) = chunk_data
+                    .get("message")
+                    .and_then(|m| m.get("thinking"))
+                    .and_then(|t| t.as_str())
+                {
+                    thinking_content.push_str(thinking);
                 }
+                
+                // Extract content field
+                if let Some(content) = chunk_data
+                    .get("message")
+                    .and_then(|m| m.get("content"))
+                    .and_then(|c| c.as_str())
+                {
+                    full_content.push_str(content);
+                }
+                
                 // Check if done
                 if chunk_data.get("done").and_then(|d| d.as_bool()) == Some(true) {
-                    println!("[Test] Stream completed - done=true");
+                    let done_reason = chunk_data.get("done_reason").and_then(|r| r.as_str()).unwrap_or("unknown");
+                    println!("[Test] Stream completed - done_reason: {}, chunks: {}", done_reason, chunk_count);
+                    println!("[Test] Thinking: {} chars, Content: {} chars", thinking_content.len(), full_content.len());
                     break;
                 }
-            } else {
-                println!("[Test] Failed to parse chunk as JSON");
             }
         }
         
-        println!("[Test] Total chunks received: {}", chunk_count);
+        // Combine thinking and content for display
+        if !thinking_content.is_empty() {
+            println!("[Test] Captured thinking: {}", thinking_content);
+        }
     } else {
         // Non-streaming mode for regular models
         let result: ollama::OllamaChatResponse = response
@@ -476,14 +489,17 @@ async fn test_ollama_model(model: String) -> Result<OllamaResponse, String> {
         full_content = result.message.content;
     }
 
-    // DEBUG: Log raw response
-    println!("[Test] RAW response from Ollama ({} chars):", full_content.len());
-    println!("[Test] === RAW CONTENT START ===");
-    println!("{}", full_content);
-    println!("[Test] === RAW CONTENT END ===");
-
-    // Extract thoughts and content
-    let extracted = extract_thoughts_and_content(&full_content);
+    // Extract thoughts using <think> tags if present, otherwise use captured thinking
+    let extracted = if !thinking_content.is_empty() {
+        // Use captured thinking from streaming
+        OllamaResponse {
+            thoughts: Some(thinking_content),
+            content: full_content,
+        }
+    } else {
+        // Fall back to regex extraction for <think> tags
+        extract_thoughts_and_content(&full_content)
+    };
 
     println!("[Test] Success: '{}' (thoughts: {} chars)", extracted.content, extracted.thoughts.as_ref().map(|t| t.len()).unwrap_or(0));
     Ok(extracted)
