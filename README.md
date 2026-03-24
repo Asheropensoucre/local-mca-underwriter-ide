@@ -26,10 +26,11 @@ A blazing-fast, local-first underwriting workspace built specifically for the Me
 
 ### AI Integration
 - 🤖 **Ollama Integration** - Connect to local vision models (100% offline)
-- 📡 **Connection Status** - Real-time indicator with test button
-- 🧠 **Vision Model Support** - Optimized for **Qwen 2.5-VL** (Highly Recommended), Qwen3-VL, llama3.2-vision, llava
+- 📡 **Connection Status** - Real-time indicator with test button (shows thoughts + response)
+- 🧠 **Vision Model Support** - Optimized for **Qwen 2.5-VL** (Highly Recommended), Qwen3-VL, DeepSeek-R1, llama3.2-vision, llava
 - 📝 **AI Chat Assistant** - Conversational interface for follow-up questions and parsed data cards
-- 💭 **Thinking Model Support** - Qwen3-VL thinking process displayed live in "AI Thinking Process" panel
+- 💭 **Thinking Model Support** - Qwen3-VL/DeepSeek-R1 thinking process displayed live in purple panel
+- 🎯 **Smart Toggle** - Auto-enables for thinking models, persists preference
 
 ## How It Works
 
@@ -92,10 +93,11 @@ sudo apt install -y \
    ```bash
    ollama pull qwen2.5-vl        # Best small model (Highly Recommended)
    ollama pull qwen3-vl          # Thinking model (shows reasoning in UI)
+   ollama pull deepseek-r1       # Advanced thinking model with detailed reasoning
    ollama pull llama3.2-vision   # Alternative
    ```
 
-**Note on Qwen3-VL:** This is a thinking model that outputs <think>...</think> tags before its response. The app captures these thoughts and displays them live in a purple "AI Thinking Process" panel during analysis, so you can see the AI's reasoning before it outputs the JSON analysis.
+**Note on Thinking Models (Qwen3-VL, DeepSeek-R1):** These models output <think>...</think> tags before their response. The app captures these thoughts and displays them in a purple "AI Thinking Process" panel. Click the **Test** button to see both thoughts and response. The "Show AI reasoning" toggle auto-enables for thinking models.
 
 ## Installation
 
