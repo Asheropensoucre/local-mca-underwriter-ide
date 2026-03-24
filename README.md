@@ -97,7 +97,7 @@ sudo apt install -y \
    ollama pull llama3.2-vision   # Alternative
    ```
 
-**Note on Thinking Models (Qwen3-VL, DeepSeek-R1):** These models output <think>...</think> tags before their response. The app captures these thoughts and displays them in a purple "AI Thinking Process" panel. Click the **Test** button to see both thoughts and response. The "Show AI reasoning" toggle auto-enables for thinking models.
+**Note on Thinking Models (Qwen3-VL, DeepSeek-R1):** These models think before responding using a separate `thinking` field in Ollama's streaming API. The app captures this thinking process in real-time and displays it in a purple "AI Thinking Process" panel. Click the **Test** button to see both thoughts and response. The "Show AI reasoning" toggle auto-enables for thinking models. Thinking typically takes 5-15 seconds depending on model and hardware.
 
 ## Installation
 
