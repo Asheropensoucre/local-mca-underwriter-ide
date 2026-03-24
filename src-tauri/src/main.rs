@@ -374,14 +374,15 @@ async fn read_file_as_base64(file_path: String) -> Result<String, String> {
 #[tauri::command]
 async fn test_ollama_model(model: String) -> Result<String, String> {
     println!("[Test] Testing Ollama model: {}", model);
-    
+
+    // Increase timeout for thinking models (qwen3-vl can take 30+ seconds to think)
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(90))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
     let request = OllamaChatRequest {
-        model,
+        model: model.clone(),
         messages: vec![OllamaMessage {
             role: "user".to_string(),
             content: "Say hello in one word".to_string(),
@@ -414,8 +415,11 @@ async fn test_ollama_model(model: String) -> Result<String, String> {
             format!("Failed to parse response: {}", e)
         })?;
 
-    println!("[Test] Success: {}", result.message.content);
-    Ok(result.message.content)
+    // Strip think tags from qwen3 thinking models
+    let cleaned_response = strip_think_tags(&result.message.content);
+
+    println!("[Test] Success: {}", cleaned_response);
+    Ok(cleaned_response)
 }
 
 /// Convert PDF to temporary JPEG images on disk
@@ -943,9 +947,12 @@ async fn chat_with_ollama(
             format!("Failed to parse response: {}", e)
         })?;
 
-    println!("[Chat] Response received: {} chars", result.message.content.len());
+    // Strip think tags from qwen3 thinking models
+    let cleaned_response = strip_think_tags(&result.message.content);
 
-    Ok(result.message.content)
+    println!("[Chat] Response received: {} chars", cleaned_response.len());
+
+    Ok(cleaned_response)
 }
 
 /// Aggregate batch results from multiple PDF files into one master report
