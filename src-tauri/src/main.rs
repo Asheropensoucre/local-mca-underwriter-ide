@@ -390,9 +390,14 @@ async fn read_file_as_base64(file_path: String) -> Result<String, String> {
 async fn test_ollama_model(model: String) -> Result<OllamaResponse, String> {
     println!("[Test] Testing Ollama model: {}", model);
 
-    // Increase timeout for thinking models (qwen3-vl can take 30+ seconds to think)
+    // Use streaming for thinking models to capture think tags
+    let is_thinking_model = model.to_lowercase().contains("qwen3") 
+        || model.to_lowercase().contains("deepseek")
+        || model.to_lowercase().contains("o1")
+        || model.to_lowercase().contains("r1");
+
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(90))
+        .timeout(std::time::Duration::from_secs(120)) // 2 minute timeout for thinking models
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
@@ -403,10 +408,10 @@ async fn test_ollama_model(model: String) -> Result<OllamaResponse, String> {
             content: "Say hello in one word".to_string(),
             images: None,
         }],
-        stream: false,
+        stream: is_thinking_model, // Use streaming for thinking models
         options: Some(OllamaOptions {
             temperature: Some(0.1),
-            num_predict: Some(10),
+            num_predict: Some(50), // Increase for thinking models
             num_ctx: Some(4096),
         }),
         format: None,
@@ -422,22 +427,53 @@ async fn test_ollama_model(model: String) -> Result<OllamaResponse, String> {
             format!("Failed to send request: {}. Is Ollama running?", e)
         })?;
 
-    let result: ollama::OllamaChatResponse = response
-        .json()
-        .await
-        .map_err(|e| {
-            println!("[Test] Parse failed: {}", e);
-            format!("Failed to parse response: {}", e)
-        })?;
+    let mut full_content = String::new();
 
-    // DEBUG: Log raw response to see what Ollama actually returns
-    println!("[Test] RAW response from Ollama ({} chars):", result.message.content.len());
+    if is_thinking_model {
+        // Streaming mode for thinking models
+        println!("[Test] Using streaming mode for thinking model...");
+        
+        use futures_util::StreamExt;
+        let mut stream = response.bytes_stream();
+        
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| format!("Stream error: {}", e))?;
+            let text = String::from_utf8_lossy(&chunk);
+            
+            // Parse each chunk as JSON
+            if let Ok(chunk_data) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(message) = chunk_data.get("message").and_then(|m| m.get("content")) {
+                    if let Some(content_str) = message.as_str() {
+                        full_content.push_str(content_str);
+                    }
+                }
+                // Check if done
+                if chunk_data.get("done").and_then(|d| d.as_bool()) == Some(true) {
+                    println!("[Test] Stream completed");
+                    break;
+                }
+            }
+        }
+    } else {
+        // Non-streaming mode for regular models
+        let result: ollama::OllamaChatResponse = response
+            .json()
+            .await
+            .map_err(|e| {
+                println!("[Test] Parse failed: {}", e);
+                format!("Failed to parse response: {}", e)
+            })?;
+        full_content = result.message.content;
+    }
+
+    // DEBUG: Log raw response
+    println!("[Test] RAW response from Ollama ({} chars):", full_content.len());
     println!("[Test] === RAW CONTENT START ===");
-    println!("{}", result.message.content);
+    println!("{}", full_content);
     println!("[Test] === RAW CONTENT END ===");
 
-    // Extract thoughts and content (for thinking models like Qwen3-VL)
-    let extracted = extract_thoughts_and_content(&result.message.content);
+    // Extract thoughts and content
+    let extracted = extract_thoughts_and_content(&full_content);
 
     println!("[Test] Success: '{}' (thoughts: {} chars)", extracted.content, extracted.thoughts.as_ref().map(|t| t.len()).unwrap_or(0));
     Ok(extracted)
