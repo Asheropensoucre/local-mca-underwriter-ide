@@ -91,13 +91,11 @@ sudo apt install -y \
 2. Start Ollama: `ollama serve`
 3. Install a vision model:
    ```bash
-   ollama pull qwen2.5-vl        # Best small model (Highly Recommended)
-   ollama pull qwen3-vl          # Thinking model (shows reasoning in UI)
-   ollama pull deepseek-r1       # Advanced thinking model with detailed reasoning
-   ollama pull llama3.2-vision   # Alternative
+   ollama pull qwen3-vl          # Thinking model (shows reasoning in UI) recommended 
+   ollama pull llama3.2-vision   # Alternative non thinking
    ```
 
-**Note on Thinking Models (Qwen3-VL, DeepSeek-R1):** These models think before responding using a separate `thinking` field in Ollama's streaming API. The app captures this thinking process in real-time and displays it in a purple "AI Thinking Process" panel. Click the **Test** button to see both thoughts and response. The "Show AI reasoning" toggle auto-enables for thinking models. Thinking typically takes 5-15 seconds depending on model and hardware.
+**Note on Thinking Models (Qwen3-VL):** These models think before responding using a separate `thinking` field in Ollama's streaming API. The app captures this thinking process in real-time and displays it in a purple "AI Thinking Process" panel. Click the **Test** button to see both thoughts and response. The "Show AI reasoning" toggle auto-enables for thinking models. Thinking typically takes 5-15 seconds depending on model and hardware.
 
 ## Installation
 

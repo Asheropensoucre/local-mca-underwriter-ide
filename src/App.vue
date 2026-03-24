@@ -597,7 +597,7 @@
               <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Temperature: {{ modelConfig.temperature }}</label>
               <input
                 type="range"
-                v-model="modelConfig.temperature"
+                v-model.number="modelConfig.temperature"
                 min="0"
                 max="1"
                 step="0.1"
@@ -610,7 +610,7 @@
               <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Max Tokens: {{ modelConfig.maxTokens }}</label>
               <input
                 type="range"
-                v-model="modelConfig.maxTokens"
+                v-model.number="modelConfig.maxTokens"
                 min="512"
                 max="8192"
                 step="512"
