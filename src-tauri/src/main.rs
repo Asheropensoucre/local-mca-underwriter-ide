@@ -3,7 +3,7 @@
 
 mod ollama;
 
-use ollama::{OllamaChatRequest, OllamaMessage, OllamaOptions, OllamaModelsResponse, PdfConversionResult, PdfPageInfo};
+use ollama::{OllamaChatRequest, OllamaMessage, OllamaOptions, OllamaModelsResponse, OllamaResponse, PdfConversionResult, PdfPageInfo};
 use std::fs;
 use std::sync::{Mutex, Arc};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
@@ -19,14 +19,26 @@ use std::collections::HashMap;
 // We need to store the TempDir itself, not just the path, to prevent auto-deletion
 static TEMP_DIRS: Mutex<Vec<Arc<TempDir>>> = Mutex::new(Vec::new());
 
-// Regex for stripping think tags from Qwen3-VL responses
+// Regex for extracting think tags from Qwen3-VL responses
 lazy_static::lazy_static! {
-    static ref THINK_TAG_REGEX: regex::Regex = regex::Regex::new(r"(?s)<think>.*?</think>").unwrap();
+    static ref THINK_TAG_REGEX: regex::Regex = regex::Regex::new(r"(?s)<think>(.*?)</think>").unwrap();
 }
 
-/// Strip <think>...</think> tags from model responses (Qwen3-VL thinking models)
-fn strip_think_tags(response: &str) -> String {
-    THINK_TAG_REGEX.replace_all(response, "").trim().to_string()
+/// Extract thoughts and content from model responses (Qwen3-VL thinking models)
+/// Returns both the thinking process and the actual content
+fn extract_thoughts_and_content(response: &str) -> OllamaResponse {
+    let captures = THINK_TAG_REGEX.captures(response);
+    
+    let thoughts = captures
+        .as_ref()
+        .map(|c| c[1].trim().to_string());
+    
+    let content = THINK_TAG_REGEX.replace_all(response, "").trim().to_string();
+    
+    OllamaResponse {
+        thoughts,
+        content,
+    }
 }
 
 /// Clean up old temporary image directories to prevent disk space leaks
@@ -361,10 +373,10 @@ async fn send_to_ollama(
         .await
         .map_err(|e| format!("Failed to parse response: {}", e))?;
 
-    // Strip think tags from qwen3 thinking models
-    let cleaned_response = strip_think_tags(&result.message.content);
+    // Extract thoughts and content (for thinking models like Qwen3-VL)
+    let extracted = extract_thoughts_and_content(&result.message.content);
 
-    Ok(cleaned_response)
+    Ok(extracted.content)
 }
 
 #[tauri::command]
@@ -418,11 +430,11 @@ async fn test_ollama_model(model: String) -> Result<String, String> {
             format!("Failed to parse response: {}", e)
         })?;
 
-    // Strip think tags from qwen3 thinking models
-    let cleaned_response = strip_think_tags(&result.message.content);
+    // Extract thoughts and content (for thinking models like Qwen3-VL)
+    let extracted = extract_thoughts_and_content(&result.message.content);
 
-    println!("[Test] Success: {}", cleaned_response);
-    Ok(cleaned_response)
+    println!("[Test] Success: {}", extracted.content);
+    Ok(extracted.content)
 }
 
 /// Convert PDF to temporary JPEG images on disk
@@ -576,6 +588,7 @@ async fn convert_pdf_to_images(pdf_path: String, dpi: u32) -> Result<PdfConversi
 }
 
 /// Analyze a single page with Ollama
+/// Returns OllamaResponse with both thoughts and content
 async fn analyze_single_page(
     client: &reqwest::Client,
     model: &str,
@@ -585,7 +598,7 @@ async fn analyze_single_page(
     max_tokens: i32,
     page_num: usize,
     total_pages: usize,
-) -> Result<String, String> {
+) -> Result<OllamaResponse, String> {
     let page_prompt = if total_pages > 1 {
         format!("Page {} of {}. {}\n\nExtract data from this page only. Be thorough.",
             page_num, total_pages, prompt)
@@ -593,13 +606,7 @@ async fn analyze_single_page(
         prompt.to_string()
     };
 
-    // For thinking models like Qwen3-VL, don't send format: "json" as it can conflict
-    let format_json = if !model.to_lowercase().contains("qwen3") {
-        Some("json".to_string())
-    } else {
-        None
-    };
-
+    // Always enforce JSON output for all models
     let request = OllamaChatRequest {
         model: model.to_string(),
         messages: vec![OllamaMessage {
@@ -613,7 +620,7 @@ async fn analyze_single_page(
             num_predict: Some(max_tokens),
             num_ctx: Some(8192), // 8K context for individual page analysis
         }),
-        format: format_json,
+        format: Some("json".to_string()), // Enforce JSON output for all models
     };
 
     println!("[Multi-page] Analyzing page {}/{}...", page_num, total_pages);
@@ -636,14 +643,20 @@ async fn analyze_single_page(
         .await
         .map_err(|e| format!("Page {} - Failed to parse response: {}", page_num, e))?;
 
-    // Strip think tags from Qwen3-VL responses
-    let cleaned_response = strip_think_tags(&result.message.content);
+    // Extract thoughts and content (for thinking models like Qwen3-VL)
+    let extracted = extract_thoughts_and_content(&result.message.content);
+    
+    // Log thoughts if present
+    if let Some(ref thoughts) = extracted.thoughts {
+        println!("[Multi-page] Page {} thoughts: {} chars", page_num, thoughts.len());
+    }
 
-    Ok(cleaned_response)
+    Ok(extracted)
 }
 
 /// Aggregate results from multiple pages into final analysis
 /// Strict JSON merger - combines page results without echoing the original prompt
+/// Returns OllamaResponse with both thoughts and content
 async fn aggregate_page_results(
     client: &reqwest::Client,
     model: &str,
@@ -651,7 +664,7 @@ async fn aggregate_page_results(
     page_results: &[String],
     temperature: f32,
     max_tokens: i32,
-) -> Result<String, String> {
+) -> Result<OllamaResponse, String> {
     println!("[Multi-page] Aggregating {} page results...", page_results.len());
 
     let combined_context = page_results
@@ -681,13 +694,7 @@ MERGED JSON ONLY:"#,
         combined_context
     );
 
-    // For thinking models like Qwen3-VL, don't send format: "json" as it can conflict
-    let format_json = if !model.to_lowercase().contains("qwen3") {
-        Some("json".to_string())
-    } else {
-        None
-    };
-
+    // Always enforce JSON output for all models
     let request = OllamaChatRequest {
         model: model.to_string(),
         messages: vec![OllamaMessage {
@@ -701,7 +708,7 @@ MERGED JSON ONLY:"#,
             num_predict: Some(max_tokens),
             num_ctx: Some(16384), // 16K context for large multi-page aggregation
         }),
-        format: format_json,
+        format: Some("json".to_string()), // Enforce JSON output for all models
     };
 
     let response = client
@@ -722,10 +729,15 @@ MERGED JSON ONLY:"#,
         .await
         .map_err(|e| format!("Failed to parse aggregation response: {}", e))?;
 
-    // Strip think tags from Qwen3-VL responses
-    let cleaned_response = strip_think_tags(&result.message.content);
+    // Extract thoughts and content (for thinking models like Qwen3-VL)
+    let extracted = extract_thoughts_and_content(&result.message.content);
+    
+    // Log thoughts if present
+    if let Some(ref thoughts) = extracted.thoughts {
+        println!("[Multi-page] Aggregation thoughts: {} chars", thoughts.len());
+    }
 
-    Ok(cleaned_response)
+    Ok(extracted)
 }
 
 /// Event-driven PDF analysis with live progress events
@@ -821,7 +833,7 @@ async fn send_pdf_to_ollama(
         println!("[Event-Driven] Page {} image loaded: {} bytes", page_num, image_data.len());
 
         // Analyze this page
-        let page_result = analyze_single_page(
+        let page_response = analyze_single_page(
             &client,
             &model,
             &prompt,
@@ -832,16 +844,27 @@ async fn send_pdf_to_ollama(
             total_pages,
         ).await?;
 
-        page_results.push(page_result.clone());
+        // Emit thoughts if present (for thinking models like Qwen3-VL)
+        if let Some(ref thoughts) = page_response.thoughts {
+            let _ = app.emit("analysis-progress", serde_json::json!({
+                "type": "thoughts",
+                "current_page": page_num,
+                "total_pages": total_pages,
+                "thoughts": thoughts,
+                "message": format!("Page {} thinking...", page_num)
+            }));
+        }
 
-        println!("[Event-Driven] Page {} analysis complete: {} chars", page_num, page_result.len());
+        page_results.push(page_response.content.clone());
+
+        println!("[Event-Driven] Page {} analysis complete: {} chars", page_num, page_response.content.len());
 
         // Emit page complete event WITH the result
         let _ = app.emit("analysis-progress", serde_json::json!({
             "type": "page_complete",
             "current_page": page_num,
             "total_pages": total_pages,
-            "page_result": page_result,
+            "page_result": page_response.content,
             "message": format!("Page {} complete", page_num)
         }));
 
@@ -860,7 +883,7 @@ async fn send_pdf_to_ollama(
     }));
 
     // Aggregate all page results into final analysis
-    let final_result = aggregate_page_results(
+    let final_response = aggregate_page_results(
         &client,
         &model,
         &prompt,
@@ -868,6 +891,17 @@ async fn send_pdf_to_ollama(
         temperature,
         max_tokens,
     ).await?;
+
+    // Emit aggregation thoughts if present
+    if let Some(ref thoughts) = final_response.thoughts {
+        let _ = app.emit("analysis-progress", serde_json::json!({
+            "type": "thoughts",
+            "current_page": total_pages,
+            "total_pages": total_pages,
+            "thoughts": thoughts,
+            "message": "Aggregation thinking..."
+        }));
+    }
 
     // Clean up any remaining temp files (including temp dir)
     for temp_file in &temp_files {
@@ -877,17 +911,17 @@ async fn send_pdf_to_ollama(
         }
     }
 
-    println!("[Event-Driven] Analysis complete! Final response length: {} chars", final_result.len());
+    println!("[Event-Driven] Analysis complete! Final response length: {} chars", final_response.content.len());
 
     // Emit completion event
     let _ = app.emit("analysis-complete", serde_json::json!({
         "type": "complete",
-        "result": final_result,
+        "result": final_response.content,
         "total_pages": total_pages,
         "message": "Analysis complete!"
     }));
 
-    Ok(final_result)
+    Ok(final_response.content)
 }
 
 /// Text-only chat with Ollama - no images, pure text-to-text
@@ -950,12 +984,12 @@ async fn chat_with_ollama(
             format!("Failed to parse response: {}", e)
         })?;
 
-    // Strip think tags from qwen3 thinking models
-    let cleaned_response = strip_think_tags(&result.message.content);
+    // Extract thoughts and content (for thinking models like Qwen3-VL)
+    let extracted = extract_thoughts_and_content(&result.message.content);
 
-    println!("[Chat] Response received: {} chars", cleaned_response.len());
+    println!("[Chat] Response received: {} chars", extracted.content.len());
 
-    Ok(cleaned_response)
+    Ok(extracted.content)
 }
 
 /// Aggregate batch results from multiple PDF files into one master report
@@ -976,7 +1010,7 @@ async fn aggregate_batch_results(
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
-    let final_result = aggregate_page_results(
+    let final_response = aggregate_page_results(
         &client,
         &model,
         &original_prompt,
@@ -985,9 +1019,9 @@ async fn aggregate_batch_results(
         max_tokens,
     ).await?;
 
-    println!("[Batch] Aggregation complete! Final response length: {} chars", final_result.len());
+    println!("[Batch] Aggregation complete! Final response length: {} chars", final_response.content.len());
 
-    Ok(final_result)
+    Ok(final_response.content)
 }
 
 /// Export JSON data to file using native save dialog

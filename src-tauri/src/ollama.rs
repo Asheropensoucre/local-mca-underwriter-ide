@@ -58,3 +58,10 @@ pub struct PdfConversionResult {
     pub preview_path: Option<String>, // Absolute path to page1.jpg (for debugging)
     pub preview_image_data_uri: Option<String>, // Data URI for frontend preview (data:image/jpeg;base64,...)
 }
+
+/// Response with extracted thoughts (from thinking models like Qwen3-VL) and content
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OllamaResponse {
+    pub thoughts: Option<String>, // Thinking process (if model is a thinking model)
+    pub content: String,          // Actual response content (JSON for analysis)
+}

@@ -240,12 +240,13 @@ Before any release:
 - llama3.2-vision: 5-10 minutes per page (hardware dependent)
 - llava: 5-10 minutes per page (hardware dependent)
 - qwen2.5-vl: Best small model to use (Highly Recommended)
-- qwen3-vl: Supported with think-tag stripping (thinking models get 90s timeout)
+- qwen3-vl: Supported with visible thinking process
 
 ### Thinking Model Support (Qwen3-VL)
-- **Think-Tag Stripping:** Automatically removes <think>...</think> tags from responses
-- **Conditional JSON Format:** `format: "json"` skipped for qwen3 models to prevent conflicts
-- **Extended Timeout:** 90s timeout for test connection (thinking takes time)
+- **Think-Tag Extraction:** Captures <think>...</think> tags and displays them in UI
+- **JSON Output Preserved:** All models send `format: "json"` for structured output
+- **Live Thoughts Display:** Users see AI reasoning in real-time during analysis
+- **Purple "AI Thinking Process" Panel:** Shows thoughts during ANALYZING state
 - **Applied To:** `send_to_ollama`, `test_ollama_model`, `chat_with_ollama`, `analyze_single_page`, `aggregate_page_results`
 
 ### Memory Usage

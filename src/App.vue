@@ -173,7 +173,7 @@
             <div v-if="appState === 'ANALYZING'" class="flex-1 flex flex-col bg-background border border-border rounded-lg">
               <div class="flex items-start gap-4 p-6">
                 <div class="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent flex-shrink-0"></div>
-                <div class="text-left">
+                <div class="text-left flex-1">
                   <p class="text-gray-300 font-medium mb-2">{{ loadingMessage }}</p>
                   <!-- Multi-page Progress -->
                   <div v-if="totalPages > 1" class="w-full mt-4">
@@ -193,6 +193,17 @@
                     </p>
                   </div>
                   <p v-else class="text-xs text-gray-500">This may take 5-10 minutes for AI analysis (hardware dependent)</p>
+                  
+                  <!-- AI Thoughts Panel (for thinking models like Qwen3-VL) -->
+                  <div v-if="aiThoughts" class="mt-4 p-3 bg-slate-800/50 border border-slate-700 rounded-lg">
+                    <div class="flex items-center gap-2 mb-2">
+                      <svg class="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                      </svg>
+                      <span class="text-xs font-medium text-purple-300">AI Thinking Process</span>
+                    </div>
+                    <p class="text-xs text-gray-400 italic font-mono whitespace-pre-wrap max-h-48 overflow-auto">{{ aiThoughts }}</p>
+                  </div>
                 </div>
               </div>
             </div>
@@ -683,6 +694,7 @@ const loadingProgress = ref(0)
 const loadingMessage = ref('')
 const totalPages = ref(0)
 const currentPage = ref(0)
+const aiThoughts = ref('') // AI thinking process for thinking models (Qwen3-VL)
 
 // Event-driven analysis state
 const analysisUnlisten = ref(null) // Function to unsubscribe from events
@@ -994,6 +1006,7 @@ const setupAnalysisEventListeners = () => {
       totalPages.value = payload.total_pages
       currentPage.value = 0
       pageResults.value = []
+      aiThoughts.value = '' // Clear thoughts at start
       loadingMessage.value = payload.message
       console.log('[Event] Analysis started:', payload)
     }
@@ -1003,7 +1016,13 @@ const setupAnalysisEventListeners = () => {
       loadingMessage.value = payload.message
       console.log('[Event] Page start:', payload)
     }
-    
+
+    if (payload.type === 'thoughts') {
+      // Capture AI thinking process for thinking models (Qwen3-VL)
+      aiThoughts.value = payload.thoughts || ''
+      console.log('[Event] AI thoughts:', payload)
+    }
+
     if (payload.type === 'page_complete') {
       currentPage.value = payload.current_page
       pageResults.value.push(payload.page_result)
@@ -1177,6 +1196,7 @@ const handleUnderwrite = async () => {
 
   appState.value = 'ANALYZING'
   loadingProgress.value = 0
+  aiThoughts.value = '' // Clear thoughts for new analysis
   batchResults.value = [] // Reset batch results
   pageResults.value = [] // Reset page results for events
 

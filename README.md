@@ -29,7 +29,7 @@ A blazing-fast, local-first underwriting workspace built specifically for the Me
 - 📡 **Connection Status** - Real-time indicator with test button
 - 🧠 **Vision Model Support** - Optimized for **Qwen 2.5-VL** (Highly Recommended), Qwen3-VL, llama3.2-vision, llava
 - 📝 **AI Chat Assistant** - Conversational interface for follow-up questions and parsed data cards
-- 💭 **Thinking Model Support** - Qwen3-VL think tags automatically stripped, extended timeouts for thinking phase
+- 💭 **Thinking Model Support** - Qwen3-VL thinking process displayed live in "AI Thinking Process" panel
 
 ## How It Works
 
@@ -91,11 +91,11 @@ sudo apt install -y \
 3. Install a vision model:
    ```bash
    ollama pull qwen2.5-vl        # Best small model (Highly Recommended)
-   ollama pull qwen3-vl          # Thinking model (supported with auto think-tag stripping)
+   ollama pull qwen3-vl          # Thinking model (shows reasoning in UI)
    ollama pull llama3.2-vision   # Alternative
    ```
 
-**Note on Qwen3-VL:** This is a thinking model that outputs <think>...</think> tags before its response. The app automatically strips these tags and applies extended timeouts (90s) for the thinking phase.
+**Note on Qwen3-VL:** This is a thinking model that outputs <think>...</think> tags before its response. The app captures these thoughts and displays them live in a purple "AI Thinking Process" panel during analysis, so you can see the AI's reasoning before it outputs the JSON analysis.
 
 ## Installation
 
