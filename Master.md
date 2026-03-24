@@ -158,9 +158,26 @@ Build a blazing-fast, local-first underwriting workspace focused on deep-work an
 6. ✅ **IDLE State Centered** - Drop zone uses m-auto to center in edge-to-edge layout
 7. ✅ **Functional Logic Preserved** - All v-if, v-model, @click bindings unchanged
 
+## 7k. Phase 21: Full Streaming for Thinking Models ✅ COMPLETE
+
+**Completed:**
+1. ✅ **Streaming Architecture** - Added OllamaStreamChunk and OllamaStreamMessage structs
+2. ✅ **Live Thought Streaming** - analyze_single_page() emits stream-thought events in real-time
+3. ✅ **Live Chat Streaming** - chat_with_ollama() emits stream-thought and stream-token events
+4. ✅ **Extended Timeouts** - 60 minutes for thinking models (qwen3, deepseek, o1, r1)
+5. ✅ **Regular Timeout** - 15 minutes for non-thinking vision models
+6. ✅ **Frontend Listeners** - stream-thought listener accumulates thinking live in UI
+7. ✅ **No More Timeout Anxiety** - Users see thinking progress in real-time, know system is working
+
+**Architecture:**
+- **Before:** Non-streaming, timeout after 10 minutes, no feedback during thinking
+- **After:** Full streaming, 60-minute timeout, live thought display shows AI is working
+- **Events:** stream-thought (live thinking), stream-token (live response tokens)
+- **Works For:** PDF analysis (single + multi-page) and follow-up chat
+
 ## 8. Current Status
 
-**ALL PHASES COMPLETE (1-20)** - App features full MCA Underwriter Pivot, multi-page analysis, text-only chat, batch processing, event-driven architecture, strict JSON enforcement, Data URI preview, automatic garbage collection, clean JSON merger without echo, custom prompt templates, analysis history with Rust persistence, and edge-to-edge IDE-style layout with fluid right sidebar.
+**ALL PHASES COMPLETE (1-21)** - App features full MCA Underwriter Pivot, multi-page analysis, text-only chat, batch processing, event-driven architecture, strict JSON enforcement, Data URI preview, automatic garbage collection, clean JSON merger without echo, custom prompt templates, analysis history with Rust persistence, edge-to-edge IDE-style layout, and **live streaming thoughts for thinking models with 60-minute timeout**.
 
 ### User Flow:
 1. Upload PDFs → View in full PDF viewer (left pane, 60% width initially)
@@ -242,22 +259,26 @@ Before any release:
 - qwen2.5-vl
 - qwen3-vl
 
-### Thinking Model Support (Qwen3-VL, maybe be others untested)
+### Thinking Model Support (Qwen3-VL, DeepSeek-R1, O1, R1)
+
+**Phase 21: Full Streaming Implementation:**
 - **Streaming API:** Uses Ollama streaming to capture thinking in real-time
-- **Thinking Field Extraction:** Captures `thinking` field from streaming chunks (not <think> tags)
-- **Live Thoughts Display:** Users see AI reasoning in real-time during analysis
-- **Purple "AI Thinking Process" Panel:** Shows thoughts during ANALYZING state
+- **Thinking Field Extraction:** Captures `thinking` field from streaming chunks
+- **Live Thoughts Display:** Users see AI reasoning IN REAL-TIME during analysis
+- **Purple "AI Thinking Process" Panel:** Shows thoughts streaming live
 - **Test Result Display:** Test button shows both thoughts and response in UI
 - **Auto-Enable Toggle:** Thoughts toggle auto-enables for thinking models
 - **User Control:** Toggle to show/hide thoughts panel, persisted to localStorage
-- **Applied To:** `send_to_ollama`, `test_ollama_model`, `chat_with_ollama`, `analyze_single_page`, `aggregate_page_results`
-- **Timeout:** 180s for thinking models (thinking can take time)
-- **Token Limit:** 500 tokens for thinking models (thinking + response)
+- **Applied To:** `analyze_single_page`, `chat_with_ollama`, `test_ollama_model`
+- **Timeout:** 3600s (60 minutes) for thinking models - no more premature timeouts!
+- **Regular Models:** 900s (15 minutes) timeout for non-thinking vision models
+- **Events:** stream-thought (live thinking), stream-token (live response)
 
-### Recent Features (Latest)
-- **Test Result Display:** Shows AI thoughts + response below Test button
-- **Auto-Detect Thinking Models:** Badge appears when thinking model detected
-- **Smart Toggle:** Auto-enables for qwen3-VL
+### Recent Features (Latest - Phase 21)
+- **Live Thought Streaming:** Thoughts display in real-time as AI thinks
+- **Extended Timeouts:** 60 minutes for thinking models (qwen3, deepseek, o1, r1)
+- **Chat Streaming:** Follow-up chat also streams thoughts and tokens live
+- **No Timeout Anxiety:** Users see progress, know the system is still working
 
 ### Memory Usage
 - App baseline: ~150MB
