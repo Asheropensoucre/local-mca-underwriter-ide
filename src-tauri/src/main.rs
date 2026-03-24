@@ -1107,6 +1107,12 @@ async fn chat_with_ollama(
 ) -> Result<String, String> {
     println!("[Chat] Starting text-only chat with model: {}", model);
 
+    // Check if this is a thinking model
+    let is_thinking_model = model.to_lowercase().contains("qwen3")
+        || model.to_lowercase().contains("deepseek")
+        || model.to_lowercase().contains("o1")
+        || model.to_lowercase().contains("r1");
+
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120)) // 2 minute timeout for text chat
         .connect_timeout(std::time::Duration::from_secs(30))
@@ -1120,7 +1126,7 @@ async fn chat_with_ollama(
             content: prompt,
             images: None, // No images - text only!
         }],
-        stream: false,
+        stream: is_thinking_model, // Use streaming for thinking models
         options: Some(OllamaOptions {
             temperature: Some(temperature),
             num_predict: Some(max_tokens),
@@ -1141,27 +1147,60 @@ async fn chat_with_ollama(
             format!("Failed to send request: {}", e)
         })?;
 
-    let status = response.status();
-    if !status.is_success() {
-        let error_text = response.text().await.unwrap_or_default();
-        println!("[Chat] Error response: {}", error_text);
-        return Err(format!("Ollama returned status {}: {}", status, error_text));
+    let mut full_content = String::new();
+
+    if is_thinking_model {
+        // Streaming mode for thinking models
+        println!("[Chat] Using streaming mode for thinking model...");
+
+        use futures_util::StreamExt;
+        let mut stream = response.bytes_stream();
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| format!("Stream error: {}", e))?;
+            let text = String::from_utf8_lossy(&chunk);
+
+            if let Ok(chunk_data) = serde_json::from_str::<serde_json::Value>(&text) {
+                // Extract content field
+                if let Some(content) = chunk_data
+                    .get("message")
+                    .and_then(|m| m.get("content"))
+                    .and_then(|c| c.as_str())
+                {
+                    full_content.push_str(content);
+                }
+
+                // Check if done
+                if chunk_data.get("done").and_then(|d| d.as_bool()) == Some(true) {
+                    break;
+                }
+            }
+        }
+
+        println!("[Chat] Streaming complete: {} chars", full_content.len());
+    } else {
+        // Non-streaming mode for regular models
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            println!("[Chat] Error response: {}", error_text);
+            return Err(format!("Ollama returned status {}: {}", status, error_text));
+        }
+
+        let result: ollama::OllamaChatResponse = response
+            .json()
+            .await
+            .map_err(|e| {
+                println!("[Chat] Failed to parse JSON: {}", e);
+                format!("Failed to parse response: {}", e)
+            })?;
+
+        full_content = result.message.content;
     }
 
-    let result: ollama::OllamaChatResponse = response
-        .json()
-        .await
-        .map_err(|e| {
-            println!("[Chat] Failed to parse JSON: {}", e);
-            format!("Failed to parse response: {}", e)
-        })?;
+    println!("[Chat] Response received: {} chars", full_content.len());
 
-    // Extract thoughts and content (for thinking models like Qwen3-VL)
-    let extracted = extract_thoughts_and_content(&result.message.content);
-
-    println!("[Chat] Response received: {} chars", extracted.content.len());
-
-    Ok(extracted.content)
+    Ok(full_content)
 }
 
 /// Aggregate batch results from multiple PDF files into one master report

@@ -179,6 +179,26 @@
                 </svg>
                 Thinking model detected
               </p>
+
+              <!-- Test Result Display -->
+              <div v-if="testThoughts" class="mt-3 p-3 bg-purple-900/30 border border-purple-700 rounded-lg">
+                <div class="flex items-center gap-2 mb-2">
+                  <svg class="w-4 h-4 text-purple-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                  </svg>
+                  <span class="text-xs font-medium text-purple-300">Test - AI Thinking</span>
+                </div>
+                <p class="text-xs text-gray-400 font-mono whitespace-pre-wrap">{{ testThoughts }}</p>
+              </div>
+              <div v-if="testResult" class="mt-3 p-3 bg-slate-800/50 border border-slate-700 rounded-lg">
+                <div class="flex items-center gap-2 mb-2">
+                  <svg class="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <span class="text-xs font-medium text-gray-300">Test - Response</span>
+                </div>
+                <p class="text-xs text-gray-400 whitespace-pre-wrap">{{ testResult }}</p>
+              </div>
             </div>
 
             <!-- AI Thoughts/Chat Display (for Test + Underwriting) -->
@@ -800,7 +820,12 @@ const buildFullPrompt = () => {
 }
 
 // File name computed from current file in queue
+const historyFileName = ref('') // Override for history entry file name
 const fileName = computed(() => {
+  // Use history file name override if set (for loaded history entries)
+  if (historyFileName.value) {
+    return historyFileName.value
+  }
   if (fileQueue.value.length > 0 && currentFileIndex.value < fileQueue.value.length) {
     return fileQueue.value[currentFileIndex.value].name
   }
@@ -909,11 +934,11 @@ const loadHistoryEntry = (entry) => {
   // Set the parsed data from history
   parsedData.value = entry.parsed_data
   rawResponse.value = JSON.stringify(entry.parsed_data, null, 2)
-  
+
   // Set file name from history entry
   // Note: We can't restore the actual file path, but we show the filename
-  fileName.value = entry.file_name
-  
+  historyFileName.value = entry.file_name
+
   // Switch to COMPLETE state to show the dashboard
   appState.value = 'COMPLETE'
   activeTab.value = 'underwrite' // Switch to Underwrite tab to show the data
@@ -1317,32 +1342,15 @@ const handleUnderwrite = async () => {
       }
     }
 
-    // All files processed - now aggregate into one master result
+    // All files processed - send_pdf_to_ollama already handles aggregation internally
+    // and emits analysis-complete with the final result
     loadingMessage.value = `Combining ${fileQueue.value.length} files into master report...`
     currentPage.value = fileQueue.value.length
 
-    console.log('[Batch] All files analyzed, aggregating results...')
+    console.log('[Batch] All files analyzed, waiting for analysis-complete event...')
 
-    try {
-      // Use the Rust aggregator to combine all results
-      const combinedResult = await invoke('aggregate_batch_results', {
-        model: selectedModel.value,
-        originalPrompt: buildFullPrompt(),
-        pageResults: batchResults.value,
-        temperature: modelConfig.value.temperature,
-        maxTokens: modelConfig.value.maxTokens
-      })
-
-      console.log('[Batch] Aggregation complete -', combinedResult.length, 'chars')
-
-      loadingProgress.value = 100
-
-      // Clean up the complete listener
-      completeUnlisten()
-    } catch (aggError) {
-      console.error('[Batch] Aggregation error:', aggError)
-      throw new Error(`Failed to combine results: ${aggError}. The document may be too large or the AI output was invalid.`)
-    }
+    // Clean up the complete listener (it will be triggered by send_pdf_to_ollama)
+    completeUnlisten()
 
   } catch (error) {
     console.error('Underwrite error:', error)
