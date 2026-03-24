@@ -159,6 +159,26 @@
               <p v-if="ollamaModels.length === 0" class="text-xs text-gray-600 mt-2">
                 Start Ollama and run: <code class="bg-surface px-2 py-1 rounded">ollama pull llama3.2-vision</code>
               </p>
+              
+              <!-- Show AI Thoughts Toggle -->
+              <div class="flex items-center justify-between mt-3 p-2 bg-slate-800/30 border border-slate-700 rounded-lg">
+                <div class="flex items-center gap-2">
+                  <svg class="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                  </svg>
+                  <span class="text-xs text-gray-300">Show AI reasoning</span>
+                </div>
+                <label class="relative inline-flex items-center cursor-pointer">
+                  <input type="checkbox" v-model="showAiThoughts" class="sr-only peer" />
+                  <div class="w-9 h-5 bg-slate-700 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary"></div>
+                </label>
+              </div>
+              <p v-if="isThinkingModelDetected" class="text-xs text-purple-400 mt-2 flex items-center gap-1">
+                <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                  <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
+                </svg>
+                Thinking model detected
+              </p>
             </div>
 
             <!-- Underwrite Button -->
@@ -194,8 +214,8 @@
                   </div>
                   <p v-else class="text-xs text-gray-500">This may take 5-10 minutes for AI analysis (hardware dependent)</p>
                   
-                  <!-- AI Thoughts Panel (for thinking models like Qwen3-VL) -->
-                  <div v-if="aiThoughts" class="mt-4 p-3 bg-slate-800/50 border border-slate-700 rounded-lg">
+                  <!-- AI Thoughts Panel (for thinking models) -->
+                  <div v-if="showAiThoughts && aiThoughts" class="mt-4 p-3 bg-slate-800/50 border border-slate-700 rounded-lg">
                     <div class="flex items-center gap-2 mb-2">
                       <svg class="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
@@ -650,7 +670,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
@@ -694,7 +714,9 @@ const loadingProgress = ref(0)
 const loadingMessage = ref('')
 const totalPages = ref(0)
 const currentPage = ref(0)
-const aiThoughts = ref('') // AI thinking process for thinking models (Qwen3-VL)
+const aiThoughts = ref('') // AI thinking process for thinking models
+const showAiThoughts = ref(false) // User toggle to show/hide thoughts panel
+const isThinkingModelDetected = ref(false) // Auto-detected when thoughts received
 
 // Event-driven analysis state
 const analysisUnlisten = ref(null) // Function to unsubscribe from events
@@ -968,11 +990,22 @@ const clearFileQueue = () => {
 
 // Check Ollama connection on mount and set up event listeners
 onMounted(async () => {
+  // Load user preferences from localStorage
+  const savedShowThoughts = localStorage.getItem('showAiThoughts')
+  if (savedShowThoughts !== null) {
+    showAiThoughts.value = savedShowThoughts === 'true'
+  }
+  
   await checkOllamaConnection()
   await loadTemplates() // Load saved prompt templates
   await loadHistory() // Load analysis history
   // Set up event listeners (non-blocking, don't await)
   setupAnalysisEventListeners()
+})
+
+// Persist user preferences to localStorage
+watch(showAiThoughts, (newValue) => {
+  localStorage.setItem('showAiThoughts', newValue.toString())
 })
 
 // Clean up event listeners and blob URLs on unmount
@@ -1007,6 +1040,7 @@ const setupAnalysisEventListeners = () => {
       currentPage.value = 0
       pageResults.value = []
       aiThoughts.value = '' // Clear thoughts at start
+      isThinkingModelDetected.value = false // Reset detection
       loadingMessage.value = payload.message
       console.log('[Event] Analysis started:', payload)
     }
@@ -1018,8 +1052,9 @@ const setupAnalysisEventListeners = () => {
     }
 
     if (payload.type === 'thoughts') {
-      // Capture AI thinking process for thinking models (Qwen3-VL)
+      // Capture AI thinking process for thinking models
       aiThoughts.value = payload.thoughts || ''
+      isThinkingModelDetected.value = true // Auto-detect thinking model
       console.log('[Event] AI thoughts:', payload)
     }
 
