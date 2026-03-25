@@ -782,34 +782,66 @@ CRITICAL DEFINITIONS:
 2. THE LENDER: A third-party MCA company debiting daily/weekly ACH payments from the account.
 
 STRICT RULES:
-- If you do not see recurring daily/weekly MCA debits, you MUST leave the positions array completely empty: "positions": []
-- DO NOT invent or guess lenders.
-- DO NOT do any math or calculate averages. Only extract exact numbers you see.
-- You MUST replace all "REPLACE_WITH_..." placeholder strings with the actual data you find. If data is missing, replace it with null.
+1. If you do not see recurring daily/weekly MCA debits, you MUST leave the positions array empty: "positions": []
+2. DO NOT invent or guess lenders, merchants, or any data.
+3. DO NOT do any math or calculate averages. Only extract exact numbers you see.
+4. MISSING DATA HANDLING (CRITICAL):
+   - For TEXT fields (name, account, period, lender, frequency, funded_date): Use null if not found
+   - For NUMBER fields (payment, funded_amount, counts): Use 0 if no data found
+   - For ARRAYS (positions): Use empty array [] if no positions found
+5. BLANK/WHITE IMAGES: If the image is blank, white, or unreadable:
+   - Return all text fields as null
+   - Return all number fields as 0
+   - Return positions as []
+   - Do NOT attempt to extract anything from a blank image
 
 OUTPUT FORMAT:
-Return ONLY valid JSON. Replace the placeholder values with your extracted data.
+Return ONLY valid JSON. No explanations, no markdown, no conversational text.
+
+EXAMPLE 1 - Normal Bank Statement:
 {
-  "merchant_info": { 
-    "name": "REPLACE_WITH_MERCHANT_NAME", 
-    "account_number": "REPLACE_WITH_ACCOUNT_NUMBER",
-    "statement_period": "REPLACE_WITH_STATEMENT_PERIOD" 
+  "merchant_info": {
+    "name": "ABC Restaurant LLC",
+    "account_number": "****1234",
+    "statement_period": "2024-01-01 to 2024-01-31"
   },
-  "positions": [ 
-    { 
-      "lender": "REPLACE_WITH_LENDER_NAME", 
-      "payment": 0.0, 
-      "frequency": "REPLACE_WITH_DAILY_OR_WEEKLY", 
-      "funded_amount": 0.0, 
-      "funded_date": "REPLACE_WITH_DATE" 
-    } 
+  "positions": [
+    {
+      "lender": "OnDeck",
+      "payment": 150.00,
+      "frequency": "daily",
+      "funded_amount": 25000.00,
+      "funded_date": "2023-11-15"
+    }
   ],
-  "bank_metrics": { 
+  "bank_metrics": {
+    "total_deposits_count": 45,
+    "negative_days_count": 3,
+    "nsf_count": 2
+  }
+}
+
+EXAMPLE 2 - Blank/White Image or No Data:
+{
+  "merchant_info": {
+    "name": null,
+    "account_number": null,
+    "statement_period": null
+  },
+  "positions": [],
+  "bank_metrics": {
     "total_deposits_count": 0,
     "negative_days_count": 0,
     "nsf_count": 0
   }
-}`
+}
+
+QUICK DECISION TREE:
+- See merchant name? → Extract it | Don't see it? → null
+- See MCA debits? → Extract positions | Don't see any? → []
+- See deposit count? → Extract it | Don't see it? → 0
+- Image is blank? → All text=null, all numbers=0, positions=[]
+`
 
 // User-customizable instructions (editable in UI)
 const userCustomInstructions = ref('Add custom underwriting focus areas here...')
