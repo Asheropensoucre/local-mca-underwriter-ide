@@ -175,9 +175,26 @@ Build a blazing-fast, local-first underwriting workspace focused on deep-work an
 - **Events:** stream-thought (live thinking), stream-token (live response tokens)
 - **Works For:** PDF analysis (single + multi-page) and follow-up chat
 
+## 7l. Phase 22: Dynamic AI Thoughts Pop-Out Panel ✅ COMPLETE
+
+**Completed:**
+1. ✅ **Expand Button** - Added to AI thinking panel header in right sidebar
+2. ✅ **Pop-Out Functionality** - Clicking expand moves thoughts to left pane (40-45% height)
+3. ✅ **Snap Back Button** - Collapse button returns thoughts to right sidebar
+4. ✅ **Dynamic Layout** - Left pane splits: thoughts on top, PDF viewer shrinks below
+5. ✅ **Smooth Transitions** - `transition-all duration-300` for expand/collapse animations
+6. ✅ **State Management** - `isThoughtsExpanded` ref tracks pop-out state
+7. ✅ **Improved Readability** - Larger font (`text-sm` vs `text-xs`) in expanded mode
+
+**Architecture:**
+- **Before:** AI thoughts cramped in right sidebar with `max-h-64` (256px)
+- **After:** Dynamic pop-out panel splits left pane for comfortable reading
+- **User Flow:** Enable "Show AI reasoning" → Thoughts appear → Click "Expand" → Reads thoughts with PDF below → Click "Snap Back" → Returns to sidebar
+- **Benefits:** Better readability for long thinking processes, maintains PDF context, dynamic UI
+
 ## 8. Current Status
 
-**ALL PHASES COMPLETE (1-21)** - App features full MCA Underwriter Pivot, multi-page analysis, text-only chat, batch processing, event-driven architecture, strict JSON enforcement, Data URI preview, automatic garbage collection, clean JSON merger without echo, custom prompt templates, analysis history with Rust persistence, edge-to-edge IDE-style layout, and **live streaming thoughts for thinking models with 60-minute timeout**.
+**ALL PHASES COMPLETE (1-22)** - App features full MCA Underwriter Pivot, multi-page analysis, text-only chat, batch processing, event-driven architecture, strict JSON enforcement, Data URI preview, automatic garbage collection, clean JSON merger without echo, custom prompt templates, analysis history with Rust persistence, edge-to-edge IDE-style layout, live streaming thoughts for thinking models with 60-minute timeout, and **dynamic AI thoughts pop-out panel for expanded viewing**.
 
 ### User Flow:
 1. Upload PDFs → View in full PDF viewer (left pane, 60% width initially)

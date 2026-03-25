@@ -30,6 +30,7 @@ A blazing-fast, local-first underwriting workspace built specifically for the Me
 - 📝 **AI Chat Assistant** - Conversational interface for follow-up questions and parsed data cards
 - 💭 **Thinking Model Support** - Qwen3-VL or other thinking VL models the thinking process displayed live in purple panel
 - 🎯 **Smart Toggle** - Auto-enables for thinking models, persists preference
+- 🖼️ **Dynamic Thoughts Panel** - Pop-out AI thinking process to left pane for expanded viewing, snap back to sidebar
 
 ## How It Works
 

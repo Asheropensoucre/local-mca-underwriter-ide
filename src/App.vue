@@ -89,6 +89,34 @@
             <span class="text-sm text-gray-400">{{ pdfPageCount }} page{{ pdfPageCount > 1 ? 's' : '' }}</span>
           </div>
         </div>
+        <!-- Expanded AI Thoughts Panel (when popped out from right sidebar) -->
+        <div
+          v-if="isThoughtsExpanded && showAiThoughts && aiThoughts"
+          class="flex-shrink-0 bg-slate-800/50 border-b border-slate-700 p-4 transition-all duration-300"
+          :class="appState === 'COMPLETE' ? 'h-[45%]' : 'h-[40%]'"
+        >
+          <div class="flex items-center justify-between mb-3">
+            <div class="flex items-center gap-2">
+              <svg class="w-5 h-5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+              </svg>
+              <span class="text-sm font-semibold text-purple-300">AI Thinking Process (Expanded)</span>
+            </div>
+            <button
+              @click="isThoughtsExpanded = false"
+              class="text-xs text-purple-400 hover:text-purple-300 transition-colors flex items-center gap-1 px-3 py-1.5 rounded hover:bg-slate-700/50"
+              title="Snap back to sidebar"
+            >
+              <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4m4 0V8m0 0h-4m4 0l5 5" />
+              </svg>
+              Snap Back
+            </button>
+          </div>
+          <div class="h-[calc(100%-40px)] overflow-auto bg-slate-900/50 rounded-lg p-3 border border-slate-700">
+            <p class="text-sm text-gray-300 font-mono whitespace-pre-wrap">{{ aiThoughts }}</p>
+          </div>
+        </div>
         <!-- PDF Viewer Component - Only render when not processing to free RAM -->
         <div v-if="appState !== 'ANALYZING' && appState !== 'PROCESSING' && pdfSource" class="flex-1 overflow-hidden">
           <PdfViewer :preview-image="pdfSource" :page-count="pdfPageCount" />
@@ -203,11 +231,23 @@
 
             <!-- AI Thoughts/Chat Display (for Test + Underwriting) -->
             <div v-if="showAiThoughts && aiThoughts" class="p-3 bg-slate-800/50 border border-slate-700 rounded-lg max-h-64 overflow-auto">
-              <div class="flex items-center gap-2 mb-2">
-                <svg class="w-4 h-4 text-purple-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                </svg>
-                <span class="text-xs font-medium text-purple-300 whitespace-nowrap">AI Thinking Process</span>
+              <div class="flex items-center justify-between gap-2 mb-2">
+                <div class="flex items-center gap-2">
+                  <svg class="w-4 h-4 text-purple-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                  </svg>
+                  <span class="text-xs font-medium text-purple-300 whitespace-nowrap">AI Thinking Process</span>
+                </div>
+                <button
+                  @click="isThoughtsExpanded = true"
+                  class="text-xs text-purple-400 hover:text-purple-300 transition-colors flex items-center gap-1 px-2 py-1 rounded hover:bg-slate-700/50"
+                  title="Expand to PDF area"
+                >
+                  <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+                  </svg>
+                  Expand
+                </button>
               </div>
               <p class="text-xs text-gray-400 italic font-mono whitespace-pre-wrap">{{ aiThoughts }}</p>
             </div>
@@ -737,6 +777,7 @@ const currentPage = ref(0)
 const aiThoughts = ref('') // AI thinking process for thinking models
 const showAiThoughts = ref(false) // User toggle to show/hide thoughts panel
 const isThinkingModelDetected = ref(false) // Auto-detected when thoughts received
+const isThoughtsExpanded = ref(false) // AI thoughts panel expanded to left pane
 
 // Event-driven analysis state
 const analysisUnlisten = ref(null) // Function to unsubscribe from events
