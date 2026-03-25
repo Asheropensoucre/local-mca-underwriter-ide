@@ -466,7 +466,7 @@
               </div>
 
               <!-- === SECTION 6: FOLLOW-UP CHAT === -->
-              <div class="border-t border-border pt-4">
+              <div class="border-t border-border pt-8 pb-12">
                 <h4 class="text-sm font-medium text-gray-300 mb-3">Follow-up Questions</h4>
 
                 <!-- Chat Messages -->
