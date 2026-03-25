@@ -633,6 +633,26 @@
 
           <!-- Settings Tab -->
           <div v-if="activeTab === 'settings'" class="space-y-5">
+            <!-- Ollama URL Configuration -->
+            <div>
+              <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Ollama API URL</label>
+              <div class="flex gap-2">
+                <input
+                  v-model="ollamaUrl"
+                  type="text"
+                  placeholder="http://localhost:11434"
+                  class="flex-1 bg-background border border-border rounded-lg px-4 py-2 text-sm text-gray-300 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                />
+                <button
+                  @click="saveOllamaUrl"
+                  class="px-4 py-2 bg-primary hover:bg-blue-600 rounded-lg text-sm text-white font-medium transition-colors"
+                >
+                  💾 Save
+                </button>
+              </div>
+              <p class="text-xs text-gray-600 mt-1">Point to a remote Ollama GPU server on your network</p>
+            </div>
+
             <div>
               <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Temperature: {{ modelConfig.temperature }}</label>
               <input
@@ -801,6 +821,9 @@ const modelConfig = ref({
   maxTokens: 4096,
   contextWindow: 8192
 })
+
+// Ollama configuration
+const ollamaUrl = ref('http://localhost:11434')
 
 // Template management state
 const savedTemplates = ref([]) // Array of { name, instructions }
@@ -1095,7 +1118,16 @@ onMounted(async () => {
   if (savedShowThoughts !== null) {
     showAiThoughts.value = savedShowThoughts === 'true'
   }
-  
+
+  // Load Ollama URL from Rust config
+  try {
+    ollamaUrl.value = await invoke('get_ollama_url')
+    console.log('[Config] Loaded Ollama URL:', ollamaUrl.value)
+  } catch (error) {
+    console.error('[Config] Failed to load Ollama URL:', error)
+    ollamaUrl.value = 'http://localhost:11434' // Fallback to default
+  }
+
   await checkOllamaConnection()
   await loadTemplates() // Load saved prompt templates
   await loadHistory() // Load analysis history
@@ -1212,9 +1244,9 @@ const setupAnalysisEventListeners = () => {
 const checkOllamaConnection = async () => {
   isCheckingConnection.value = true
   try {
-    ollamaConnected.value = await invoke('check_ollama_connection')
+    ollamaConnected.value = await invoke('check_ollama_connection', { ollamaUrl: ollamaUrl.value })
     if (ollamaConnected.value) {
-      ollamaModels.value = await invoke('get_ollama_models')
+      ollamaModels.value = await invoke('get_ollama_models', { ollamaUrl: ollamaUrl.value })
       if (ollamaModels.value.length > 0) {
         const visionModels = ollamaModels.value.filter(
           m => m.name.toLowerCase().includes('vision') ||
@@ -1231,6 +1263,18 @@ const checkOllamaConnection = async () => {
     ollamaConnected.value = false
   }
   isCheckingConnection.value = false
+}
+
+// Save Ollama URL to Rust config
+const saveOllamaUrl = async () => {
+  try {
+    await invoke('save_ollama_url', { baseUrl: ollamaUrl.value })
+    console.log('[Config] Saved Ollama URL:', ollamaUrl.value)
+    // Re-check connection with new URL
+    await checkOllamaConnection()
+  } catch (error) {
+    console.error('[Config] Failed to save Ollama URL:', error)
+  }
 }
 
 const openFileDialog = async () => {
@@ -1422,6 +1466,7 @@ const handleUnderwrite = async () => {
       try {
         // Analyze this file - events will update UI in real-time
         const result = await invoke('send_pdf_to_ollama', {
+          ollamaUrl: ollamaUrl.value,
           model: selectedModel.value,
           prompt: buildFullPrompt(),
           pdfPath: file.path,
@@ -1458,15 +1503,15 @@ const handleUnderwrite = async () => {
 const testConnection = async () => {
   testResult.value = ''
   testThoughts.value = ''
-  
+
   try {
-    const result = await invoke('test_ollama_model', { model: selectedModel.value })
+    const result = await invoke('test_ollama_model', { ollamaUrl: ollamaUrl.value, model: selectedModel.value })
     console.log('Test successful:', result)
-    
+
     // Result is { thoughts: string | null, content: string }
     testThoughts.value = result.thoughts || ''
     testResult.value = result.content || ''
-    
+
     // Auto-enable thoughts toggle if we received thoughts
     if (result.thoughts) {
       showAiThoughts.value = true
@@ -1840,6 +1885,7 @@ Provide a concise, helpful answer based on the bank statement analysis above.`
 
     // Use text-only chat command - NO PDF re-processing!
     const response = await invoke('chat_with_ollama', {
+      ollamaUrl: ollamaUrl.value,
       model: selectedModel.value,
       prompt: contextPrompt,
       temperature: modelConfig.value.temperature,

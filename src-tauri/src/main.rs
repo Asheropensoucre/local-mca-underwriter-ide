@@ -167,6 +167,79 @@ fn delete_template(app: tauri::AppHandle, name: String) -> Result<(), String> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// OLLAMA CONFIGURATION MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct OllamaConfig {
+    base_url: String,
+}
+
+/// Get the path to the ollama_config.json file
+fn get_ollama_config_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+
+    fs::create_dir_all(&app_data_dir)
+        .map_err(|e| format!("Failed to create app data dir: {}", e))?;
+
+    Ok(app_data_dir.join("ollama_config.json"))
+}
+
+/// Load Ollama config from disk
+fn load_ollama_config(app: &tauri::AppHandle) -> Result<OllamaConfig, String> {
+    let config_path = get_ollama_config_path(app)?;
+
+    if !config_path.exists() {
+        // Return default config if file doesn't exist
+        return Ok(OllamaConfig {
+            base_url: "http://localhost:11434".to_string(),
+        });
+    }
+
+    let content = fs::read_to_string(&config_path)
+        .map_err(|e| format!("Failed to read config file: {}", e))?;
+
+    let config: OllamaConfig = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse config: {}", e))?;
+
+    Ok(config)
+}
+
+/// Save Ollama config to disk
+fn save_ollama_config_to_disk(app: &tauri::AppHandle, config: &OllamaConfig) -> Result<(), String> {
+    let config_path = get_ollama_config_path(app)?;
+
+    let content = serde_json::to_string_pretty(config)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+
+    fs::write(&config_path, content)
+        .map_err(|e| format!("Failed to write config file: {}", e))?;
+
+    Ok(())
+}
+
+/// Get Ollama base URL
+#[tauri::command]
+fn get_ollama_url(app: tauri::AppHandle) -> Result<String, String> {
+    let config = load_ollama_config(&app)?;
+    Ok(config.base_url)
+}
+
+/// Save Ollama base URL
+#[tauri::command]
+fn save_ollama_url(app: tauri::AppHandle, base_url: String) -> Result<(), String> {
+    let config = OllamaConfig {
+        base_url: base_url.clone(),
+    };
+    save_ollama_config_to_disk(&app, &config)?;
+    println!("[Config] Saved Ollama URL: {}", base_url);
+    Ok(())
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // ANALYSIS HISTORY MANAGEMENT
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -293,40 +366,43 @@ fn clear_all_history(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn check_ollama_connection() -> Result<bool, String> {
+async fn check_ollama_connection(ollama_url: String) -> Result<bool, String> {
     let client = reqwest::Client::new();
-    match client.get("http://localhost:11434/api/tags").send().await {
+    let url = format!("{}/api/tags", ollama_url.trim_end_matches('/'));
+    match client.get(&url).send().await {
         Ok(response) => {
             let status = response.status().is_success();
-            println!("[Health] Ollama health check: {}", if status { "OK" } else { "FAILED" });
+            println!("[Health] Ollama health check at {}: {}", ollama_url, if status { "OK" } else { "FAILED" });
             Ok(status)
         },
         Err(e) => {
-            println!("[Health] Ollama connection failed: {}", e);
+            println!("[Health] Ollama connection failed at {}: {}", ollama_url, e);
             Ok(false)
         }
     }
 }
 
 #[tauri::command]
-async fn get_ollama_models() -> Result<Vec<ollama::OllamaModel>, String> {
+async fn get_ollama_models(ollama_url: String) -> Result<Vec<ollama::OllamaModel>, String> {
     let client = reqwest::Client::new();
+    let url = format!("{}/api/tags", ollama_url.trim_end_matches('/'));
     let response = client
-        .get("http://localhost:11434/api/tags")
+        .get(&url)
         .send()
         .await
-        .map_err(|e| format!("Failed to connect to Ollama: {}", e))?;
-    
+        .map_err(|e| format!("Failed to connect to Ollama at {}: {}", ollama_url, e))?;
+
     let models: OllamaModelsResponse = response
         .json()
         .await
         .map_err(|e| format!("Failed to parse models: {}", e))?;
-    
+
     Ok(models.models)
 }
 
 #[tauri::command]
 async fn send_to_ollama(
+    ollama_url: String,
     model: String,
     prompt: String,
     image_path: Option<String>,
@@ -361,12 +437,13 @@ async fn send_to_ollama(
         format: None,
     };
 
+    let base_url = ollama_url.trim_end_matches('/');
     let response = client
-        .post("http://localhost:11434/api/chat")
+        .post(&format!("{}/api/chat", base_url))
         .json(&request)
         .send()
         .await
-        .map_err(|e| format!("Failed to send request: {}", e))?;
+        .map_err(|e| format!("Failed to send request to {}: {}", ollama_url, e))?;
 
     let result: ollama::OllamaChatResponse = response
         .json()
@@ -387,11 +464,11 @@ async fn read_file_as_base64(file_path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn test_ollama_model(model: String) -> Result<OllamaResponse, String> {
-    println!("[Test] Testing Ollama model: {}", model);
+async fn test_ollama_model(ollama_url: String, model: String) -> Result<OllamaResponse, String> {
+    println!("[Test] Testing Ollama model: {} at {}", model, ollama_url);
 
     // Use streaming for thinking models to capture think tags
-    let is_thinking_model = model.to_lowercase().contains("qwen3") 
+    let is_thinking_model = model.to_lowercase().contains("qwen3")
         || model.to_lowercase().contains("deepseek")
         || model.to_lowercase().contains("o1")
         || model.to_lowercase().contains("r1");
@@ -417,14 +494,15 @@ async fn test_ollama_model(model: String) -> Result<OllamaResponse, String> {
         format: None,
     };
 
+    let base_url = ollama_url.trim_end_matches('/');
     let response = client
-        .post("http://localhost:11434/api/chat")
+        .post(&format!("{}/api/chat", base_url))
         .json(&request)
         .send()
         .await
         .map_err(|e| {
             println!("[Test] Request failed: {}", e);
-            format!("Failed to send request: {}. Is Ollama running?", e)
+            format!("Failed to send request to {}: {}. Is Ollama running?", ollama_url, e)
         })?;
 
     let mut full_content = String::new();
@@ -660,6 +738,7 @@ async fn convert_pdf_to_images(pdf_path: String, dpi: u32) -> Result<PdfConversi
 /// Emits live streaming events for thoughts and tokens
 async fn analyze_single_page(
     client: &reqwest::Client,
+    ollama_url: &str,
     model: &str,
     prompt: &str,
     base64_image: &str,
@@ -695,8 +774,9 @@ async fn analyze_single_page(
 
     println!("[Multi-page] Analyzing page {}/{} with streaming...", page_num, total_pages);
 
+    let base_url = ollama_url.trim_end_matches('/');
     let response = client
-        .post("http://localhost:11434/api/chat")
+        .post(&format!("{}/api/chat", base_url))
         .json(&request)
         .send()
         .await
@@ -769,6 +849,7 @@ async fn analyze_single_page(
 /// Returns OllamaResponse with both thoughts and content
 async fn aggregate_page_results(
     client: &reqwest::Client,
+    ollama_url: &str,
     model: &str,
     _original_prompt: &str,
     page_results: &[String],
@@ -805,7 +886,7 @@ MERGED JSON ONLY:"#,
     );
 
     // Check if this is a thinking model
-    let is_thinking_model = model.to_lowercase().contains("qwen3") 
+    let is_thinking_model = model.to_lowercase().contains("qwen3")
         || model.to_lowercase().contains("deepseek")
         || model.to_lowercase().contains("o1")
         || model.to_lowercase().contains("r1");
@@ -826,8 +907,9 @@ MERGED JSON ONLY:"#,
         format: if is_thinking_model { None } else { Some("json".to_string()) }, // JSON for non-thinking
     };
 
+    let base_url = ollama_url.trim_end_matches('/');
     let response = client
-        .post("http://localhost:11434/api/chat")
+        .post(&format!("{}/api/chat", base_url))
         .json(&request)
         .send()
         .await
@@ -907,6 +989,7 @@ MERGED JSON ONLY:"#,
 #[tauri::command]
 async fn send_pdf_to_ollama(
     app: tauri::AppHandle,
+    ollama_url: String,
     model: String,
     prompt: String,
     pdf_path: String,
@@ -914,8 +997,8 @@ async fn send_pdf_to_ollama(
     max_tokens: i32,
 ) -> Result<String, String> {
     use std::path::Path;
-    
-    println!("[Event-Driven] Starting PDF analysis: {}", pdf_path);
+
+    println!("[Event-Driven] Starting PDF analysis at {}: {}", ollama_url, pdf_path);
 
     // Convert PDF to JPEG images on disk
     let conversion = convert_pdf_to_images(pdf_path.clone(), 72).await?;
@@ -1010,6 +1093,7 @@ async fn send_pdf_to_ollama(
         // Analyze this page with streaming
         let page_response = analyze_single_page(
             &client,
+            &ollama_url,
             &model,
             &prompt,
             &base64_image,
@@ -1065,6 +1149,7 @@ async fn send_pdf_to_ollama(
         // Aggregate all page results into final analysis
         let final_response = aggregate_page_results(
             &client,
+            &ollama_url,
             &model,
             &prompt,
             &page_results,
@@ -1113,12 +1198,13 @@ async fn send_pdf_to_ollama(
 #[tauri::command]
 async fn chat_with_ollama(
     app: tauri::AppHandle,
+    ollama_url: String,
     model: String,
     prompt: String,
     temperature: f32,
     max_tokens: i32,
 ) -> Result<String, String> {
-    println!("[Chat] Starting text-only chat with model: {}", model);
+    println!("[Chat] Starting text-only chat with model: {} at {}", model, ollama_url);
 
     // Check if this is a thinking model
     let is_thinking_model = model.to_lowercase().contains("qwen3")
@@ -1153,14 +1239,15 @@ async fn chat_with_ollama(
 
     println!("[Chat] Sending request to Ollama with streaming...");
 
+    let base_url = ollama_url.trim_end_matches('/');
     let response = client
-        .post("http://localhost:11434/api/chat")
+        .post(&format!("{}/api/chat", base_url))
         .json(&request)
         .send()
         .await
         .map_err(|e| {
             println!("[Chat] Request failed: {}", e);
-            format!("Failed to send request: {}", e)
+            format!("Failed to send request to {}: {}", ollama_url, e)
         })?;
 
     use futures_util::StreamExt;
@@ -1226,13 +1313,14 @@ async fn chat_with_ollama(
 /// Reuses the same aggregation logic as multi-page PDF processing
 #[tauri::command]
 async fn aggregate_batch_results(
+    ollama_url: String,
     model: String,
     original_prompt: String,
     page_results: Vec<String>,
     temperature: f32,
     max_tokens: i32,
 ) -> Result<String, String> {
-    println!("[Batch] Aggregating {} PDF results...", page_results.len());
+    println!("[Batch] Aggregating {} PDF results at {}...", page_results.len(), ollama_url);
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(300)) // 5 minute timeout for aggregation
@@ -1242,6 +1330,7 @@ async fn aggregate_batch_results(
 
     let final_response = aggregate_page_results(
         &client,
+        &ollama_url,
         &model,
         &original_prompt,
         &page_results,
