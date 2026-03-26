@@ -192,9 +192,35 @@ Build a blazing-fast, local-first underwriting workspace focused on deep-work an
 - **User Flow:** Enable "Show AI reasoning" → Thoughts appear → Click "Expand" → Reads thoughts with PDF below → Click "Snap Back" → Returns to sidebar
 - **Benefits:** Better readability for long thinking processes, maintains PDF context, dynamic UI
 
+## 7m. Phase 23: Configurable Ollama URL ✅ COMPLETE
+
+**Completed:**
+1. ✅ **Settings Tab UI** - New "Ollama API URL" input field with Save button
+2. ✅ **Rust Config Storage** - `ollama_config.json` saved to OS app data directory
+3. ✅ **Backend Commands** - `get_ollama_url`, `save_ollama_url` for persistence
+4. ✅ **Dynamic URL Usage** - All Ollama API calls use configurable URL:
+   - `check_ollama_connection`, `get_ollama_models`, `test_ollama_model`
+   - `send_to_ollama`, `send_pdf_to_ollama`, `chat_with_ollama`
+   - `analyze_single_page`, `aggregate_page_results`, `aggregate_batch_results`
+5. ✅ **Frontend Integration** - URL loaded on mount, passed to all `invoke()` calls
+6. ✅ **Default Value** - `http://localhost:11434` (fallback if config missing)
+7. ✅ **Remote Server Support** - Users can point to remote Ollama GPU servers
+
+**Architecture:**
+- **Before:** Hardcoded `http://localhost:11434` in all reqwest calls
+- **After:** Dynamic URL from Rust config, supports local and remote Ollama instances
+- **Config Format:** `{ "base_url": "http://localhost:11434" }`
+- **Config Location:** OS app data directory (same as templates/history)
+- **User Flow:** Settings tab → Enter URL → Click Save → App reconnects with new URL
+
+**Remote Ollama Setup:**
+1. On remote server: `OLLAMA_HOST=0.0.0.0:11434 ollama serve`
+2. In app: Settings → Enter `http://192.168.1.100:11434` → Save
+3. App connects to remote Ollama for all AI operations
+
 ## 8. Current Status
 
-**ALL PHASES COMPLETE (1-22)** - App features full MCA Underwriter Pivot, multi-page analysis, text-only chat, batch processing, event-driven architecture, strict JSON enforcement, Data URI preview, automatic garbage collection, clean JSON merger without echo, custom prompt templates, analysis history with Rust persistence, edge-to-edge IDE-style layout, live streaming thoughts for thinking models with 60-minute timeout, and **dynamic AI thoughts pop-out panel for expanded viewing**.
+**ALL PHASES COMPLETE (1-23)** - App features full MCA Underwriter Pivot, multi-page analysis, text-only chat, batch processing, event-driven architecture, strict JSON enforcement, Data URI preview, automatic garbage collection, clean JSON merger without echo, custom prompt templates, analysis history with Rust persistence, edge-to-edge IDE-style layout, live streaming thoughts for thinking models with 60-minute timeout, dynamic AI thoughts pop-out panel for expanded viewing, and **configurable Ollama URL supporting local and remote GPU servers**.
 
 ### User Flow:
 1. Upload PDFs → View in full PDF viewer (left pane, 60% width initially)

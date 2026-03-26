@@ -31,6 +31,7 @@ A blazing-fast, local-first underwriting workspace built specifically for the Me
 - 💭 **Thinking Model Support** - Qwen3-VL or other thinking VL models the thinking process displayed live in purple panel
 - 🎯 **Smart Toggle** - Auto-enables for thinking models, persists preference
 - 🖼️ **Dynamic Thoughts Panel** - Pop-out AI thinking process to left pane for expanded viewing, snap back to sidebar
+- 🔌 **Configurable Ollama URL** - Point to local or remote Ollama GPU servers on your network
 
 ## How It Works
 
@@ -91,11 +92,15 @@ sudo apt install -y \
 2. Start Ollama: `ollama serve`
 3. Install a vision model:
    ```bash
-   ollama pull qwen3-vl          # Thinking model (shows reasoning in UI) recommended 
+   ollama pull qwen3-vl          # Thinking model (shows reasoning in UI) recommended
    ollama pull llama3.2-vision   # Alternative non thinking
    ```
 
 **Note on Thinking Models (Qwen3-VL):** These models think before responding using a separate `thinking` field in Ollama's streaming API. The app captures this thinking process in real-time and displays it in a purple "AI Thinking Process" panel. Click the **Test** button to see both thoughts and response. The "Show AI reasoning" toggle auto-enables for thinking models. Thinking typically takes 5-15 seconds depending on model and hardware.
+
+**Remote Ollama Server:** To use a remote Ollama server on your network:
+1. On the remote server: `OLLAMA_HOST=0.0.0.0:11434 ollama serve`
+2. In the app: Go to **Settings** tab → Enter URL (e.g., `http://192.168.1.100:11434`) → Click **Save**
 
 ## Installation
 

@@ -176,6 +176,7 @@ struct OllamaConfig {
 }
 
 /// Get the path to the ollama_config.json file
+#[allow(dead_code)]
 fn get_ollama_config_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     let app_data_dir = app
         .path()
@@ -189,6 +190,7 @@ fn get_ollama_config_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, 
 }
 
 /// Load Ollama config from disk
+#[allow(dead_code)]
 fn load_ollama_config(app: &tauri::AppHandle) -> Result<OllamaConfig, String> {
     let config_path = get_ollama_config_path(app)?;
 
@@ -209,6 +211,7 @@ fn load_ollama_config(app: &tauri::AppHandle) -> Result<OllamaConfig, String> {
 }
 
 /// Save Ollama config to disk
+#[allow(dead_code)]
 fn save_ollama_config_to_disk(app: &tauri::AppHandle, config: &OllamaConfig) -> Result<(), String> {
     let config_path = get_ollama_config_path(app)?;
 
@@ -223,6 +226,7 @@ fn save_ollama_config_to_disk(app: &tauri::AppHandle, config: &OllamaConfig) -> 
 
 /// Get Ollama base URL
 #[tauri::command]
+#[allow(dead_code)]
 fn get_ollama_url(app: tauri::AppHandle) -> Result<String, String> {
     let config = load_ollama_config(&app)?;
     Ok(config.base_url)
@@ -230,6 +234,7 @@ fn get_ollama_url(app: tauri::AppHandle) -> Result<String, String> {
 
 /// Save Ollama base URL
 #[tauri::command]
+#[allow(dead_code)]
 fn save_ollama_url(app: tauri::AppHandle, base_url: String) -> Result<(), String> {
     let config = OllamaConfig {
         base_url: base_url.clone(),
