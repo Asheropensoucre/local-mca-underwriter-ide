@@ -1267,13 +1267,18 @@ const checkOllamaConnection = async () => {
 
 // Save Ollama URL to Rust config
 const saveOllamaUrl = async () => {
+  console.log('[Config] Save button clicked, URL:', ollamaUrl.value)
   try {
+    console.log('[Config] Calling save_ollama_url with base_url:', ollamaUrl.value)
     await invoke('save_ollama_url', { base_url: ollamaUrl.value })
-    console.log('[Config] Saved Ollama URL:', ollamaUrl.value)
+    console.log('[Config] ✓ Saved Ollama URL:', ollamaUrl.value)
+    alert('Ollama URL saved successfully!\n\nURL: ' + ollamaUrl.value)
     // Re-check connection with new URL
+    console.log('[Config] Re-checking connection...')
     await checkOllamaConnection()
   } catch (error) {
-    console.error('[Config] Failed to save Ollama URL:', error)
+    console.error('[Config] ✗ Failed to save Ollama URL:', error)
+    alert('Failed to save Ollama URL:\n' + error)
   }
 }
 

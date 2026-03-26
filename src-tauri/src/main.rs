@@ -1431,7 +1431,9 @@ fn main() {
             get_history,
             save_history_entry,
             delete_history_entry,
-            clear_all_history
+            clear_all_history,
+            get_ollama_url,
+            save_ollama_url
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
