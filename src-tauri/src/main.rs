@@ -235,13 +235,20 @@ fn get_ollama_url(app: tauri::AppHandle) -> Result<String, String> {
 /// Save Ollama base URL
 #[tauri::command]
 #[allow(dead_code)]
-fn save_ollama_url(app: tauri::AppHandle, base_url: String) -> Result<(), String> {
+fn save_ollama_url(app: tauri::AppHandle, args: SaveOllamaUrlArgs) -> Result<(), String> {
     let config = OllamaConfig {
-        base_url: base_url.clone(),
+        base_url: args.baseUrl.clone(),
     };
     save_ollama_config_to_disk(&app, &config)?;
-    println!("[Config] Saved Ollama URL: {}", base_url);
+    println!("[Config] Saved Ollama URL: {}", args.baseUrl);
     Ok(())
+}
+
+// Helper struct for save_ollama_url with camelCase support for Tauri v2
+#[derive(Debug, Deserialize)]
+#[allow(non_snake_case)]
+struct SaveOllamaUrlArgs {
+    baseUrl: String,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
