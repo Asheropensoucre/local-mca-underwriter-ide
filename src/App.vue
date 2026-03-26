@@ -1269,8 +1269,8 @@ const checkOllamaConnection = async () => {
 const saveOllamaUrl = async () => {
   console.log('[Config] Save button clicked, URL:', ollamaUrl.value)
   try {
-    console.log('[Config] Calling save_ollama_url with baseUrl:', ollamaUrl.value)
-    await invoke('save_ollama_url', { baseUrl: ollamaUrl.value })
+    console.log('[Config] Calling save_ollama_url with base_url:', ollamaUrl.value)
+    await invoke('save_ollama_url', { base_url: ollamaUrl.value })
     console.log('[Config] ✓ Saved Ollama URL:', ollamaUrl.value)
     alert('Ollama URL saved successfully!\n\nURL: ' + ollamaUrl.value)
     // Re-check connection with new URL
