@@ -185,7 +185,7 @@
                 </option>
               </select>
               <p v-if="ollamaModels.length === 0" class="text-xs text-gray-600 mt-2">
-                Start Ollama and run: <code class="bg-surface px-2 py-1 rounded">ollama pull llama3.2-vision</code>
+                Start Ollama and run: <code class="bg-surface px-2 py-1 rounded">ollama pull Qwen3-VL</code>
               </p>
               
               <!-- Show AI Thoughts Toggle -->
