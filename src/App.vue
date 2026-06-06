@@ -230,7 +230,7 @@
             </div>
 
             <!-- AI Thoughts/Chat Display (for Test + Underwriting) -->
-            <div v-if="showAiThoughts && aiThoughts" class="p-3 bg-slate-800/50 border border-slate-700 rounded-lg max-h-64 overflow-auto">
+            <div v-if="showAiThoughts && aiThoughts">
               <div class="flex items-center justify-between gap-2 mb-2">
                 <div class="flex items-center gap-2">
                   <svg class="w-4 h-4 text-purple-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -249,7 +249,9 @@
                   Expand
                 </button>
               </div>
-              <p class="text-xs text-gray-400 italic font-mono whitespace-pre-wrap">{{ aiThoughts }}</p>
+              <div class="p-3 bg-slate-800/50 border border-slate-700 rounded-lg max-h-64 overflow-auto">
+                <p class="text-xs text-gray-400 italic font-mono whitespace-pre-wrap">{{ aiThoughts }}</p>
+              </div>
             </div>
 
             <!-- Underwrite Button -->
