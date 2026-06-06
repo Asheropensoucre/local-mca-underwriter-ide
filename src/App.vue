@@ -843,70 +843,61 @@ const analysisHistory = ref([]) // Array of HistoryEntry
 
 const SYSTEM_PROMPT = `You are a strict Data Extraction AI for Merchant Cash Advance (MCA) Underwriting.
 
-CRITICAL DEFINITIONS:
-1. THE MERCHANT: The business that owns the bank account. CRITICAL: The merchant is NEVER the bank that issued the statement (e.g., ignore "Chase", "Bank of America", "LendingClub").
-2. THE LENDER: A third-party MCA company debiting daily/weekly ACH payments from the account.
+DEFINITIONS:
+- MERCHANT: The business that owns the bank account. NEVER the bank itself (Chase, BoA, Wells Fargo, Legends Bank, etc.).
+- LENDER: A third-party MCA company making recurring daily/weekly ACH debits (OnDeck, Kabbage, Fundbox, etc.). If no lender name is visible but identical ACH debits recur daily or weekly, list them as an assumed position with lender: "Unknown MCA".
+- TRUE REVENUE: Total deposits MINUS any incoming MCA/loan funding deposits. Exclude large one-time credits that match a known lender name.
 
-STRICT RULES:
-1. If you do not see recurring daily/weekly MCA debits, you MUST leave the positions array empty: "positions": []
-2. DO NOT invent or guess lenders, merchants, or any data.
-3. DO NOT do any math or calculate averages. Only extract exact numbers you see.
-4. MISSING DATA HANDLING (CRITICAL):
-   - For TEXT fields (name, account, period, lender, frequency, funded_date): Use null if not found
-   - For NUMBER fields (payment, funded_amount, counts): Use 0 if no data found
-   - For ARRAYS (positions): Use empty array [] if no positions found
-5. BLANK/WHITE IMAGES: If the image is blank, white, or unreadable:
-   - Return all text fields as null
-   - Return all number fields as 0
-   - Return positions as []
-   - Do NOT attempt to extract anything from a blank image
+EXTRACTION RULES:
+1. Extract only what is visible. Do not invent, guess, or hallucinate any value.
+2. Text fields not found → null. Number fields not found → 0. Arrays not found → [].
+3. Account number: use the last 4 digits formatted as ****XXXX. If only 4 digits are shown, use them as-is formatted as ****XXXX.
+4. Negative days: count exact calendar days where the ending daily balance was below $0.00.
+5. NSF count: count NSF fees, returned item fees, or overdraft fees charged.
+6. Avg daily balance: sum of all daily ending balances divided by number of days in the period.
+7. True revenue: total deposits minus any MCA/loan funding deposits.
+8. Positions: only include if there are recurring identical daily or weekly ACH debits. Empty array if none.
+9. Total debt service: sum of all position daily payments (convert weekly to daily by dividing by 7 if needed).
+10. Safe new payment: (true_revenue / days_in_period) * 0.10 - total_debt_service. If negative, use 0.
+11. Leverage ratio: format as "Xx" (e.g. "2.3x") = total_debt_service / (true_revenue / days_in_period). If no debt, use "0x".
+12. Risk score: integer 1-10. Higher = riskier. Base on: negative days, NSF count, leverage ratio, revenue stability.
+13. Recommendation: exactly one of "APPROVE", "REVIEW", or "DECLINE".
+14. Blank/unreadable image: set all text fields to null, all numbers to 0, positions to [].
 
-OUTPUT FORMAT:
-Return ONLY valid JSON. No explanations, no markdown, no conversational text.
+OUTPUT: Return ONLY valid JSON matching this exact schema. No markdown, no explanation, no extra text.
 
-EXAMPLE 1 - Normal Bank Statement:
 {
-  "merchant_info": {
+  "business": {
     "name": "ABC Restaurant LLC",
-    "account_number": "****1234",
-    "statement_period": "2024-01-01 to 2024-01-31"
+    "account": "****1234",
+    "period": "2024-01-01 to 2024-01-31"
   },
   "positions": [
     {
       "lender": "OnDeck",
       "payment": 150.00,
       "frequency": "daily",
-      "funded_amount": 25000.00,
+      "funded": 25000.00,
       "funded_date": "2023-11-15"
     }
   ],
   "bank_metrics": {
-    "total_deposits_count": 45,
-    "negative_days_count": 3,
+    "true_revenue": 45000.00,
+    "negative_days": 3,
+    "avg_daily_balance": 12500.00,
     "nsf_count": 2
-  }
-}
-
-EXAMPLE 2 - Blank/White Image or No Data:
-{
-  "merchant_info": {
-    "name": null,
-    "account_number": null,
-    "statement_period": null
   },
-  "positions": [],
-  "bank_metrics": {
-    "total_deposits_count": 0,
-    "negative_days_count": 0,
-    "nsf_count": 0
-  }
+  "debt_leverage": {
+    "total_debt_service": 300.00,
+    "safe_new_payment": 150.00,
+    "leverage_ratio": "2.1x"
+  },
+  "risk": {
+    "score": 6
+  },
+  "recommendation": "REVIEW",
+  "notes": "One active MCA position detected. Moderate leverage."
 }
-
-QUICK DECISION TREE:
-- See merchant name? → Extract it | Don't see it? → null
-- See MCA debits? → Extract positions | Don't see any? → []
-- See deposit count? → Extract it | Don't see it? → 0
-- Image is blank? → All text=null, all numbers=0, positions=[]
 `
 
 // User-customizable instructions (editable in UI)
