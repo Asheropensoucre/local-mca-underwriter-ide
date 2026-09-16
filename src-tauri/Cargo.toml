@@ -23,6 +23,13 @@ chrono = { version = "0.4", features = ["serde"] }
 regex = "1.10"
 lazy_static = "1.4"
 futures-util = "0.3"
+# Built-in engine: runtime archive extraction, checksums, hardware info, token randomness
+flate2 = "1"
+tar = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+sha2 = "0.10"
+sysinfo = { version = "0.33", default-features = false, features = ["system", "disk"] }
+getrandom = "0.2"
 
 [features]
 default = ["custom-protocol"]

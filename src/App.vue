@@ -1,8 +1,15 @@
 <template>
   <div class="h-screen w-screen flex flex-row overflow-hidden bg-background text-gray-300">
+    <!-- First launch: download runtime and models for the built-in engine -->
+    <EngineSetup
+      v-if="showEngineSetup"
+      @ready="onEngineReady"
+      @use-ollama="switchEngineMode('ollama')"
+    />
+
     <!-- IDLE State - Drop Zone -->
     <div
-      v-show="appState === 'IDLE'"
+      v-show="appState === 'IDLE' && !showEngineSetup"
       class="flex-1 flex items-center justify-center"
       :class="[
         isDragging
@@ -150,11 +157,24 @@
         <div class="flex-1 p-5 overflow-auto">
           <!-- Underwrite Tab -->
           <div v-if="activeTab === 'underwrite'" class="space-y-4 h-full flex flex-col">
+            <!-- Built-in engine status -->
+            <div v-if="engineMode === 'builtin'" class="flex items-center justify-between">
+              <span class="text-xs text-gray-500">Engine:</span>
+              <div class="flex items-center gap-2 text-xs">
+                <div class="w-2 h-2 rounded-full" :class="engineReady ? 'bg-green-500' : engineStarting ? 'bg-yellow-500' : 'bg-red-500'"></div>
+                <span :class="engineReady ? 'text-green-400' : 'text-gray-400'">{{ engineStatusText }}</span>
+                <button v-if="!engineReady && !engineStarting" @click="showEngineSetup = true" class="text-primary hover:text-blue-400 ml-2">Set up</button>
+              </div>
+            </div>
+            <p v-if="engineMode === 'builtin'" class="text-xs text-gray-600 -mt-2">
+              {{ engineModelsText }}
+            </p>
+
             <!-- Ollama Connection Status -->
-            <div class="flex items-center justify-between">
+            <div v-if="engineMode === 'ollama'" class="flex items-center justify-between">
               <span class="text-xs text-gray-500">Ollama Status:</span>
               <div class="flex items-center gap-2">
-                <div v-if="isCheckingConnection" class="w-2 h-2 rounded-full bg-yellow-500 animate-pulse"></div>
+                <div v-if="isCheckingConnection" class="w-2 h-2 rounded-full bg-yellow-500"></div>
                 <div v-else-if="ollamaConnected" class="w-2 h-2 rounded-full bg-green-500"></div>
                 <div v-else class="w-2 h-2 rounded-full bg-red-500"></div>
                 <span class="text-xs" :class="ollamaConnected ? 'text-green-400' : 'text-red-400'">
@@ -172,8 +192,9 @@
 
             <!-- Model Selector -->
             <div>
-              <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Select Model</label>
+              <label v-if="engineMode === 'ollama'" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Select Model</label>
               <select
+                v-if="engineMode === 'ollama'"
                 v-model="selectedModel"
                 class="w-full bg-background border border-border rounded-lg px-4 py-3 text-sm text-gray-300 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-colors"
               >
@@ -184,7 +205,7 @@
                   No models found (is Ollama running?)
                 </option>
               </select>
-              <p v-if="ollamaModels.length === 0" class="text-xs text-gray-600 mt-2">
+              <p v-if="engineMode === 'ollama' && ollamaModels.length === 0" class="text-xs text-gray-600 mt-2">
                 Start Ollama and run: <code class="bg-surface px-2 py-1 rounded">ollama pull Qwen3-VL</code>
               </p>
               
@@ -265,9 +286,11 @@
             <!-- ANALYZING State - Loading Spinner with Multi-page Progress -->
             <div v-if="appState === 'ANALYZING'" class="flex-1 flex flex-col bg-background border border-border rounded-lg">
               <div class="flex items-start gap-4 p-6">
-                <div class="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent flex-shrink-0"></div>
                 <div class="text-left flex-1">
                   <p class="text-gray-300 font-medium mb-2">{{ loadingMessage }}</p>
+                  <div v-if="pageTimings.length" class="font-mono text-xs text-gray-500 max-h-40 overflow-auto mb-2">
+                    <div v-for="t in pageTimings" :key="t.page">page {{ t.page }}: {{ t.method }} {{ t.seconds.toFixed(1) }}s</div>
+                  </div>
                   <!-- Multi-page Progress -->
                   <div v-if="totalPages > 1" class="w-full mt-4">
                     <div class="flex justify-between text-xs text-gray-500 mb-1">
@@ -281,11 +304,11 @@
                       ></div>
                     </div>
                     <p class="text-xs text-gray-600 mt-2">
-                      <span v-if="currentPage < totalPages">Analyzing page {{ currentPage }}...</span>
-                      <span v-else>Aggregating results...</span>
+                      <span v-if="currentPage < totalPages">Reading page {{ currentPage }}</span>
+                      <span v-else>Writing the report</span>
                     </p>
                   </div>
-                  <p v-else class="text-xs text-gray-500">This may take 5-10 minutes for AI analysis (hardware dependent)</p>
+                  <p v-else class="text-xs text-gray-500">Scanned pages take longer than digital ones. Time depends on your GPU.</p>
                 </div>
               </div>
             </div>
@@ -545,11 +568,11 @@
                     type="text"
                     placeholder="Ask a follow-up question..."
                     class="flex-1 bg-background border border-border rounded-lg px-3 py-2 text-sm text-gray-300 placeholder-gray-600 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-                    :disabled="isChatLoading || !ollamaConnected"
+                    :disabled="isChatLoading || !engineAvailable"
                   />
                   <button
                     @click="sendChatMessage"
-                    :disabled="isChatLoading || !chatInput.trim() || !ollamaConnected"
+                    :disabled="isChatLoading || !chatInput.trim() || !engineAvailable"
                     class="px-4 py-2 bg-primary hover:bg-blue-600 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg text-white text-sm font-medium transition-colors"
                   >
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -557,7 +580,7 @@
                     </svg>
                   </button>
                 </div>
-                <p v-if="!ollamaConnected" class="text-xs text-red-400 mt-2">Connect to Ollama to send questions</p>
+                <p v-if="!engineAvailable" class="text-xs text-red-400 mt-2">{{ engineMode === 'builtin' ? 'Start the local engine to send questions' : 'Connect to Ollama to send questions' }}</p>
               </div>
             </div>
 
@@ -635,8 +658,33 @@
 
           <!-- Settings Tab -->
           <div v-if="activeTab === 'settings'" class="space-y-5">
-            <!-- Ollama URL Configuration -->
+            <!-- Engine choice -->
             <div>
+              <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Engine</label>
+              <div class="flex gap-4 text-sm">
+                <label class="flex items-center gap-2 cursor-pointer">
+                  <input type="radio" value="builtin" :checked="engineMode === 'builtin'" @change="switchEngineMode('builtin')" class="accent-primary" />
+                  <span>Built-in (llama.cpp, OCR + reasoning models)</span>
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer">
+                  <input type="radio" value="ollama" :checked="engineMode === 'ollama'" @change="switchEngineMode('ollama')" class="accent-primary" />
+                  <span>Ollama</span>
+                </label>
+              </div>
+              <div v-if="engineMode === 'builtin'" class="mt-3 font-mono text-xs text-gray-400 space-y-1">
+                <p>{{ engineStatusText }}. {{ engineModelsText }}</p>
+                <p v-if="engineStatus">Runtime: llama.cpp {{ engineStatus.config.backend }} build, folder {{ engineStatus.engine_dir }}</p>
+                <pre v-if="engineDevices" class="whitespace-pre-wrap text-gray-500">{{ engineDevices }}</pre>
+                <div class="flex gap-3 pt-1">
+                  <button @click="restartEngine" class="text-primary hover:text-blue-400">Restart engine</button>
+                  <button @click="loadEngineDevices" class="text-primary hover:text-blue-400">Show compute devices</button>
+                  <button @click="showEngineSetup = true" class="text-primary hover:text-blue-400">Models and downloads</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Ollama URL Configuration -->
+            <div v-if="engineMode === 'ollama'">
               <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Ollama API URL</label>
               <div class="flex gap-2">
                 <input
@@ -757,6 +805,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import PdfViewer from './components/PdfViewer.vue'
+import EngineSetup from './components/EngineSetup.vue'
 
 // ═══════════════════════════════════════════════════════════════════════════
 // STATE MACHINE - Explicit app states (no boolean spaghetti)
@@ -805,8 +854,32 @@ const isThoughtsExpanded = ref(false) // AI thoughts panel expanded to left pane
 const analysisUnlisten = ref(null) // Function to unsubscribe from events
 const pageResults = ref([]) // Accumulated results from each page event
 
+// Built-in engine state (llama.cpp managed by the Rust side)
+const engineMode = ref('builtin') // 'builtin' | 'ollama'
+const engineStatus = ref(null) // last EngineStatus from Rust
+const engineReady = ref(false) // llama-server is up
+const engineStarting = ref(false)
+const engineError = ref('')
+const engineDevices = ref('')
+const showEngineSetup = ref(false)
+const pageTimings = ref([]) // { page, method, seconds } per page in the current job
+const engineStatusText = computed(() => {
+  if (engineReady.value) return 'Running'
+  if (engineStarting.value) return 'Starting'
+  if (engineError.value) return 'Failed: ' + engineError.value
+  if (engineStatus.value && !engineStatus.value.ready) return 'Not installed'
+  return 'Stopped'
+})
+const engineModelsText = computed(() => {
+  if (!engineStatus.value) return ''
+  const uw = engineStatus.value.underwriters.find(m => m.id === engineStatus.value.config.underwriter_model)
+  return `OCR: ${engineStatus.value.ocr.display_name}. Reasoning: ${uw ? uw.display_name : '?'}.`
+})
 // Ollama state
 const ollamaConnected = ref(false)
+// True when the selected engine can take a job or a chat message.
+const engineAvailable = computed(() => engineMode.value === 'builtin' ? engineReady.value : ollamaConnected.value)
+
 const ollamaModels = ref([])
 const isCheckingConnection = ref(true)
 const selectedModel = ref('llama-3-vision')
@@ -1127,7 +1200,8 @@ onMounted(async () => {
     ollamaUrl.value = 'http://localhost:11434' // Fallback to default
   }
 
-  await checkOllamaConnection()
+  await bootEngine()
+  if (engineMode.value === 'ollama') await checkOllamaConnection()
   await loadTemplates() // Load saved prompt templates
   await loadHistory() // Load analysis history
   // Set up event listeners (non-blocking, don't await)
@@ -1179,6 +1253,7 @@ const setupAnalysisEventListeners = () => {
       totalPages.value = payload.total_pages
       currentPage.value = 0
       pageResults.value = []
+      pageTimings.value = []
       aiThoughts.value = '' // Clear thoughts at start
       isThinkingModelDetected.value = false // Reset detection
       loadingMessage.value = payload.message
@@ -1201,6 +1276,7 @@ const setupAnalysisEventListeners = () => {
     if (payload.type === 'page_complete') {
       currentPage.value = payload.current_page
       pageResults.value.push(payload.page_result)
+      if (payload.method) pageTimings.value.push({ page: payload.current_page, method: payload.method, seconds: payload.seconds })
       loadingMessage.value = payload.message
       console.log('[Event] Page complete:', payload)
     }
@@ -1238,6 +1314,80 @@ const setupAnalysisEventListeners = () => {
   }).catch((error) => {
     console.error('[Stream] Failed to set up token listener:', error)
   })
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BUILT-IN ENGINE (llama.cpp) - status, start, mode switching
+// ═══════════════════════════════════════════════════════════════════════════
+
+const refreshEngineStatus = async () => {
+  engineStatus.value = await invoke('engine_status')
+  engineMode.value = engineStatus.value.config.mode
+  engineReady.value = engineStatus.value.running
+}
+
+// On launch: show setup until everything is downloaded, otherwise start the server.
+const bootEngine = async () => {
+  try {
+    await refreshEngineStatus()
+  } catch (e) {
+    console.error('[Engine] status failed:', e)
+    return
+  }
+  if (engineMode.value !== 'builtin') return
+  if (!engineStatus.value.ready) {
+    showEngineSetup.value = true
+    return
+  }
+  await startEngine()
+}
+
+const startEngine = async () => {
+  engineStarting.value = true
+  engineError.value = ''
+  try {
+    await invoke('engine_start')
+    engineReady.value = true
+  } catch (e) {
+    console.error('[Engine] start failed:', e)
+    engineError.value = String(e).split('\n')[0]
+    engineReady.value = false
+    showEngineSetup.value = true // setup screen offers the CPU fallback
+  } finally {
+    engineStarting.value = false
+  }
+}
+
+const restartEngine = async () => {
+  await invoke('engine_stop')
+  engineReady.value = false
+  await startEngine()
+}
+
+const loadEngineDevices = async () => {
+  try {
+    engineDevices.value = await invoke('engine_devices')
+  } catch (e) {
+    engineDevices.value = String(e)
+  }
+}
+
+const onEngineReady = async () => {
+  showEngineSetup.value = false
+  await refreshEngineStatus()
+  engineReady.value = true
+}
+
+const switchEngineMode = async (mode) => {
+  const config = { ...(engineStatus.value?.config || { backend: 'gpu', underwriter_model: 'qwen3.5-4b-q4' }), mode }
+  await invoke('engine_save_config', { config })
+  engineMode.value = mode
+  showEngineSetup.value = false
+  if (mode === 'ollama') {
+    await checkOllamaConnection()
+  } else {
+    await bootEngine()
+  }
 }
 
 const checkOllamaConnection = async () => {
@@ -1396,7 +1546,14 @@ const handleDrop = async (event) => {
 }
 
 const handleUnderwrite = async () => {
-  if (!ollamaConnected.value) {
+  if (engineMode.value === 'builtin' && !engineReady.value) {
+    errorMessage.value = engineError.value
+      ? 'The local engine failed to start: ' + engineError.value
+      : 'The local engine is not running. Open Settings to set it up.'
+    appState.value = 'ERROR'
+    return
+  }
+  if (engineMode.value === 'ollama' && !ollamaConnected.value) {
     errorMessage.value = 'Ollama is not running. Please start Ollama and ensure vision models are installed.'
     appState.value = 'ERROR'
     return
@@ -1456,7 +1613,21 @@ const handleUnderwrite = async () => {
   })
 
   try {
-    // Process each file in the queue sequentially
+    if (engineMode.value === 'builtin') {
+      // One job for every file in the queue: pages are read, then one report is written.
+      totalPages.value = 0
+      loadingMessage.value = 'Starting the local engine'
+      await invoke('engine_analyze', {
+        pdfPaths: fileQueue.value.map(f => f.path),
+        customInstructions: userCustomInstructions.value,
+        temperature: modelConfig.value.temperature,
+        maxTokens: modelConfig.value.maxTokens
+      })
+      completeUnlisten()
+      return
+    }
+
+    // Ollama path: process each file in the queue sequentially
     for (let i = 0; i < fileQueue.value.length; i++) {
       currentFileIndex.value = i
       const file = fileQueue.value[i]
@@ -1872,7 +2043,7 @@ const printReport = () => {
 
 const sendChatMessage = async () => {
   const question = chatInput.value.trim()
-  if (!question || !ollamaConnected.value || isChatLoading.value) return
+  if (!question || !engineAvailable.value || isChatLoading.value) return
 
   chatMessages.value.push({ role: 'user', content: question })
   chatInput.value = ''
@@ -1888,7 +2059,13 @@ User follow-up question: ${question}
 Provide a concise, helpful answer based on the bank statement analysis above.`
 
     // Use text-only chat command - NO PDF re-processing!
-    const response = await invoke('chat_with_ollama', {
+    const response = engineMode.value === 'builtin'
+      ? await invoke('engine_chat', {
+          prompt: contextPrompt,
+          temperature: modelConfig.value.temperature,
+          maxTokens: modelConfig.value.maxTokens
+        })
+      : await invoke('chat_with_ollama', {
       ollamaUrl: ollamaUrl.value,
       model: selectedModel.value,
       prompt: contextPrompt,
@@ -1902,7 +2079,7 @@ Provide a concise, helpful answer based on the bank statement analysis above.`
     console.error('Chat error:', error)
     chatMessages.value.push({
       role: 'assistant',
-      content: `Error: ${error}\n\nPlease try again or check your Ollama connection.`
+      content: `Error: ${error}\n\nPlease try again or check the engine status in Settings.`
     })
   } finally {
     isChatLoading.value = false

@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod ollama;
+mod engine;
 
 use ollama::{OllamaChatRequest, OllamaMessage, OllamaOptions, OllamaModelsResponse, OllamaResponse, OllamaStreamChunk, PdfConversionResult, PdfPageInfo};
 use std::fs;
@@ -1433,8 +1434,24 @@ fn main() {
             delete_history_entry,
             clear_all_history,
             get_ollama_url,
-            save_ollama_url
+            save_ollama_url,
+            engine::engine_status,
+            engine::engine_save_config,
+            engine::engine_install,
+            engine::engine_start,
+            engine::engine_stop,
+            engine::engine_use_cpu_backend,
+            engine::engine_devices,
+            engine::engine_analyze,
+            engine::engine_chat
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .manage(engine::runtime::EngineProcess::default())
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Always take llama-server down with the app; it is a child we own.
+            if let tauri::RunEvent::Exit = event {
+                app.state::<engine::runtime::EngineProcess>().stop();
+            }
+        });
 }

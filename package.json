@@ -10,6 +10,7 @@
     "dev": "tauri dev"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.6.0",
     "@tauri-apps/plugin-fs": "^2.4.5",
     "vue": "^3.4.0"
