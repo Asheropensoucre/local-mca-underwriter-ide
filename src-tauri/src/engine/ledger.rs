@@ -222,8 +222,66 @@ const NOT_POSITION_WORDS: &[&str] = &["tr to acct", "transfer", "xfer", "payroll
 
 const FUNDING_WORDS: &[&str] = &["loan", "funding", "proceeds", "advance", "capital", "mca", "fund ", "financ", "lending", "kabbage", "ondeck", "fundbox", "bluevine", "credibly", "kapitus", "libertas", "forward fin", "rapid fin"];
 
+/// Character end offsets of amount columns from a table header such as
+/// "Date  Description  Deposits/Credits  Withdrawals/Debits  Ending daily balance".
+/// Statements laid out this way (Wells Fargo, many credit unions) print credits and
+/// debits in separate columns and a running balance last, so the column an amount
+/// sits in decides its kind, not words in the description.
+#[derive(Debug, Clone, Default)]
+pub struct Columns {
+    credit: Option<usize>,
+    debit: Option<usize>,
+    balance: Option<usize>,
+}
+
+impl Columns {
+    /// Column labels found on one header line, by character offset. Headers often wrap
+    /// over two lines ("Deposits/ Withdrawals/ Ending daily" above "Credits Debits balance"),
+    /// so callers merge two consecutive label lines with `merge`.
+    fn labels(line: &str) -> Columns {
+        let lower = line.to_ascii_lowercase();
+        // Amounts are right-aligned under their label, so compare against label end offsets.
+        let find = |keys: &[&str]| keys.iter().filter_map(|k| lower.find(k).map(|p| p + k.len())).min();
+        Columns {
+            credit: find(&["deposits/credits", "deposits/ credits", "credits", "deposits", "additions"]),
+            debit: find(&["withdrawals/debits", "withdrawals/ debits", "debits", "withdrawals", "subtractions", "payments"]),
+            balance: find(&["ending daily balance", "daily balance", "running balance", "balance"]),
+        }
+    }
+
+    fn merge(&self, other: &Columns) -> Columns {
+        Columns {
+            credit: self.credit.or(other.credit),
+            debit: self.debit.or(other.debit),
+            balance: self.balance.or(other.balance),
+        }
+    }
+
+    fn count(&self) -> usize {
+        [self.credit, self.debit, self.balance].iter().filter(|c| c.is_some()).count()
+    }
+
+    /// A usable transaction table header: a date column plus at least two amount columns,
+    /// one of them credits or debits.
+    fn is_complete(&self, has_date: bool) -> bool {
+        has_date && self.count() >= 2 && (self.credit.is_some() || self.debit.is_some())
+    }
+
+    /// Kind of an amount printed ending at character `end`, by nearest column label.
+    fn kind_at(&self, end: usize) -> Option<Kind> {
+        let dist = |c: Option<usize>| c.map(|x| (x as i64 - end as i64).abs()).unwrap_or(i64::MAX);
+        let (dc, dd, db) = (dist(self.credit), dist(self.debit), dist(self.balance));
+        if db < dc && db < dd {
+            return None; // running balance, not a transaction amount
+        }
+        Some(if dc <= dd { Kind::Credit } else { Kind::Debit })
+    }
+}
+
 /// Parse one page. `year_hint` fills in years for MM/DD dates.
 fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledger, section: &mut Option<Kind>, in_daily: &mut bool) {
+    let mut columns: Option<Columns> = None;
+    let mut pending_header: Option<Columns> = None;
     let mut last_txn: Option<usize> = None;
     // Column-style summaries ("Previous Balance  Total Credits  Total Debits  Current Balance")
     // put the labels on one line and the values on the next.
@@ -259,6 +317,31 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
 
         capture_summary(&lower, trimmed, &mut ledger.summary);
 
+        let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+        // Column header for a transaction table with separate credit/debit/balance columns,
+        // possibly wrapped over two lines.
+        {
+            let has_amount = tokens.iter().any(|t| is_amount_token(t));
+            let labels = Columns::labels(line);
+            let has_date = lower.contains("date");
+            if !has_amount && labels.count() >= 1 && tokens.len() <= 12 {
+                let merged = pending_header.as_ref().map(|p| p.merge(&labels)).unwrap_or(labels.clone());
+                if merged.is_complete(has_date) {
+                    columns = Some(merged);
+                    pending_header = None;
+                    *in_daily = false;
+                    last_txn = None;
+                    continue;
+                }
+                if labels.count() >= 2 || has_date {
+                    pending_header = Some(merged);
+                    continue;
+                }
+            } else {
+                pending_header = None;
+            }
+        }
+
         if lower.contains("daily balance") || lower.contains("daily ending balance") {
             *in_daily = true;
             last_txn = None;
@@ -274,8 +357,6 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
             last_txn = None;
             continue;
         }
-
-        let tokens: Vec<&str> = trimmed.split_whitespace().collect();
 
         if *in_daily {
             // Columns of "date balance date balance ...".
@@ -298,6 +379,40 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
             // Any other non-date line ends the daily balance block.
             if tokens.first().and_then(|t| parse_date_token(t)).is_none() && !lower.contains("date") {
                 *in_daily = false;
+            }
+        }
+
+        // Column-laid-out transaction: date first, amounts placed under the header columns.
+        if let Some(c) = &columns {
+            let starts_with_date = tokens.first().and_then(|t| parse_date_token(t)).is_some();
+            let amount_spans: Vec<(usize, &str)> = amount_spans(line);
+            if starts_with_date && !amount_spans.is_empty() {
+                let mut txn_amount: Option<(f64, Kind)> = None;
+                let mut running: Option<f64> = None;
+                for (end, tok) in &amount_spans {
+                    match c.kind_at(*end) {
+                        None => running = parse_amount(tok),
+                        Some(k) => {
+                            if txn_amount.is_none() {
+                                txn_amount = parse_amount(tok).map(|v| (v.abs(), k));
+                            }
+                        }
+                    }
+                }
+                // A lone amount on a header-less balance column is a balance-only line (skip).
+                if let Some((amount, kind)) = txn_amount {
+                    let first_amount_start = line.find(amount_spans[0].1).unwrap_or(line.len());
+                    let desc_region = &line[..first_amount_start];
+                    let desc: String = desc_region.split_whitespace().skip(1).collect::<Vec<_>>().join(" ");
+                    let id = ledger.transactions.len();
+                    let (date, day) = resolve_date(tokens[0], year_hint);
+                    ledger.transactions.push(Txn { id, date: date.clone(), day, kind, amount, description: desc, page });
+                    if let Some(bal) = running {
+                        ledger.daily_balances.push(DailyBalance { date, balance: bal });
+                    }
+                    last_txn = Some(id);
+                    continue;
+                }
             }
         }
 
@@ -373,6 +488,20 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         }
         last_txn = None;
     }
+}
+
+/// Amount tokens on a line with the character offset where each ends.
+fn amount_spans(line: &str) -> Vec<(usize, &str)> {
+    let mut out = Vec::new();
+    let mut pos = 0;
+    for tok in line.split(' ') {
+        let end = pos + tok.len();
+        if !tok.is_empty() && is_amount_token(tok) {
+            out.push((end, tok));
+        }
+        pos = end + 1;
+    }
+    out
 }
 
 fn iso_or_raw(tok: &str, year_hint: Option<i32>) -> String {
@@ -513,7 +642,20 @@ fn cadence(days: &[i64]) -> &'static str {
     "irregular"
 }
 
+/// Running balances yield several entries per date; keep the last one as that day's
+/// ending balance. Explicit daily balance tables already have one entry per date.
+fn collapse_daily_balances(ledger: &mut Ledger) {
+    let mut last: BTreeMap<String, f64> = BTreeMap::new();
+    for b in &ledger.daily_balances {
+        last.insert(b.date.clone(), b.balance);
+    }
+    if last.len() < ledger.daily_balances.len() {
+        ledger.daily_balances = last.into_iter().map(|(date, balance)| DailyBalance { date, balance }).collect();
+    }
+}
+
 fn derive(ledger: &mut Ledger) {
+    collapse_daily_balances(ledger);
     ledger.parsed_credit_total = ledger.transactions.iter().filter(|t| t.kind == Kind::Credit).map(|t| t.amount).sum();
     ledger.parsed_debit_total = ledger.transactions.iter().filter(|t| t.kind == Kind::Debit).map(|t| t.amount).sum();
 
@@ -873,6 +1015,36 @@ MERCHANT SVCS IPSMXASETL AL WEST NISSAN WARR
 Pg 1 of 8
 MEMBER FDIC
 ";
+
+    const COLUMN_STYLE: &str = "Transaction history
+                    Check                                                                    Deposits/      Withdrawals/      Ending daily
+      Date        Number Description                                                        Credits           Debits          balance
+      1/2                Purchase authorized on 12/31 Costco Whse #0123 Seattle WA                              145.67          1,234.56
+      1/3                Deposit Made In A Branch/Store                                    2,500.00                            3,734.56
+      1/3                Everest Business Fundi Everest Bu 220103                                               399.00          3,335.56
+      1/4                Everest Business Fundi Everest Bu 220104                                               399.00          2,936.56
+      1/4         1021   Check                                                                                  800.00          2,136.56
+      Ending balance on 1/4                                                                                                     2,136.56
+      Totals                                                                             $2,500.00        $1,743.67
+";
+
+    #[test]
+    fn column_layout_assigns_kind_by_column_and_collects_running_balance() {
+        let l = parse(&[(1, COLUMN_STYLE)]);
+        let credits: Vec<&Txn> = l.transactions.iter().filter(|t| t.kind == Kind::Credit).collect();
+        let debits: Vec<&Txn> = l.transactions.iter().filter(|t| t.kind == Kind::Debit).collect();
+        assert_eq!(credits.len(), 1, "{:?}", l.transactions);
+        assert_eq!(credits[0].amount, 2500.0);
+        assert_eq!(debits.len(), 4, "{:?}", debits);
+        assert_eq!(debits[0].amount, 145.67, "transaction amount, not the running balance");
+        assert!(debits[1].description.starts_with("Everest"));
+        // Running balances collapse to one ending balance per day.
+        assert_eq!(l.daily_balances.len(), 3);
+        assert_eq!(l.daily_balances.last().unwrap().balance, 2136.56);
+        // Two identical daily debits form a recurring candidate.
+        assert_eq!(l.recurring_debits.len(), 1);
+        assert_eq!(l.recurring_debits[0].amount, 399.0);
+    }
 
     #[test]
     fn ocr_style_text_without_indentation_parses() {
