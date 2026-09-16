@@ -108,7 +108,7 @@ pub fn parse_amount(raw: &str) -> Option<f64> {
 }
 
 fn is_amount_token(tok: &str) -> bool {
-    let t = tok.trim_start_matches('$').trim_start_matches('-').trim_end_matches('-').trim_matches(|c| c == '(' || c == ')');
+    let t = tok.trim_start_matches(|c| c == '$' || c == '-').trim_end_matches('-').trim_matches(|c| c == '(' || c == ')');
     let mut seen_dot = false;
     let mut decimals = 0;
     if t.is_empty() || !t.chars().next().unwrap().is_ascii_digit() {
@@ -420,7 +420,10 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         // "date check# amount" or "check# date amount" order.
         let date_idx: Vec<usize> = tokens.iter().enumerate().filter(|(_, t)| parse_date_token(t).is_some()).map(|(i, _)| i).collect();
         let amt_idx: Vec<usize> = tokens.iter().enumerate().filter(|(_, t)| is_amount_token(t)).map(|(i, _)| i).collect();
-        if date_idx.len() >= 2 && date_idx.len() == amt_idx.len() && date_idx.iter().zip(&amt_idx).all(|(d, a)| d < a) {
+        // Between each date and its amount there is at most a check number and a gap marker;
+        // prose there ("Fee period 11/01 - 11/30 ... $5.00") means this is not a check table.
+        let check_table_shape = date_idx.iter().zip(&amt_idx).all(|(d, a)| d < a && a - d <= 3);
+        if date_idx.len() >= 2 && date_idx.len() == amt_idx.len() && check_table_shape {
             let mut prev_end = 0usize;
             for (k, (&d, &a)) in date_idx.iter().zip(&amt_idx).enumerate() {
                 let mut desc: Vec<&str> = tokens[d + 1..a].to_vec();
@@ -532,11 +535,21 @@ fn capture_summary(lower: &str, line: &str, s: &mut Summary) {
             s.ending_balance = Some(v);
         }
     }
-    if s.total_credits.is_none() && (lower.contains("deposits/other credits") || lower.contains("total credits") || lower.contains("total deposits")) && !lower.contains("---") {
-        s.total_credits = last_amount(line);
+    if s.total_credits.is_none() && (lower.contains("deposits/other credits") || lower.contains("total credits") || lower.contains("total deposits") || lower.starts_with("deposits/additions") || lower.starts_with("deposits and additions") || lower.starts_with("total deposits and additions")) && !lower.contains("---") {
+        s.total_credits = last_amount(line).map(f64::abs);
     }
-    if s.total_debits.is_none() && (lower.contains("checks/other debits") || lower.contains("total debits") || lower.contains("total withdrawals")) && !lower.contains("---") {
-        s.total_debits = last_amount(line);
+    if s.total_debits.is_none() && (lower.contains("checks/other debits") || lower.contains("total debits") || lower.contains("total withdrawals") || lower.starts_with("withdrawals/subtractions") || lower.starts_with("withdrawals and subtractions") || lower.starts_with("total withdrawals and subtractions")) && !lower.contains("---") {
+        s.total_debits = last_amount(line).map(f64::abs);
+    }
+    // "Beginning balance on 11/1" / "Ending balance on 11/30" carry the period.
+    if lower.contains("beginning balance on ") || lower.contains("ending balance on ") {
+        if let Some(d) = line.split_whitespace().find(|t| parse_date_token(t).is_some()) {
+            if lower.contains("beginning") {
+                s.period_start.get_or_insert(d.to_string());
+            } else {
+                s.period_end.get_or_insert(d.to_string());
+            }
+        }
     }
     if s.days_in_period.is_none() && lower.contains("days in") {
         // "30 Days in Statement Period" or "Total Days In Statement Period ...: 31"
@@ -764,6 +777,21 @@ fn year_hint(texts: &[&str]) -> Option<i32> {
             }
         }
     }
+    // "November 30, 2024" style statement dates: a strong vote for that year.
+    const MONTHS: &[&str] = &["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+    for text in texts {
+        let lower = text.to_ascii_lowercase();
+        let toks: Vec<&str> = lower.split(|c: char| c.is_whitespace() || c == ',').filter(|t| !t.is_empty()).collect();
+        for w in toks.windows(3) {
+            if MONTHS.iter().any(|m| m.starts_with(w[0]) && w[0].len() >= 3) && w[1].chars().all(|c| c.is_ascii_digit()) && w[2].len() == 4 {
+                if let Ok(y) = w[2].parse::<i32>() {
+                    if (2000..=2100).contains(&y) {
+                        *votes.entry(y).or_default() += 10;
+                    }
+                }
+            }
+        }
+    }
     if let Some((y, _)) = votes.into_iter().max_by_key(|(_, n)| *n) {
         return Some(y);
     }
@@ -865,7 +893,21 @@ pub fn compute_metrics(ledger: &Ledger, funding_ids: &[usize], confirmed_positio
         },
     };
 
-    let days_in_period = ledger.summary.days_in_period.unwrap_or(30);
+    let days_in_period = ledger.summary.days_in_period.unwrap_or_else(|| {
+        // Span of the period dates when printed, else of the transaction dates, else 30.
+        let span = |a: Option<i64>, b: Option<i64>| match (a, b) {
+            (Some(a), Some(b)) if b >= a => Some((b - a + 1) as u32),
+            _ => None,
+        };
+        let year = ledger.transactions.iter().find_map(|t| t.date.get(..4)).and_then(|y| y.parse::<i32>().ok());
+        let to_day = |d: &Option<String>| d.as_ref().and_then(|d| parse_date_token(d)).and_then(|(m, dd, y)| y.or(year).map(|y| days_from_civil(y, m, dd)));
+        span(to_day(&ledger.summary.period_start), to_day(&ledger.summary.period_end))
+            .or_else(|| {
+                let days: Vec<i64> = ledger.transactions.iter().filter_map(|t| t.day).collect();
+                span(days.iter().min().copied(), days.iter().max().copied()).filter(|d| *d >= 20)
+            })
+            .unwrap_or(30)
+    });
     let nsf_count = ledger.nsf_items.len() as u32;
     let total_debt_service_daily: f64 = confirmed_positions.iter().map(|(amt, cad)| per_day(*amt, cad)).sum();
     let daily_revenue = true_revenue / days_in_period as f64;
@@ -1027,6 +1069,29 @@ MEMBER FDIC
       Ending balance on 1/4                                                                                                     2,136.56
       Totals                                                                             $2,500.00        $1,743.67
 ";
+
+    const WELLS_SUMMARY: &str = "November 30, 2024       Page 2 of 6
+Statement period activity summary                                                         Account number:         1196
+     Beginning balance on 11/1                                           -$2.71
+     Deposits/Additions                                              20,110.00
+     Withdrawals/Subtractions                                      - 17,760.14
+     Ending balance on 11/30                                         $2,347.15
+";
+
+    #[test]
+    fn wells_summary_block_and_period() {
+        let l = parse(&[(1, WELLS_SUMMARY)]);
+        assert_eq!(l.summary.beginning_balance, Some(-2.71));
+        assert_eq!(l.summary.total_credits, Some(20110.0));
+        assert_eq!(l.summary.total_debits, Some(17760.14));
+        assert_eq!(l.summary.ending_balance, Some(2347.15));
+        assert_eq!(l.summary.account_last4.as_deref(), Some("1196"));
+        assert_eq!(l.summary.period_start.as_deref(), Some("11/1"));
+        assert_eq!(l.summary.period_end.as_deref(), Some("11/30"));
+        assert_eq!(year_hint(&[WELLS_SUMMARY]), Some(2024));
+        let m = compute_metrics(&l, &[], &[]);
+        assert_eq!(m.days_in_period, 30);
+    }
 
     #[test]
     fn column_layout_assigns_kind_by_column_and_collects_running_balance() {

@@ -112,6 +112,7 @@ fn ledger_dump(pdfs: &[String]) -> Result<String, String> {
         "large_unlabeled_credits": ledger.large_unlabeled_credits.iter().map(|i| &ledger.transactions[*i]).collect::<Vec<_>>(),
         "payees": ledger.payees.iter().take(25).collect::<Vec<_>>(),
         "metrics_if_all_candidates_are_funding": metrics,
+        "transactions": ledger.transactions,
     });
     serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
 }
