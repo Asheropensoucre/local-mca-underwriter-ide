@@ -378,13 +378,23 @@ pub async fn start(app: &tauri::AppHandle, cfg: &EngineConfig) -> Result<Endpoin
     let log = std::fs::File::create(&log_path).map_err(|e| format!("Cannot create log: {e}"))?;
     let log_err = log.try_clone().map_err(|e| e.to_string())?;
 
+    // Keep both models resident only when memory clearly allows it. Otherwise the router
+    // holds one model at a time and swaps on demand: the pipeline reads all pages (OCR)
+    // before the single classification call, so the swap happens once per job. On an
+    // integrated GPU an oversized allocation thrashes GPU memory to swap for minutes.
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    let total_ram = sys.total_memory() as f64;
+    let model_bytes = (ocr.total_size() + underwriter.total_size()) as f64;
+    let models_max = if model_bytes * 1.5 < total_ram * 0.6 { "2" } else { "1" };
+    println!("[Engine] {:.1} GB RAM, {:.1} GB of models: models-max {models_max}", total_ram / 1e9, model_bytes / 1e9);
+
     let mut cmd = Command::new(&bin);
     cmd.args([
         "--models-preset", &presets.to_string_lossy(),
         "--host", "127.0.0.1",
         "--port", &port.to_string(),
-        // Both roles stay resident when memory allows; the router evicts LRU otherwise.
-        "--models-max", "2",
+        "--models-max", models_max,
         "-ngl", "auto",
         "--jinja",
         "--no-webui",

@@ -153,7 +153,7 @@ pub fn underwriter_models() -> Vec<ModelSpec> {
                 sha256: Some("03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8"),
             }],
             min_ram_gb: 16,
-            ctx_size: 32768,
+            ctx_size: 16384,
         },
     ]
 }

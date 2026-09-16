@@ -57,8 +57,8 @@
           @change="saveConfig"
           class="bg-background border border-border px-3 py-2 text-sm text-gray-300 focus:outline-none focus:border-primary"
         >
-          <option v-for="m in status.underwriters" :key="m.id" :value="m.id">
-            {{ m.display_name }}, {{ fmtBytes(m.total_size) }}, needs {{ m.min_ram_gb }} GB RAM{{ m.installed ? ', installed' : '' }}
+          <option v-for="m in status.underwriters" :key="m.id" :value="m.id" :disabled="m.min_ram_gb > status.hardware.total_ram_gb + 0.5">
+            {{ m.display_name }}, {{ fmtBytes(m.total_size) }}, needs {{ m.min_ram_gb }} GB RAM{{ m.installed ? ', installed' : '' }}{{ m.min_ram_gb > status.hardware.total_ram_gb + 0.5 ? ', too large for this machine' : '' }}
           </option>
         </select>
         <p class="text-xs text-gray-600 mt-1">

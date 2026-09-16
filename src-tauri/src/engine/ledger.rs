@@ -358,9 +358,11 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         }
 
         // Continuation line: indented text right after a transaction adds to its description.
+        // A lone all-caps token with no digits is a page footer artifact, not a description.
         if let Some(id) = last_txn {
             let indented = line.len() > trimmed.len();
-            if indented && !starts_with_date && tokens.len() <= 12 {
+            let footer_artifact = tokens.len() == 1 && tokens[0].len() >= 6 && tokens[0].chars().all(|c| c.is_ascii_uppercase());
+            if indented && !starts_with_date && tokens.len() <= 12 && !footer_artifact {
                 let t = &mut ledger.transactions[id];
                 t.description.push(' ');
                 t.description.push_str(trimmed);
@@ -741,6 +743,77 @@ pub fn compute_metrics(ledger: &Ledger, funding_ids: &[usize], confirmed_positio
     }
 }
 
+/// Transparent baseline risk score from the computed metrics. The model may move it by
+/// at most two points and must say why. Every point is explained in `factors`.
+#[derive(Debug, Clone, Serialize)]
+pub struct RiskBaseline {
+    pub score: u8,
+    pub factors: Vec<String>,
+}
+
+pub fn risk_baseline(m: &Metrics, positions: usize, has_daily_balances: bool) -> RiskBaseline {
+    let mut score: i32 = 3;
+    let mut factors = Vec::new();
+
+    let neg = match m.negative_days {
+        0 => 0,
+        1..=2 => 1,
+        3..=5 => 2,
+        _ => 3,
+    };
+    if neg > 0 {
+        factors.push(format!("+{neg}: {} negative balance day(s)", m.negative_days));
+    } else if has_daily_balances {
+        factors.push("+0: no negative balance days".into());
+    } else {
+        factors.push("+0: no daily balance table; negative days only inferred from the minimum balance".into());
+    }
+    score += neg;
+
+    let nsf = match m.nsf_count {
+        0 => 0,
+        1..=2 => 1,
+        _ => 2,
+    };
+    if nsf > 0 {
+        factors.push(format!("+{nsf}: {} NSF / returned item(s)", m.nsf_count));
+    }
+    score += nsf;
+
+    let stack = match positions {
+        0 => 0,
+        1 => 1,
+        2..=3 => 2,
+        _ => 3,
+    };
+    if stack > 0 {
+        factors.push(format!("+{stack}: {positions} existing position(s)"));
+    }
+    score += stack;
+
+    let lev = if m.leverage_ratio < 0.05 {
+        0
+    } else if m.leverage_ratio < 0.15 {
+        1
+    } else if m.leverage_ratio < 0.30 {
+        2
+    } else {
+        3
+    };
+    if lev > 0 {
+        factors.push(format!("+{lev}: debt service is {:.0}% of daily revenue", m.leverage_ratio * 100.0));
+    }
+    score += lev;
+
+    let daily_rev = if m.days_in_period > 0 { m.true_revenue / m.days_in_period as f64 } else { 0.0 };
+    if daily_rev > 0.0 && m.avg_daily_balance < 3.0 * daily_rev {
+        score += 1;
+        factors.push(format!("+1: average balance {:.0} is under three days of revenue ({:.0}/day)", m.avg_daily_balance, daily_rev));
+    }
+
+    RiskBaseline { score: score.clamp(1, 10) as u8, factors }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -811,6 +884,16 @@ mod tests {
         assert_eq!(l.recurring_debits[0].amount, 3599.0);
         assert_eq!(l.recurring_debits[0].cadence, "weekly");
         assert_eq!(l.nsf_items.len(), 1);
+    }
+
+    #[test]
+    fn risk_baseline_is_explained() {
+        let l = parse(&[(1, SUNRISE)]);
+        let m = compute_metrics(&l, &[], &[]);
+        let r = risk_baseline(&m, 0, true);
+        // 3 + 1 (two negative days) + 1 (one NSF) + 1 (thin balance vs 113k/31 days)
+        assert_eq!(r.score, 6);
+        assert_eq!(r.factors.len(), 3);
     }
 
     #[test]

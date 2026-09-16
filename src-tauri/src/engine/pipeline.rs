@@ -21,10 +21,9 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 use tauri::Emitter;
 
-/// Pages with fewer words than this in their text layer are treated as scans.
-const MIN_TEXT_WORDS: usize = 40;
 /// A page image at least this many pixels on both sides marks a scanned page.
-const SCAN_IMAGE_MIN_PX: u32 = 1000;
+/// Logos and signature blocks are smaller; a letter page scanned at 100 DPI is 850 x 1100.
+const SCAN_IMAGE_MIN_PX: u32 = 800;
 /// Render resolution for OCR. 100 DPI misread digits in testing; 150 did not.
 const OCR_DPI: u32 = 150;
 
@@ -33,7 +32,7 @@ const OCR_DPI: u32 = 150;
 pub struct PageText {
     pub file_name: String,
     pub page: usize,
-    /// "text" (PDF text layer) or "ocr".
+    /// "text" (PDF text layer), "ocr", or "blank" (near-empty page, not sent to OCR).
     pub method: &'static str,
     pub seconds: f32,
     pub text: String,
@@ -80,8 +79,25 @@ fn has_scan_image(pdf: &str, page: usize) -> bool {
         let cols: Vec<&str> = l.split_whitespace().collect();
         let w: u32 = cols.get(3).and_then(|v| v.parse().ok()).unwrap_or(0);
         let h: u32 = cols.get(4).and_then(|v| v.parse().ok()).unwrap_or(0);
-        w >= SCAN_IMAGE_MIN_PX && h >= SCAN_IMAGE_MIN_PX
+        w >= SCAN_IMAGE_MIN_PX && h >= SCAN_IMAGE_MIN_PX || (w as u64 * h as u64) >= 1_000_000
     })
+}
+
+/// Fraction of dark pixels on a low-resolution render. Cover sheets and blank pages have
+/// almost none, so they skip the OCR model (30 to 50 seconds each).
+const BLANK_INK_RATIO: f64 = 0.004;
+
+fn page_ink_ratio(pdf: &str, page: usize) -> Result<f64, String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let prefix = dir.path().join("ink");
+    let p = page.to_string();
+    let out = run("pdftocairo", &["-png", "-gray", "-r", "40", "-f", &p, "-l", &p, "-singlefile", pdf, &prefix.to_string_lossy()])?;
+    if !out.status.success() {
+        return Err(format!("pdftocairo failed: {}", String::from_utf8_lossy(&out.stderr)));
+    }
+    let img = image::open(prefix.with_extension("png")).map_err(|e| e.to_string())?.into_luma8();
+    let dark = img.pixels().filter(|p| p.0[0] < 128).count();
+    Ok(dark as f64 / img.pixels().count().max(1) as f64)
 }
 
 /// Render one page to a grayscale JPEG and return it as a data URI.
@@ -135,8 +151,17 @@ pub async fn extract_pages(
         let started = Instant::now();
         let layer = text_layer(pdf, page)?;
         let words = layer.split_whitespace().count();
-        let (method, text) = if words < MIN_TEXT_WORDS || has_scan_image(pdf, page) {
-            ("ocr", ocr_page(ep, pdf, page).await?)
+        // Scanned pages (a full-page raster image) are read by the OCR model, since any text
+        // layer they carry came from someone else's OCR. Digital pages use their text layer,
+        // however short: a cover sheet with twenty words is still exact. Pages with no text
+        // at all and no ink are blank; pages with no text but ink are OCR'd.
+        let scanned = has_scan_image(pdf, page);
+        let (method, text) = if scanned || words == 0 {
+            if page_ink_ratio(pdf, page).map(|r| r < BLANK_INK_RATIO).unwrap_or(false) {
+                ("blank", layer)
+            } else {
+                ("ocr", ocr_page(ep, pdf, page).await?)
+            }
         } else {
             ("text", layer)
         };
@@ -145,7 +170,7 @@ pub async fn extract_pages(
         let _ = app.emit("analysis-progress", json!({
             "type": "page_complete", "current_page": current, "total_pages": total_pages,
             "method": method, "seconds": seconds, "page_result": "",
-            "message": format!("{file_name} page {page}: {} in {seconds:.1}s", if method == "ocr" { "OCR" } else { "text layer" })
+            "message": format!("{file_name} page {page}: {} in {seconds:.1}s", match method { "ocr" => "OCR", "blank" => "blank page skipped", _ => "text layer" })
         }));
         pages.push(PageText { file_name: file_name.clone(), page, method, seconds, text });
     }
@@ -182,28 +207,35 @@ pub fn classification_schema(recurring_ids: &[usize], funding_ids: &[usize]) -> 
           }, "required": ["lender", "payment", "frequency", "evidence"] } },
         "funding_deposit_ids": { "type": "array", "maxItems": funding_ids.len().max(1),
             "items": { "type": "integer", "enum": if fund_ids.is_empty() { vec![json!(-1)] } else { fund_ids } } },
-        "risk_score": { "type": "integer", "minimum": 1, "maximum": 10 },
+        "risk_adjustment": { "type": "integer", "minimum": -2, "maximum": 2 },
+        "risk_reason": { "type": "string", "maxLength": 200 },
         "recommendation": { "type": "string", "enum": ["APPROVE", "REVIEW", "DECLINE"] },
-        "notes": { "type": "string", "maxLength": 700 }
+        "notes": { "type": "string", "maxLength": 600 }
       },
-      "required": ["business", "recurring_debits", "other_positions", "funding_deposit_ids", "risk_score", "recommendation", "notes"]
+      "required": ["business", "recurring_debits", "other_positions", "funding_deposit_ids", "risk_adjustment", "risk_reason", "recommendation", "notes"]
     })
 }
 
-const UNDERWRITER_SYSTEM_PROMPT: &str = r#"You are an underwriting analyst for Merchant Cash Advance (MCA) funding. A parser has already read the bank statement and computed the totals. You do not compute numbers. You classify and judge.
+const UNDERWRITER_SYSTEM_PROMPT: &str = r#"You are an underwriting analyst for Merchant Cash Advance (MCA) funding. A parser has already read the bank statement and computed every total. You do not compute or restate numbers. You classify and judge.
 
 Definitions
 - MERCHANT: the account holder named on the statement. Never the bank.
-- POSITION: an existing MCA or business loan being repaid by recurring ACH debits. Typical MCA funders: OnDeck, Kabbage, Fundbox, Forward Financing, Rapid Finance, Credibly, Fora, CAN Capital, Kapitus, Libertas, Bluevine, CFG Merchant Solutions, Cromwell Capital, Everest, Mantis, Fox, Spartan, Vader, "MCA Servicing", "Capital", "Funding", "Advance". Vendor bills, payroll, taxes, insurance, utilities, credit cards, floor plan or manufacturer settlements (auto dealers: Nissan WFS, NMAC, Ally, CAF, Chrysler Capital), internal transfers between the merchant's own accounts, and bank loan interest are NOT MCA positions. A conventional bank term loan payment is a position only if it is a recurring debt payment; mark it with the bank's name.
-- FUNDING DEPOSIT: an incoming lump sum that is borrowed money (MCA funding, loan proceeds, line of credit draw). Manufacturer incentives, floor plan advances that fund inventory, customer payments, card settlements, sales proceeds and owner transfers are revenue or working capital, not MCA funding, unless the description says loan/funding/proceeds/advance/capital.
+- POSITION: an existing MCA or business loan repaid by recurring ACH debits. Typical MCA funders: OnDeck, Kabbage, Fundbox, Forward Financing, Rapid Finance, Credibly, Fora, CAN Capital, Kapitus, Libertas, Bluevine, CFG Merchant Solutions, Cromwell Capital, Everest, Mantis, Fox, Spartan, Vader, names containing "MCA", "Capital", "Funding", "Advance", "Merchant Solutions". NOT positions: vendor and supplier bills, payroll, taxes, insurance, utilities, credit cards, POS and processor fees, floor plan or manufacturer settlements (auto dealers: Nissan WFS, NMAC, Ally, CAF, Chrysler Capital), internal transfers, rent, and anything described as a sale or purchase. A bank term loan payment counts as a position, named after the bank.
+- FUNDING DEPOSIT: borrowed money coming in (MCA funding, loan proceeds, line draw, floor plan advance). Card settlements, customer payments, sales proceeds, incentives, rebates, refunds and owner transfers are not funding.
 
 Tasks
 1. business: merchant name and account last four from the header text; industry in a few words from the payees; the statement period.
-2. recurring_debits: for every candidate id, say whether it is a position and name the lender (short, cleaned up: "CFG Merchant Solutions", not the raw ACH text).
-3. other_positions: debt payments to MCA funders or lenders that appear only once in the period (so the parser could not see a cadence). Give payment, likely frequency and the line you saw.
-4. funding_deposit_ids: the subset of candidate ids that are borrowed money.
-5. risk_score 1 (safest) to 10 (riskiest), recommendation, and notes: two to four plain sentences an underwriter needs: what drives the score, what to verify. Mention data limits (e.g. partial statement, no daily balances) when the facts block says so.
-Do not restate the numbers in notes beyond what is needed. Output only the JSON."#;
+2. recurring_debits: for every candidate id, is_position true or false, and a clean lender name ("CFG Merchant Solutions", not the raw ACH text). Use the id numbers exactly as given.
+3. other_positions: debt payments to MCA funders or lenders that appear only once in SINGLE DEBITS. Copy the payment amount exactly from that line and quote the line in evidence. Leave the list empty if there are none. Never list a vendor, a sale, a purchase, a tax or a transfer.
+4. funding_deposit_ids: the candidate ids that are borrowed money. Use the id numbers exactly as given.
+5. risk_adjustment: the facts include a computed RISK BASELINE with its factors. Return 0 unless something the baseline cannot see justifies moving it, then -2 to +2 with the reason in risk_reason (one sentence).
+6. recommendation: APPROVE if the adjusted score is 1 to 4, REVIEW for 5 to 7, DECLINE for 8 to 10, unless you state a reason to deviate in notes.
+7. notes: two to four short sentences an underwriter needs: industry and nature of the cash flow, what drives the risk, what to verify. Do not write dollar amounts in notes; the dashboard shows them. Mention data limits stated in the facts (partial statement, no daily balances).
+
+Example (abbreviated). Facts: candidate id 0: 2 x 3599.00 weekly | ACH Withdrawal CFG MERCHANT SOL ACHPAYMENT; candidate id 1: 2 x 466.13 biweekly | FEDERATED ACH OFFSET; single debit 18750.00 | ACH Withdrawal MCA Servicing Co DR; single debit 1725.00 | Integrity 1st PR Sale; funding id 7: 57592.12 | PNCBANK-PROCEEDS LOAN FUND; funding id 9: 3000.00 | NISSAN INCENTIVES.
+Answer: recurring_debits [{id 0, true, "CFG Merchant Solutions"}, {id 1, false, "Federated Insurance"}]; other_positions [{"MCA Servicing Co", 18750.00, "monthly", "ACH Withdrawal MCA Servicing Co DR"}] (the Integrity line is a sale, not a position); funding_deposit_ids [7] (incentives are not borrowed money).
+
+Output only the JSON."#;
 
 fn money(v: f64) -> String {
     format!("{:.2}", v)
@@ -232,6 +264,12 @@ fn facts_block(ledger: &ledger::Ledger, pages: &[PageText]) -> String {
     out.push_str(&format!("  average balance: {}   minimum balance: {}\n", s.average_balance.map(money).unwrap_or("not printed".into()), s.minimum_balance.map(money).unwrap_or("not printed".into())));
     out.push_str(&format!("  daily balance table: {} entries, {} negative days\n", ledger.daily_balances.len(), ledger.daily_balances.iter().filter(|b| b.balance < 0.0).count()));
     out.push_str(&format!("  NSF / returned item lines: {}\n", ledger.nsf_items.len()));
+    let prelim = ledger::compute_metrics(ledger, &[], &[]);
+    let base = ledger::risk_baseline(&prelim, ledger.recurring_debits.len(), !ledger.daily_balances.is_empty());
+    out.push_str(&format!("\nRISK BASELINE (computed before your classification, assuming every recurring candidate is a position and no deposit is funding): {}/10\n", base.score));
+    for f in &base.factors {
+        out.push_str(&format!("  {f}\n"));
+    }
     for i in &ledger.nsf_items {
         let t = &ledger.transactions[*i];
         out.push_str(&format!("    {} {} {}\n", t.date, money(t.amount), t.description.chars().take(70).collect::<String>()));
@@ -322,9 +360,10 @@ pub async fn underwrite(
         Message { role: "system", text: UNDERWRITER_SYSTEM_PROMPT, image_data_uri: None },
         Message { role: "user", text: &user, image_data_uri: None },
     ];
+    let _ = temperature; // classification is deterministic; the UI temperature applies to chat
     let opts = ChatOptions {
         model: "underwriter",
-        temperature,
+        temperature: 0.0,
         max_tokens,
         json_schema: Some(classification_schema(&recurring_ids, &funding_ids)),
         enable_thinking: false,
@@ -365,24 +404,36 @@ fn assemble_report(ledger: &ledger::Ledger, cls: &Value, pages: &[PageText]) -> 
             "occurrences": r.count, "dates": r.dates, "source": "recurring debit detected by parser"
         }));
     }
+    let mut rejected: Vec<Value> = Vec::new();
     for item in cls["other_positions"].as_array().cloned().unwrap_or_default() {
         let payment = item["payment"].as_f64().unwrap_or(0.0);
         let freq = item["frequency"].as_str().unwrap_or("monthly").to_string();
-        if payment <= 0.0 {
-            continue;
+        let lender = item["lender"].as_str().unwrap_or("").to_string();
+        let evidence = item["evidence"].as_str().unwrap_or("").to_string();
+        // The payment must be a real debit line and the lender name must come from that line.
+        match matching_debit(ledger, payment, &lender, &evidence) {
+            Some(t) => {
+                confirmed.push((payment, freq.clone()));
+                positions.push(json!({
+                    "lender": lender, "payment": t.amount, "frequency": freq,
+                    "funded": null, "funded_date": null,
+                    "occurrences": 1, "date": t.date, "evidence": t.description, "source": "single payment identified by model"
+                }));
+            }
+            None => rejected.push(json!({ "lender": lender, "payment": payment, "evidence": evidence, "reason": "no matching debit line, or the line is a vendor, transfer, tax or sale" })),
         }
-        confirmed.push((payment, freq.clone()));
-        positions.push(json!({
-            "lender": item["lender"], "payment": payment, "frequency": freq,
-            "funded": null, "funded_date": null,
-            "occurrences": 1, "evidence": item["evidence"], "source": "single payment identified by model"
-        }));
     }
 
+    let base_positions = positions.len();
     let funding_ids: Vec<usize> = cls["funding_deposit_ids"].as_array().cloned().unwrap_or_default().iter().filter_map(|v| v.as_u64()).map(|v| v as usize).filter(|id| ledger.funding_candidates.contains(id)).collect();
     let m = ledger::compute_metrics(ledger, &funding_ids, &confirmed);
 
     let funding_lines: Vec<Value> = funding_ids.iter().filter_map(|id| ledger.transactions.get(*id)).map(|t| json!({ "date": t.date, "amount": t.amount, "description": t.description })).collect();
+
+    let base = ledger::risk_baseline(&m, base_positions, !ledger.daily_balances.is_empty());
+    let adjustment = cls["risk_adjustment"].as_i64().unwrap_or(0).clamp(-2, 2);
+    let score = (base.score as i64 + adjustment).clamp(1, 10);
+    let (notes, dropped) = filter_notes(cls["notes"].as_str().unwrap_or(""), ledger, &m);
 
     let s = &ledger.summary;
     let period = match (&s.period_start, &s.period_end) {
@@ -420,9 +471,15 @@ fn assemble_report(ledger: &ledger::Ledger, cls: &Value, pages: &[PageText]) -> 
             "safe_new_payment": round2(m.safe_new_payment),
             "leverage_ratio": format!("{:.2}x", m.leverage_ratio)
         },
-        "risk": { "score": cls["risk_score"] },
+        "risk": {
+            "score": score,
+            "baseline": base.score,
+            "adjustment": adjustment,
+            "reason": cls["risk_reason"],
+            "factors": base.factors
+        },
         "recommendation": cls["recommendation"],
-        "notes": cls["notes"],
+        "notes": notes,
         "verification": {
             "stated_total_credits": s.total_credits, "parsed_total_credits": round2(ledger.parsed_credit_total),
             "stated_total_debits": s.total_debits, "parsed_total_debits": round2(ledger.parsed_debit_total),
@@ -433,9 +490,99 @@ fn assemble_report(ledger: &ledger::Ledger, cls: &Value, pages: &[PageText]) -> 
             "large_deposits_to_verify": ledger.large_unlabeled_credits.iter().filter_map(|i| ledger.transactions.get(*i)).map(|t| json!({ "date": t.date, "amount": t.amount, "description": t.description })).collect::<Vec<_>>(),
             "nsf_items": ledger.nsf_items.iter().filter_map(|i| ledger.transactions.get(*i)).map(|t| json!({ "date": t.date, "amount": t.amount, "description": t.description })).collect::<Vec<_>>(),
             "sources": m.sources,
+            "rejected_positions": rejected,
+            "notes_dropped": dropped,
             "pages": pages.iter().map(|p| json!({ "file": p.file_name, "page": p.page, "method": p.method, "seconds": p.seconds })).collect::<Vec<_>>()
         }
     })
+}
+
+/// Find the debit line a model-reported single position refers to. Requires an exact
+/// amount match and a shared word with the lender or evidence text, and rejects lines
+/// that are plainly not debt payments.
+fn matching_debit<'a>(ledger: &'a ledger::Ledger, payment: f64, lender: &str, evidence: &str) -> Option<&'a ledger::Txn> {
+    const REJECT: &[&str] = &["sale", "purchase", "payroll", "tax", "transfer", "tr to acct", "vendor", "insurance", "utilit", "amex", "fee", "irs"];
+    let words: Vec<String> = format!("{lender} {evidence}")
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| w.len() >= 4)
+        .map(|w| w.to_ascii_lowercase())
+        .collect();
+    ledger
+        .transactions
+        .iter()
+        .filter(|t| t.kind == ledger::Kind::Debit && (t.amount - payment).abs() < 0.01)
+        .find(|t| {
+            let l = t.description.to_ascii_lowercase();
+            !REJECT.iter().any(|r| l.contains(r)) && words.iter().any(|w| l.contains(w.as_str()))
+        })
+}
+
+/// Drop note sentences that quote a dollar amount the statement does not contain.
+/// Small models invent figures; the dashboard already shows the real ones.
+fn filter_notes(notes: &str, ledger: &ledger::Ledger, m: &ledger::Metrics) -> (String, Vec<String>) {
+    let mut known: Vec<f64> = ledger.transactions.iter().map(|t| t.amount).collect();
+    let s = &ledger.summary;
+    known.extend([s.beginning_balance, s.ending_balance, s.total_credits, s.total_debits, s.average_balance, s.minimum_balance].into_iter().flatten().map(f64::abs));
+    known.extend([m.true_revenue, m.total_credits, m.funding_deposits, m.avg_daily_balance, m.total_debt_service_daily, m.safe_new_payment]);
+    let is_known = |v: f64| known.iter().any(|k| (k - v).abs() < 0.5 || (v >= 1000.0 && (k - v).abs() / v < 0.02));
+
+    let mut kept = Vec::new();
+    let mut dropped = Vec::new();
+    for sentence in notes.split_inclusive(|c| c == '.' || c == '!' || c == '?') {
+        let mut ok = true;
+        for amount in dollar_amounts(sentence) {
+            if !is_known(amount) {
+                ok = false;
+                break;
+            }
+        }
+        if ok {
+            kept.push(sentence.trim());
+        } else {
+            dropped.push(sentence.trim().to_string());
+        }
+    }
+    (kept.join(" "), dropped)
+}
+
+/// "$113,045.99", "$9,625", "$113k", "$2.5M" style amounts in free text.
+fn dollar_amounts(text: &str) -> Vec<f64> {
+    let mut out = Vec::new();
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'$' {
+            let mut j = i + 1;
+            while j < bytes.len() && (bytes[j].is_ascii_digit() || bytes[j] == b',' || bytes[j] == b'.') {
+                j += 1;
+            }
+            let num: String = text[i + 1..j].chars().filter(|c| *c != ',').collect();
+            if let Ok(mut v) = num.trim_end_matches('.').parse::<f64>() {
+                let suffix = text[j..].chars().next().map(|c| c.to_ascii_lowercase());
+                match suffix {
+                    Some('k') => v *= 1_000.0,
+                    Some('m') => v *= 1_000_000.0,
+                    _ => {}
+                }
+                out.push(v);
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dollar_amounts_are_extracted() {
+        assert_eq!(dollar_amounts("costs $9,625.85 and $113k, not $2.5M."), vec![9625.85, 113_000.0, 2_500_000.0]);
+        assert!(dollar_amounts("no money here").is_empty());
+    }
 }
 
 fn round2(v: f64) -> f64 {

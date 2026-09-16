@@ -1,0 +1,41 @@
+{
+  "_comment": "Known-answer checks for the evaluation statements. PDFs are not in the repo; pass their folder to eval.py.",
+  "tets.pdf": {
+    "name_contains_any": ["WEST"],
+    "account": "****1431",
+    "period_contains": "2025-11",
+    "total_credits": 1321117.77,
+    "days_in_period": 30,
+    "negative_days": 0,
+    "nsf_count_range": [2, 3],
+    "positions_required": [
+      {"lender_regex": "cfg", "payment": 3599.0, "frequency": "weekly"},
+      {"lender_regex": "mca servicing", "payment": 18750.0},
+      {"lender_regex": "cromwell", "payment": 6691.96}
+    ],
+    "positions_forbidden_regex": "transfer|tr to acct|federated|payroll|irs|tax|nissan|amex|fedex|utilit",
+    "funding_required_amounts": [57592.12, 30768.0, 32937.0],
+    "funding_forbidden_amounts": [300000.0, 127266.42, 76504.43, 42972.0]
+  },
+  "test3.pdf": {
+    "name_contains_any": ["Balboa", "Guacaya"],
+    "account": "****1177",
+    "total_credits": 113045.99,
+    "parsed_total_debits": 107697.51,
+    "days_in_period": 31,
+    "negative_days": 5,
+    "nsf_count_range": [1, 1],
+    "avg_daily_balance": 3980.14,
+    "positions_forbidden_regex": "integrity|toast|foodservice|pfs|reven|irs|xcel|comcast|intuit|tock|maverick|libation|fortune|bix|sentry",
+    "funding_required_amounts": [],
+    "funding_forbidden_amounts": [9625.85, 1802.14]
+  },
+  "test2.pdf": {
+    "name_contains_any": ["WEST"],
+    "account": "****1431",
+    "total_credits": 1321117.77,
+    "days_in_period": 30,
+    "positions_forbidden_regex": "nissan|nmac|merchant svcs|pnc|chase",
+    "funding_forbidden_amounts": [42972.0, 3000.0, 3250.0, 754.44]
+  }
+}
