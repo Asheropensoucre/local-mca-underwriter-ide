@@ -23,7 +23,7 @@
       </div>
 
       <p v-if="status && !status.platform_supported" class="mt-6 text-red-400">
-        No llama.cpp build is available for this platform. Use Ollama mode in Settings instead.
+        No llama.cpp build is available for this platform ({{ status.hardware.os }} {{ status.hardware.arch }}).
       </p>
 
       <!-- Components -->
@@ -85,9 +85,6 @@
         >
           {{ starting ? 'Starting engine' : 'Start engine' }}
         </button>
-        <button @click="$emit('use-ollama')" class="px-3 py-2 text-gray-500 hover:text-gray-300">
-          Use Ollama instead
-        </button>
       </div>
 
       <div v-if="error" class="mt-4 text-red-400 whitespace-pre-wrap font-mono text-xs">
@@ -109,7 +106,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 
-const emit = defineEmits(['ready', 'use-ollama'])
+const emit = defineEmits(['ready'])
 
 const status = ref(null)
 const chosenUnderwriter = ref('')

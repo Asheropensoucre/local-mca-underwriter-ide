@@ -3,7 +3,7 @@
 //! Layout under the OS app-data directory:
 //! ```text
 //! engine/
-//!   engine_config.json        user choices (mode, backend, reasoning model)
+//!   engine_config.json        user choices (backend, reasoning model)
 //!   runtime/<tag>-<backend>/  extracted llama.cpp release
 //!   models/<model id>/        GGUF files
 //!   models.ini                llama-server preset written on every start
@@ -18,20 +18,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::Manager;
 
-/// Which inference engine the app talks to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum EngineMode {
-    /// llama-server managed by the app (default for new installs).
-    Builtin,
-    /// A user-run Ollama at a configurable URL (legacy path, kept for remote GPU boxes).
-    Ollama,
-}
-
 /// Persisted engine choices.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineConfig {
-    pub mode: EngineMode,
     pub backend: Backend,
     /// Id of the chosen reasoning model, see `registry::underwriter_models`.
     pub underwriter_model: String,
@@ -40,7 +29,6 @@ pub struct EngineConfig {
 impl Default for EngineConfig {
     fn default() -> Self {
         Self {
-            mode: EngineMode::Builtin,
             backend: Backend::Gpu,
             underwriter_model: registry::underwriter_models()[0].id.to_string(),
         }

@@ -4,13 +4,14 @@
 //! The Tauri commands in this file are thin; the work lives in the submodules.
 
 pub mod download;
+pub mod headless;
 pub mod llama;
 pub mod pipeline;
 pub mod registry;
 pub mod runtime;
 
 use registry::{Backend, ModelSpec};
-use runtime::{EngineConfig, EngineMode, EngineProcess};
+use runtime::{EngineConfig, EngineProcess};
 use serde::Serialize;
 use serde_json::json;
 use tauri::{Emitter, Manager};
@@ -203,9 +204,6 @@ async fn ensure_running(app: &tauri::AppHandle) -> Result<runtime::Endpoint, Str
         return Ok(ep);
     }
     let cfg = runtime::load_config(app);
-    if cfg.mode != EngineMode::Builtin {
-        return Err("Built-in engine is not the selected engine".into());
-    }
     runtime::start(app, &cfg).await
 }
 

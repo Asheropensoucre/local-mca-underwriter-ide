@@ -4,7 +4,6 @@
     <EngineSetup
       v-if="showEngineSetup"
       @ready="onEngineReady"
-      @use-ollama="switchEngineMode('ollama')"
     />
 
     <!-- IDLE State - Drop Zone -->
@@ -158,7 +157,7 @@
           <!-- Underwrite Tab -->
           <div v-if="activeTab === 'underwrite'" class="space-y-4 h-full flex flex-col">
             <!-- Built-in engine status -->
-            <div v-if="engineMode === 'builtin'" class="flex items-center justify-between">
+            <div class="flex items-center justify-between">
               <span class="text-xs text-gray-500">Engine:</span>
               <div class="flex items-center gap-2 text-xs">
                 <div class="w-2 h-2 rounded-full" :class="engineReady ? 'bg-green-500' : engineStarting ? 'bg-yellow-500' : 'bg-red-500'"></div>
@@ -166,49 +165,12 @@
                 <button v-if="!engineReady && !engineStarting" @click="showEngineSetup = true" class="text-primary hover:text-blue-400 ml-2">Set up</button>
               </div>
             </div>
-            <p v-if="engineMode === 'builtin'" class="text-xs text-gray-600 -mt-2">
+            <p class="text-xs text-gray-600 -mt-2">
               {{ engineModelsText }}
             </p>
 
-            <!-- Ollama Connection Status -->
-            <div v-if="engineMode === 'ollama'" class="flex items-center justify-between">
-              <span class="text-xs text-gray-500">Ollama Status:</span>
-              <div class="flex items-center gap-2">
-                <div v-if="isCheckingConnection" class="w-2 h-2 rounded-full bg-yellow-500"></div>
-                <div v-else-if="ollamaConnected" class="w-2 h-2 rounded-full bg-green-500"></div>
-                <div v-else class="w-2 h-2 rounded-full bg-red-500"></div>
-                <span class="text-xs" :class="ollamaConnected ? 'text-green-400' : 'text-red-400'">
-                  {{ isCheckingConnection ? 'Checking...' : ollamaConnected ? 'Connected' : 'Disconnected' }}
-                </span>
-                <button
-                  v-if="ollamaConnected"
-                  @click="testConnection"
-                  class="text-xs text-primary hover:text-blue-400 ml-2"
-                >
-                  Test
-                </button>
-              </div>
-            </div>
-
-            <!-- Model Selector -->
+            <!-- Reasoning display options -->
             <div>
-              <label v-if="engineMode === 'ollama'" class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Select Model</label>
-              <select
-                v-if="engineMode === 'ollama'"
-                v-model="selectedModel"
-                class="w-full bg-background border border-border rounded-lg px-4 py-3 text-sm text-gray-300 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-colors"
-              >
-                <option v-for="model in ollamaModels" :key="model.name" :value="model.name">
-                  {{ model.name }}
-                </option>
-                <option v-if="ollamaModels.length === 0" value="llama-3-vision" disabled>
-                  No models found (is Ollama running?)
-                </option>
-              </select>
-              <p v-if="engineMode === 'ollama' && ollamaModels.length === 0" class="text-xs text-gray-600 mt-2">
-                Start Ollama and run: <code class="bg-surface px-2 py-1 rounded">ollama pull Qwen3-VL</code>
-              </p>
-              
               <!-- Show AI Thoughts Toggle -->
               <div class="flex items-center justify-between mt-3 p-2 bg-slate-800/30 border border-slate-700 rounded-lg">
                 <div class="flex items-center gap-2">
@@ -229,25 +191,6 @@
                 Thinking model detected
               </p>
 
-              <!-- Test Result Display -->
-              <div v-if="testThoughts" class="mt-3 p-3 bg-purple-900/30 border border-purple-700 rounded-lg">
-                <div class="flex items-center gap-2 mb-2">
-                  <svg class="w-4 h-4 text-purple-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                  </svg>
-                  <span class="text-xs font-medium text-purple-300">Test - AI Thinking</span>
-                </div>
-                <p class="text-xs text-gray-400 font-mono whitespace-pre-wrap">{{ testThoughts }}</p>
-              </div>
-              <div v-if="testResult" class="mt-3 p-3 bg-slate-800/50 border border-slate-700 rounded-lg">
-                <div class="flex items-center gap-2 mb-2">
-                  <svg class="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                  <span class="text-xs font-medium text-gray-300">Test - Response</span>
-                </div>
-                <p class="text-xs text-gray-400 whitespace-pre-wrap">{{ testResult }}</p>
-              </div>
             </div>
 
             <!-- AI Thoughts/Chat Display (for Test + Underwriting) -->
@@ -580,7 +523,7 @@
                     </svg>
                   </button>
                 </div>
-                <p v-if="!engineAvailable" class="text-xs text-red-400 mt-2">{{ engineMode === 'builtin' ? 'Start the local engine to send questions' : 'Connect to Ollama to send questions' }}</p>
+                <p v-if="!engineAvailable" class="text-xs text-red-400 mt-2">Start the local engine to send questions</p>
               </div>
             </div>
 
@@ -658,22 +601,12 @@
 
           <!-- Settings Tab -->
           <div v-if="activeTab === 'settings'" class="space-y-5">
-            <!-- Engine choice -->
+            <!-- Engine -->
             <div>
               <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Engine</label>
-              <div class="flex gap-4 text-sm">
-                <label class="flex items-center gap-2 cursor-pointer">
-                  <input type="radio" value="builtin" :checked="engineMode === 'builtin'" @change="switchEngineMode('builtin')" class="accent-primary" />
-                  <span>Built-in (llama.cpp, OCR + reasoning models)</span>
-                </label>
-                <label class="flex items-center gap-2 cursor-pointer">
-                  <input type="radio" value="ollama" :checked="engineMode === 'ollama'" @change="switchEngineMode('ollama')" class="accent-primary" />
-                  <span>Ollama</span>
-                </label>
-              </div>
-              <div v-if="engineMode === 'builtin'" class="mt-3 font-mono text-xs text-gray-400 space-y-1">
+              <div class="font-mono text-xs text-gray-400 space-y-1">
                 <p>{{ engineStatusText }}. {{ engineModelsText }}</p>
-                <p v-if="engineStatus">Runtime: llama.cpp {{ engineStatus.config.backend }} build, folder {{ engineStatus.engine_dir }}</p>
+                <p v-if="engineStatus">llama.cpp {{ engineStatus.config.backend }} build, folder {{ engineStatus.engine_dir }}</p>
                 <pre v-if="engineDevices" class="whitespace-pre-wrap text-gray-500">{{ engineDevices }}</pre>
                 <div class="flex gap-3 pt-1">
                   <button @click="restartEngine" class="text-primary hover:text-blue-400">Restart engine</button>
@@ -681,26 +614,6 @@
                   <button @click="showEngineSetup = true" class="text-primary hover:text-blue-400">Models and downloads</button>
                 </div>
               </div>
-            </div>
-
-            <!-- Ollama URL Configuration -->
-            <div v-if="engineMode === 'ollama'">
-              <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Ollama API URL</label>
-              <div class="flex gap-2">
-                <input
-                  v-model="ollamaUrl"
-                  type="text"
-                  placeholder="http://localhost:11434"
-                  class="flex-1 bg-background border border-border rounded-lg px-4 py-2 text-sm text-gray-300 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-                />
-                <button
-                  @click="saveOllamaUrl"
-                  class="px-4 py-2 bg-primary hover:bg-blue-600 rounded-lg text-sm text-white font-medium transition-colors"
-                >
-                  💾 Save
-                </button>
-              </div>
-              <p class="text-xs text-gray-600 mt-1">Point to a remote Ollama GPU server on your network</p>
             </div>
 
             <div>
@@ -726,19 +639,6 @@
                 step="512"
                 class="w-full accent-primary"
               />
-            </div>
-
-            <div>
-              <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Context Window: {{ modelConfig.contextWindow }}</label>
-              <select
-                v-model="modelConfig.contextWindow"
-                class="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm"
-              >
-                <option :value="4096">4K tokens</option>
-                <option :value="8192">8K tokens</option>
-                <option :value="16384">16K tokens</option>
-                <option :value="32768">32K tokens</option>
-              </select>
             </div>
           </div>
 
@@ -823,7 +723,6 @@ const pdfBlobUrl = ref(null) // Track blob URL for cleanup
 
 // Batch processing state
 const isBatchProcessing = ref(false)
-const batchResults = ref([]) // Array of raw results from each PDF
 const combinedResult = ref(null) // Final aggregated result
 
 // Analysis data
@@ -855,7 +754,6 @@ const analysisUnlisten = ref(null) // Function to unsubscribe from events
 const pageResults = ref([]) // Accumulated results from each page event
 
 // Built-in engine state (llama.cpp managed by the Rust side)
-const engineMode = ref('builtin') // 'builtin' | 'ollama'
 const engineStatus = ref(null) // last EngineStatus from Rust
 const engineReady = ref(false) // llama-server is up
 const engineStarting = ref(false)
@@ -875,16 +773,8 @@ const engineModelsText = computed(() => {
   const uw = engineStatus.value.underwriters.find(m => m.id === engineStatus.value.config.underwriter_model)
   return `OCR: ${engineStatus.value.ocr.display_name}. Reasoning: ${uw ? uw.display_name : '?'}.`
 })
-// Ollama state
-const ollamaConnected = ref(false)
-// True when the selected engine can take a job or a chat message.
-const engineAvailable = computed(() => engineMode.value === 'builtin' ? engineReady.value : ollamaConnected.value)
-
-const ollamaModels = ref([])
-const isCheckingConnection = ref(true)
-const selectedModel = ref('llama-3-vision')
-const testResult = ref('') // Test model response content
-const testThoughts = ref('') // Test model thoughts (for thinking models)
+// True when the engine can take a job or a chat message.
+const engineAvailable = computed(() => engineReady.value)
 
 // Drag-drop state
 const isDragging = ref(false)
@@ -893,12 +783,8 @@ const dropError = ref('')
 // Model configuration
 const modelConfig = ref({
   temperature: 0.3,
-  maxTokens: 4096,
-  contextWindow: 8192
+  maxTokens: 4096
 })
-
-// Ollama configuration
-const ollamaUrl = ref('http://localhost:11434')
 
 // Template management state
 const savedTemplates = ref([]) // Array of { name, instructions }
@@ -908,84 +794,10 @@ const newTemplateName = ref('')
 // Analysis history state
 const analysisHistory = ref([]) // Array of HistoryEntry
 
-// ═══════════════════════════════════════════════════════════════════════════
-// CURSOR-STYLE PROMPT ARCHITECTURE
-// System prompt is hardcoded to ensure consistent JSON output
-// User can only add custom instructions on top of the system prompt
-// ═══════════════════════════════════════════════════════════════════════════
-
-const SYSTEM_PROMPT = `You are a strict Data Extraction AI for Merchant Cash Advance (MCA) Underwriting.
-
-THINKING DISCIPLINE (CRITICAL):
-- Make ONE pass through the image. Extract each field once. Commit to your first reasonable reading.
-- Do NOT loop back, re-examine, or second-guess a value you already extracted.
-- If a value is ambiguous, pick the most reasonable interpretation and move on.
-- Never use "Wait" or "Actually" to revisit a field you already decided on.
-
-DEFINITIONS:
-- MERCHANT: The business that owns the bank account. NEVER the bank itself (Chase, BoA, Wells Fargo, Legends Bank, etc.).
-- LENDER: A third-party MCA company making recurring daily/weekly ACH debits (OnDeck, Kabbage, Fundbox, etc.). If no lender name is visible but identical ACH debits recur daily or weekly, use lender: "Unknown MCA".
-- TRUE REVENUE: Total deposits MINUS any incoming MCA/loan funding deposits.
-
-EXTRACTION RULES:
-1. Extract only what is visible. Do not invent or guess any value.
-2. Text fields not found → null. Number fields not found → 0. Positions not found → [].
-3. Account number: last 4 digits formatted as ****XXXX. If only 4 digits are shown, format as ****XXXX.
-4. Negative days: count calendar days where ending daily balance was below $0.00.
-5. NSF count: count NSF fees, returned item fees, or overdraft fees.
-6. Avg daily balance: sum of daily ending balances divided by number of days in period.
-7. True revenue: total deposits minus any MCA/loan funding deposits.
-8. Positions: include only recurring identical daily or weekly ACH debits. Empty array if none.
-9. Total debt service: sum of all position daily payments (divide weekly payments by 7).
-10. Safe new payment: (true_revenue / days_in_period) * 0.10 - total_debt_service. Use 0 if negative.
-11. Leverage ratio: total_debt_service / (true_revenue / days_in_period), formatted as "Xx". Use "0x" if no debt.
-12. Risk score: integer 1-10 (10 = riskiest). Consider: negative days, NSF count, leverage, revenue stability.
-13. Recommendation: exactly one of "APPROVE", "REVIEW", or "DECLINE".
-14. Blank/unreadable image: all text fields null, all numbers 0, positions [].
-
-OUTPUT: Return ONLY valid JSON. No markdown, no explanation, no extra text.
-
-{
-  "business": {
-    "name": "ABC Restaurant LLC",
-    "account": "****1234",
-    "period": "2024-01-01 to 2024-01-31"
-  },
-  "positions": [
-    {
-      "lender": "OnDeck",
-      "payment": 150.00,
-      "frequency": "daily",
-      "funded": 25000.00,
-      "funded_date": "2023-11-15"
-    }
-  ],
-  "bank_metrics": {
-    "true_revenue": 45000.00,
-    "negative_days": 3,
-    "avg_daily_balance": 12500.00,
-    "nsf_count": 2
-  },
-  "debt_leverage": {
-    "total_debt_service": 300.00,
-    "safe_new_payment": 150.00,
-    "leverage_ratio": "2.1x"
-  },
-  "risk": {
-    "score": 6
-  },
-  "recommendation": "REVIEW",
-  "notes": "One active MCA position detected. Moderate leverage."
-}
-`
-
+// The extraction/underwriting prompt and JSON schema live in Rust (src-tauri/src/engine/pipeline.rs).
+// The user only adds focus areas on top of it.
 // User-customizable instructions (editable in UI)
 const userCustomInstructions = ref('Add custom underwriting focus areas here...')
-
-// Build the full prompt by merging system prompt + user instructions
-const buildFullPrompt = () => {
-  return SYSTEM_PROMPT + '\n\nUSER CUSTOM INSTRUCTIONS:\n' + userCustomInstructions.value
-}
 
 // File name computed from current file in queue
 const historyFileName = ref('') // Override for history entry file name
@@ -1183,7 +995,7 @@ const clearFileQueue = () => {
   pdfPageCount.value = 0
 }
 
-// Check Ollama connection on mount and set up event listeners
+// Boot the engine on mount and set up event listeners
 onMounted(async () => {
   // Load user preferences from localStorage
   const savedShowThoughts = localStorage.getItem('showAiThoughts')
@@ -1191,17 +1003,7 @@ onMounted(async () => {
     showAiThoughts.value = savedShowThoughts === 'true'
   }
 
-  // Load Ollama URL from Rust config
-  try {
-    ollamaUrl.value = await invoke('get_ollama_url')
-    console.log('[Config] Loaded Ollama URL:', ollamaUrl.value)
-  } catch (error) {
-    console.error('[Config] Failed to load Ollama URL:', error)
-    ollamaUrl.value = 'http://localhost:11434' // Fallback to default
-  }
-
   await bootEngine()
-  if (engineMode.value === 'ollama') await checkOllamaConnection()
   await loadTemplates() // Load saved prompt templates
   await loadHistory() // Load analysis history
   // Set up event listeners (non-blocking, don't await)
@@ -1211,15 +1013,6 @@ onMounted(async () => {
 // Persist user preferences to localStorage
 watch(showAiThoughts, (newValue) => {
   localStorage.setItem('showAiThoughts', newValue.toString())
-})
-
-// Auto-enable thoughts toggle for thinking models
-watch(selectedModel, (newModel) => {
-  const thinkingModels = ['qwen3', 'deepseek', 'o1', 'o3', 'r1']
-  if (thinkingModels.some(m => newModel.toLowerCase().includes(m))) {
-    showAiThoughts.value = true
-    console.log('[Model] Thinking model detected, auto-enabled thoughts toggle')
-  }
 })
 
 // Clean up event listeners and blob URLs on unmount
@@ -1322,7 +1115,6 @@ const setupAnalysisEventListeners = () => {
 
 const refreshEngineStatus = async () => {
   engineStatus.value = await invoke('engine_status')
-  engineMode.value = engineStatus.value.config.mode
   engineReady.value = engineStatus.value.running
 }
 
@@ -1334,7 +1126,6 @@ const bootEngine = async () => {
     console.error('[Engine] status failed:', e)
     return
   }
-  if (engineMode.value !== 'builtin') return
   if (!engineStatus.value.ready) {
     showEngineSetup.value = true
     return
@@ -1376,59 +1167,6 @@ const onEngineReady = async () => {
   showEngineSetup.value = false
   await refreshEngineStatus()
   engineReady.value = true
-}
-
-const switchEngineMode = async (mode) => {
-  const config = { ...(engineStatus.value?.config || { backend: 'gpu', underwriter_model: 'qwen3.5-4b-q4' }), mode }
-  await invoke('engine_save_config', { config })
-  engineMode.value = mode
-  showEngineSetup.value = false
-  if (mode === 'ollama') {
-    await checkOllamaConnection()
-  } else {
-    await bootEngine()
-  }
-}
-
-const checkOllamaConnection = async () => {
-  isCheckingConnection.value = true
-  try {
-    ollamaConnected.value = await invoke('check_ollama_connection', { ollamaUrl: ollamaUrl.value })
-    if (ollamaConnected.value) {
-      ollamaModels.value = await invoke('get_ollama_models', { ollamaUrl: ollamaUrl.value })
-      if (ollamaModels.value.length > 0) {
-        const visionModels = ollamaModels.value.filter(
-          m => m.name.toLowerCase().includes('vision') ||
-          m.name.toLowerCase().includes('llava') ||
-          m.name.toLowerCase().includes('qwen')
-        )
-        if (visionModels.length > 0) {
-          selectedModel.value = visionModels[0].name
-        }
-      }
-    }
-  } catch (error) {
-    console.error('Ollama connection failed:', error)
-    ollamaConnected.value = false
-  }
-  isCheckingConnection.value = false
-}
-
-// Save Ollama URL to Rust config
-const saveOllamaUrl = async () => {
-  console.log('[Config] Save button clicked, URL:', ollamaUrl.value)
-  try {
-    console.log('[Config] Calling save_ollama_url with baseUrl:', ollamaUrl.value)
-    await invoke('save_ollama_url', { baseUrl: ollamaUrl.value })
-    console.log('[Config] ✓ Saved Ollama URL:', ollamaUrl.value)
-    alert('Ollama URL saved successfully!\n\nURL: ' + ollamaUrl.value)
-    // Re-check connection with new URL
-    console.log('[Config] Re-checking connection...')
-    await checkOllamaConnection()
-  } catch (error) {
-    console.error('[Config] ✗ Failed to save Ollama URL:', error)
-    alert('Failed to save Ollama URL:\n' + error)
-  }
 }
 
 const openFileDialog = async () => {
@@ -1546,19 +1284,13 @@ const handleDrop = async (event) => {
 }
 
 const handleUnderwrite = async () => {
-  if (engineMode.value === 'builtin' && !engineReady.value) {
+  if (!engineReady.value) {
     errorMessage.value = engineError.value
       ? 'The local engine failed to start: ' + engineError.value
       : 'The local engine is not running. Open Settings to set it up.'
     appState.value = 'ERROR'
     return
   }
-  if (engineMode.value === 'ollama' && !ollamaConnected.value) {
-    errorMessage.value = 'Ollama is not running. Please start Ollama and ensure vision models are installed.'
-    appState.value = 'ERROR'
-    return
-  }
-
   if (fileQueue.value.length === 0) {
     errorMessage.value = 'No files selected. Please upload at least one PDF.'
     appState.value = 'ERROR'
@@ -1568,7 +1300,6 @@ const handleUnderwrite = async () => {
   appState.value = 'ANALYZING'
   loadingProgress.value = 0
   aiThoughts.value = '' // Clear thoughts for new analysis
-  batchResults.value = [] // Reset batch results
   pageResults.value = [] // Reset page results for events
 
   console.log('[Batch] Starting batch analysis of', fileQueue.value.length, 'files...')
@@ -1613,89 +1344,21 @@ const handleUnderwrite = async () => {
   })
 
   try {
-    if (engineMode.value === 'builtin') {
-      // One job for every file in the queue: pages are read, then one report is written.
-      totalPages.value = 0
-      loadingMessage.value = 'Starting the local engine'
-      await invoke('engine_analyze', {
-        pdfPaths: fileQueue.value.map(f => f.path),
-        customInstructions: userCustomInstructions.value,
-        temperature: modelConfig.value.temperature,
-        maxTokens: modelConfig.value.maxTokens
-      })
-      completeUnlisten()
-      return
-    }
-
-    // Ollama path: process each file in the queue sequentially
-    for (let i = 0; i < fileQueue.value.length; i++) {
-      currentFileIndex.value = i
-      const file = fileQueue.value[i]
-
-      loadingMessage.value = `Analyzing file ${i + 1} of ${fileQueue.value.length}: ${file.name}...`
-      totalPages.value = fileQueue.value.length
-      currentPage.value = i
-
-      console.log('[Batch] Processing file', i + 1, '/', fileQueue.value.length, '-', file.name)
-
-      try {
-        // Analyze this file - events will update UI in real-time
-        const result = await invoke('send_pdf_to_ollama', {
-          ollamaUrl: ollamaUrl.value,
-          model: selectedModel.value,
-          prompt: buildFullPrompt(),
-          pdfPath: file.path,
-          temperature: modelConfig.value.temperature,
-          maxTokens: modelConfig.value.maxTokens
-        })
-
-        batchResults.value.push(result)
-        console.log('[Batch] File', i + 1, 'complete -', result.length, 'chars')
-      } catch (fileError) {
-        console.error(`[Batch] File ${i + 1} error:`, fileError)
-        throw new Error(`Failed to analyze file ${i + 1} (${file.name}): ${fileError}`)
-      }
-    }
-
-    // All files processed - send_pdf_to_ollama already handles aggregation internally
-    // and emits analysis-complete with the final result
-    loadingMessage.value = `Combining ${fileQueue.value.length} files into master report...`
-    currentPage.value = fileQueue.value.length
-
-    console.log('[Batch] All files analyzed, waiting for analysis-complete event...')
-
-    // Clean up the complete listener (it will be triggered by send_pdf_to_ollama)
+    // One job for every file in the queue: pages are read, then one report is written.
+    totalPages.value = 0
+    loadingMessage.value = 'Starting the local engine'
+    await invoke('engine_analyze', {
+      pdfPaths: fileQueue.value.map(f => f.path),
+      customInstructions: userCustomInstructions.value,
+      temperature: modelConfig.value.temperature,
+      maxTokens: modelConfig.value.maxTokens
+    })
     completeUnlisten()
-
   } catch (error) {
     console.error('Underwrite error:', error)
 
     appState.value = 'ERROR'
     errorMessage.value = error
-  }
-}
-
-const testConnection = async () => {
-  testResult.value = ''
-  testThoughts.value = ''
-
-  try {
-    const result = await invoke('test_ollama_model', { ollamaUrl: ollamaUrl.value, model: selectedModel.value })
-    console.log('Test successful:', result)
-
-    // Result is { thoughts: string | null, content: string }
-    testThoughts.value = result.thoughts || ''
-    testResult.value = result.content || ''
-
-    // Auto-enable thoughts toggle if we received thoughts
-    if (result.thoughts) {
-      showAiThoughts.value = true
-      isThinkingModelDetected.value = true
-    }
-  } catch (error) {
-    console.error('Test failed:', error)
-    errorMessage.value = `Connection test failed: ${error}`
-    appState.value = 'ERROR'
   }
 }
 
@@ -2059,19 +1722,10 @@ User follow-up question: ${question}
 Provide a concise, helpful answer based on the bank statement analysis above.`
 
     // Use text-only chat command - NO PDF re-processing!
-    const response = engineMode.value === 'builtin'
-      ? await invoke('engine_chat', {
-          prompt: contextPrompt,
-          temperature: modelConfig.value.temperature,
-          maxTokens: modelConfig.value.maxTokens
-        })
-      : await invoke('chat_with_ollama', {
-      ollamaUrl: ollamaUrl.value,
-      model: selectedModel.value,
+    const response = await invoke('engine_chat', {
       prompt: contextPrompt,
       temperature: modelConfig.value.temperature,
       maxTokens: modelConfig.value.maxTokens
-      // NO pdfPath - pure text-to-text!
     })
 
     chatMessages.value.push({ role: 'assistant', content: response })
