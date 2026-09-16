@@ -71,8 +71,11 @@ pub struct ModelSpec {
     pub files: Vec<Asset>,
     /// Rough RAM the machine should have for this model to be a sensible default.
     pub min_ram_gb: u32,
-    /// Context size handed to llama-server for this model.
+    /// Context size handed to llama-server for this model (total across slots).
     pub ctx_size: u32,
+    /// Concurrent request slots. Batched decoding on a bandwidth-bound GPU costs little
+    /// per extra slot, so OCR pages run several at a time.
+    pub parallel: u32,
 }
 
 impl ModelSpec {
@@ -117,7 +120,9 @@ pub fn ocr_model() -> ModelSpec {
             },
         ],
         min_ram_gb: 8,
-        ctx_size: 8192,
+        // 4 slots x 6144 tokens: a page image is about 2,700 tokens plus up to 1,500 of text.
+        ctx_size: 24576,
+        parallel: 4,
     }
 }
 
@@ -139,6 +144,7 @@ pub fn underwriter_models() -> Vec<ModelSpec> {
             }],
             min_ram_gb: 8,
             ctx_size: 32768,
+            parallel: 1,
         },
         ModelSpec {
             role: "underwriter",
@@ -154,6 +160,7 @@ pub fn underwriter_models() -> Vec<ModelSpec> {
             }],
             min_ram_gb: 16,
             ctx_size: 16384,
+            parallel: 1,
         },
     ]
 }

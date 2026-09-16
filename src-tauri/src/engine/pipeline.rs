@@ -21,9 +21,11 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 use tauri::Emitter;
 
-/// A page image at least this many pixels on both sides marks a scanned page.
-/// Logos and signature blocks are smaller; a letter page scanned at 100 DPI is 850 x 1100.
-const SCAN_IMAGE_MIN_PX: u32 = 800;
+/// Text layers with fewer words than this are "thin": a scan with a bad OCR layer, or a
+/// nearly empty page. Combined with the presence of an image, the page goes to OCR.
+const MIN_TEXT_WORDS: usize = 40;
+/// Images smaller than this on either side are logos and signature marks, not scans.
+const SCAN_IMAGE_MIN_PX: u32 = 300;
 /// Render resolution for OCR. 100 DPI misread digits in testing; 150 did not.
 const OCR_DPI: u32 = 150;
 
@@ -69,9 +71,8 @@ pub fn text_layer(pdf: &str, page: usize) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
-/// True when the page carries a large raster image, i.e. it is a scan (its text
-/// layer, if any, came from someone else's OCR and is not trusted).
-fn has_scan_image(pdf: &str, page: usize) -> bool {
+/// True when the page carries a raster image larger than a logo.
+fn has_page_image(pdf: &str, page: usize) -> bool {
     let p = page.to_string();
     let Ok(out) = run("pdfimages", &["-list", "-f", &p, "-l", &p, pdf]) else { return false };
     // Columns: page num type width height color comp bpc enc interp object ID x-ppi y-ppi size ratio
@@ -79,7 +80,7 @@ fn has_scan_image(pdf: &str, page: usize) -> bool {
         let cols: Vec<&str> = l.split_whitespace().collect();
         let w: u32 = cols.get(3).and_then(|v| v.parse().ok()).unwrap_or(0);
         let h: u32 = cols.get(4).and_then(|v| v.parse().ok()).unwrap_or(0);
-        w >= SCAN_IMAGE_MIN_PX && h >= SCAN_IMAGE_MIN_PX || (w as u64 * h as u64) >= 1_000_000
+        w >= SCAN_IMAGE_MIN_PX && h >= SCAN_IMAGE_MIN_PX
     })
 }
 
@@ -131,7 +132,11 @@ async fn ocr_page(ep: &Endpoint, pdf: &str, page: usize) -> Result<String, Strin
     Ok(r.content)
 }
 
-/// Stage 1 for one file. Emits `analysis-progress` page events on `app`.
+/// How many pages the OCR model reads at once. Matches the OCR preset's slot count.
+const OCR_CONCURRENCY: usize = 4;
+
+/// Stage 1 for one file. Decides per page whether the text layer is enough, then reads
+/// the OCR pages concurrently. Emits `analysis-progress` page events on `app`.
 pub async fn extract_pages(
     app: &tauri::AppHandle,
     ep: &Endpoint,
@@ -141,40 +146,80 @@ pub async fn extract_pages(
 ) -> Result<Vec<PageText>, String> {
     let file_name = Path::new(pdf).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     let n = page_count(pdf)?;
-    let mut pages = Vec::with_capacity(n);
+    let force_ocr = std::env::var("MCA_FORCE_OCR").is_ok(); // testing aid
+    let mut pages: Vec<PageText> = Vec::with_capacity(n);
+    let mut ocr_queue: Vec<usize> = Vec::new();
+
     for page in 1..=n {
         let current = page_offset + page;
-        let _ = app.emit("analysis-progress", json!({
-            "type": "page_start", "current_page": current, "total_pages": total_pages,
-            "message": format!("Reading {file_name} page {page} of {n}")
-        }));
         let started = Instant::now();
         let layer = text_layer(pdf, page)?;
         let words = layer.split_whitespace().count();
-        // Scanned pages (a full-page raster image) are read by the OCR model, since any text
-        // layer they carry came from someone else's OCR. Digital pages use their text layer,
-        // however short: a cover sheet with twenty words is still exact. Pages with no text
-        // at all and no ink are blank; pages with no text but ink are OCR'd.
-        let scanned = has_scan_image(pdf, page);
-        let (method, text) = if scanned || words == 0 {
-            if page_ink_ratio(pdf, page).map(|r| r < BLANK_INK_RATIO).unwrap_or(false) {
-                ("blank", layer)
-            } else {
-                ("ocr", ocr_page(ep, pdf, page).await?)
-            }
+        // Pages with a usable text layer use it, even court-filing scans whose layer came
+        // from someone else's OCR: it has parsed correctly so far and costs nothing. The OCR
+        // model reads pages whose layer is thin and that carry an image (a scan), or that
+        // have no text at all. Near-blank pages are skipped.
+        let thin = words < MIN_TEXT_WORDS;
+        let method = if force_ocr || words == 0 || (thin && has_page_image(pdf, page)) {
+            if !force_ocr && page_ink_ratio(pdf, page).map(|r| r < BLANK_INK_RATIO).unwrap_or(false) { "blank" } else { "ocr" }
         } else {
-            ("text", layer)
+            "text"
         };
-        let seconds = started.elapsed().as_secs_f32();
-        println!("[Engine] {file_name} p{page}: {method} in {seconds:.1}s, {} chars", text.len());
-        let _ = app.emit("analysis-progress", json!({
-            "type": "page_complete", "current_page": current, "total_pages": total_pages,
-            "method": method, "seconds": seconds, "page_result": "",
-            "message": format!("{file_name} page {page}: {} in {seconds:.1}s", match method { "ocr" => "OCR", "blank" => "blank page skipped", _ => "text layer" })
-        }));
-        pages.push(PageText { file_name: file_name.clone(), page, method, seconds, text });
+        if method == "ocr" {
+            ocr_queue.push(page);
+            let _ = app.emit("analysis-progress", json!({
+                "type": "page_start", "current_page": current, "total_pages": total_pages,
+                "message": format!("{file_name} page {page} of {n}: scanned, queued for OCR")
+            }));
+        } else {
+            let seconds = started.elapsed().as_secs_f32();
+            emit_page_done(app, &file_name, page, n, current, total_pages, method, seconds);
+        }
+        pages.push(PageText { file_name: file_name.clone(), page, method, seconds: started.elapsed().as_secs_f32(), text: layer });
+    }
+
+    if !ocr_queue.is_empty() {
+        println!("[Engine] {file_name}: {} page(s) to OCR, {OCR_CONCURRENCY} at a time", ocr_queue.len());
+        let ocr_start = Instant::now();
+        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(OCR_CONCURRENCY));
+        let mut tasks = Vec::new();
+        for &page in &ocr_queue {
+            let sem = sem.clone();
+            let ep = ep.clone();
+            let pdf = pdf.to_string();
+            tasks.push(tokio::spawn(async move {
+                let _permit = sem.acquire().await.map_err(|e| e.to_string())?;
+                let started = Instant::now();
+                let text = ocr_page(&ep, &pdf, page).await?;
+                Ok::<(usize, String, f32), String>((page, text, started.elapsed().as_secs_f32()))
+            }));
+        }
+        for task in tasks {
+            let (page, text, seconds) = task.await.map_err(|e| format!("OCR task failed: {e}"))??;
+            let entry = &mut pages[page - 1];
+            entry.text = text;
+            entry.seconds = seconds;
+            emit_page_done(app, &file_name, page, n, page_offset + page, total_pages, "ocr", seconds);
+        }
+        println!("[Engine] {file_name}: OCR of {} page(s) took {:.1}s wall", ocr_queue.len(), ocr_start.elapsed().as_secs_f32());
+    }
+    // Testing aid: MCA_DUMP_PAGES=<dir> writes every page text to disk for parser work.
+    if let Ok(dir) = std::env::var("MCA_DUMP_PAGES") {
+        let _ = std::fs::create_dir_all(&dir);
+        for p in &pages {
+            let _ = std::fs::write(format!("{dir}/{}-p{:02}-{}.txt", p.file_name, p.page, p.method), &p.text);
+        }
     }
     Ok(pages)
+}
+
+fn emit_page_done(app: &tauri::AppHandle, file_name: &str, page: usize, n: usize, current: usize, total_pages: usize, method: &str, seconds: f32) {
+    println!("[Engine] {file_name} p{page}/{n}: {method} in {seconds:.1}s");
+    let _ = app.emit("analysis-progress", json!({
+        "type": "page_complete", "current_page": current, "total_pages": total_pages,
+        "method": method, "seconds": seconds, "page_result": "",
+        "message": format!("{file_name} page {page}: {} in {seconds:.1}s", match method { "ocr" => "OCR", "blank" => "blank page skipped", _ => "text layer" })
+    }));
 }
 
 /// What the model is asked for. Only classification and judgment: which recurring
@@ -321,6 +366,26 @@ fn facts_block(ledger: &ledger::Ledger, pages: &[PageText]) -> String {
     out
 }
 
+/// Lines in the first pages that look like a business name: an entity suffix or "dba",
+/// and not the bank's own name. Used to override a model answer that names the bank.
+fn merchant_name_candidates(pages: &[PageText]) -> Vec<String> {
+    const SUFFIX: &[&str] = &[" llc", " inc", " inc.", " corp", " corporation", " ltd", " co.", " company", "dba ", " d/b/a ", " l.l.c", " lp", " pllc"];
+    let mut out: Vec<String> = Vec::new();
+    for p in pages.iter().filter(|p| p.page <= 3) {
+        for line in p.text.lines().take(60) {
+            let t = line.trim();
+            let l = format!(" {}", t.to_ascii_lowercase());
+            if t.len() < 4 || t.len() > 70 || l.contains("bank") || l.contains("member fdic") || l.contains("filed:") {
+                continue;
+            }
+            if SUFFIX.iter().any(|s| l.contains(s)) && !out.iter().any(|o| o == t) {
+                out.push(t.to_string());
+            }
+        }
+    }
+    out
+}
+
 /// Header text (top of the first three pages of each file, since court exhibits and
 /// cover sheets often precede the statement) so the model can read the merchant name.
 fn header_text(pages: &[PageText]) -> String {
@@ -352,6 +417,10 @@ pub async fn underwrite(
     let mut user = String::new();
     if !custom.is_empty() && !custom.starts_with("Add custom underwriting focus") {
         user.push_str(&format!("ADDITIONAL INSTRUCTIONS FROM THE UNDERWRITER:\n{custom}\n\n"));
+    }
+    let candidates = merchant_name_candidates(pages);
+    if !candidates.is_empty() {
+        user.push_str(&format!("MERCHANT NAME CANDIDATES (lines with an entity suffix, parsed from the header; the bank is never the merchant):\n  {}\n\n", candidates.join("\n  ")));
     }
     user.push_str(&format!("STATEMENT HEADER TEXT:\n{}\n\nFACTS FROM THE PARSER:\n{facts}", header_text(pages)));
     println!("[Engine] facts block {} chars, {} recurring candidates, {} funding candidates", facts.len(), recurring_ids.len(), funding_ids.len());
@@ -434,6 +503,12 @@ fn assemble_report(ledger: &ledger::Ledger, cls: &Value, pages: &[PageText]) -> 
     let adjustment = cls["risk_adjustment"].as_i64().unwrap_or(0).clamp(-2, 2);
     let score = (base.score as i64 + adjustment).clamp(1, 10);
     let (notes, dropped) = filter_notes(cls["notes"].as_str().unwrap_or(""), ledger, &m);
+    // The recommendation follows the adjusted score; the model's own pick is kept for review.
+    let recommendation = match score {
+        1..=4 => "APPROVE",
+        5..=7 => "REVIEW",
+        _ => "DECLINE",
+    };
 
     let s = &ledger.summary;
     let period = match (&s.period_start, &s.period_end) {
@@ -449,9 +524,20 @@ fn assemble_report(ledger: &ledger::Ledger, cls: &Value, pages: &[PageText]) -> 
         .or_else(|| cls["business"]["account_last4"].as_str().filter(|a| a.len() == 4 && a.chars().all(|c| c.is_ascii_digit())).map(String::from))
         .map(|a| format!("****{a}"));
 
+    // A model that names the bank as the merchant is overridden by the parsed candidates.
+    let model_name = cls["business"]["name"].as_str().unwrap_or("").trim().to_string();
+    let candidates = merchant_name_candidates(pages);
+    let name: Value = if (model_name.is_empty() || model_name.to_ascii_lowercase().contains("bank") || model_name.to_ascii_lowercase().contains("not provided")) && !candidates.is_empty() {
+        json!(candidates.join(" ").chars().take(80).collect::<String>())
+    } else if model_name.is_empty() {
+        Value::Null
+    } else {
+        json!(model_name)
+    };
+
     json!({
         "business": {
-            "name": cls["business"]["name"],
+            "name": name,
             "account": account,
             "period": period,
             "industry": cls["business"]["industry"]
@@ -478,7 +564,7 @@ fn assemble_report(ledger: &ledger::Ledger, cls: &Value, pages: &[PageText]) -> 
             "reason": cls["risk_reason"],
             "factors": base.factors
         },
-        "recommendation": cls["recommendation"],
+        "recommendation": recommendation,
         "notes": notes,
         "verification": {
             "stated_total_credits": s.total_credits, "parsed_total_credits": round2(ledger.parsed_credit_total),
@@ -491,6 +577,7 @@ fn assemble_report(ledger: &ledger::Ledger, cls: &Value, pages: &[PageText]) -> 
             "nsf_items": ledger.nsf_items.iter().filter_map(|i| ledger.transactions.get(*i)).map(|t| json!({ "date": t.date, "amount": t.amount, "description": t.description })).collect::<Vec<_>>(),
             "sources": m.sources,
             "rejected_positions": rejected,
+            "model_recommendation": cls["recommendation"],
             "notes_dropped": dropped,
             "pages": pages.iter().map(|p| json!({ "file": p.file_name, "page": p.page, "method": p.method, "seconds": p.seconds })).collect::<Vec<_>>()
         }

@@ -357,12 +357,14 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
             continue;
         }
 
-        // Continuation line: indented text right after a transaction adds to its description.
+        // Continuation line: text right after a transaction with no date and no amount adds
+        // to its description. Indentation is not required because OCR output has none.
         // A lone all-caps token with no digits is a page footer artifact, not a description.
         if let Some(id) = last_txn {
-            let indented = line.len() > trimmed.len();
+            let has_amount = tokens.iter().any(|t| is_amount_token(t));
             let footer_artifact = tokens.len() == 1 && tokens[0].len() >= 6 && tokens[0].chars().all(|c| c.is_ascii_uppercase());
-            if indented && !starts_with_date && tokens.len() <= 12 && !footer_artifact {
+            let boilerplate = lower.contains("member fdic") || lower.contains("page ") && lower.contains(" of ") || lower.starts_with("pg ");
+            if !starts_with_date && !has_amount && tokens.len() <= 12 && !footer_artifact && !boilerplate {
                 let t = &mut ledger.transactions[id];
                 t.description.push(' ');
                 t.description.push_str(trimmed);
@@ -855,6 +857,33 @@ mod tests {
            09/03                   $9,251.89       09/12                 $7,038.70                   09/23             $2,475.59
            09/04                   $4,404.84-      09/13                 $7,082.35                   09/24             $1,497.56-
 "#;
+
+    const OCR_STYLE: &str = "11/01/2025 Beginning Balance 57,739.72
+70 Deposits/Other Credits + 1,321,117.77
+136 Checks/Other Debits - 1,365,636.99
+11/30/2025 Ending Balance 30 Days in Statement Period 13,220.50
+
+------------------------------------------
+Deposits/Other Credits ------------------------------------------
+11/03/2025 Deposit 754.44
+11/03/2025 ACH Deposit 57,592.12
+PNCBANK-PROCEEDS LOAN FUND Al West Nissan
+11/04/2025 ACH Deposit 207.56
+MERCHANT SVCS IPSMXASETL AL WEST NISSAN WARR
+Pg 1 of 8
+MEMBER FDIC
+";
+
+    #[test]
+    fn ocr_style_text_without_indentation_parses() {
+        let l = parse(&[(1, OCR_STYLE)]);
+        assert_eq!(l.summary.total_credits, Some(1321117.77));
+        let credits: Vec<&Txn> = l.transactions.iter().filter(|t| t.kind == Kind::Credit).collect();
+        assert_eq!(credits.len(), 3);
+        assert!(credits[1].description.contains("PNCBANK-PROCEEDS"));
+        assert!(credits[2].description.contains("MERCHANT SVCS"));
+        assert!(!credits[2].description.contains("Pg 1"), "footer not attached");
+    }
 
     #[test]
     fn amounts_parse_with_signs_and_symbols() {

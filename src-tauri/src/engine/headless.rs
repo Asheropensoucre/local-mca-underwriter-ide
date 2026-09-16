@@ -87,6 +87,11 @@ async fn run_job(app: &tauri::AppHandle, args: HeadlessArgs) -> Result<String, S
 fn ledger_dump(pdfs: &[String]) -> Result<String, String> {
     let mut texts: Vec<(usize, String)> = Vec::new();
     for pdf in pdfs {
+        // .txt inputs are page dumps (see MCA_DUMP_PAGES), one page per file.
+        if pdf.ends_with(".txt") {
+            texts.push((texts.len() + 1, std::fs::read_to_string(pdf).map_err(|e| e.to_string())?));
+            continue;
+        }
         let n = super::pipeline::page_count(pdf)?;
         for page in 1..=n {
             texts.push((texts.len() + 1, super::pipeline::text_layer(pdf, page)?));

@@ -289,7 +289,8 @@ fn write_presets(app: &tauri::AppHandle, ocr: &ModelSpec, underwriter: &ModelSpe
         if let Some(mm) = m.mmproj_file() {
             ini.push_str(&format!("mmproj = {}\n", asset_path(app, m, mm)?.display()));
         }
-        ini.push_str(&format!("ctx-size = {}\n\n", m.ctx_size));
+        ini.push_str(&format!("ctx-size = {}\n", m.ctx_size));
+        ini.push_str(&format!("parallel = {}\n\n", m.parallel));
     }
     let path = engine_dir(app)?.join("models.ini");
     std::fs::write(&path, ini).map_err(|e| format!("Cannot write presets: {e}"))?;
