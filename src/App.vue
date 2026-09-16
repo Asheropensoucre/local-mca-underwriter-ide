@@ -291,7 +291,7 @@
                         <th class="text-left py-2 px-3 text-xs font-medium text-gray-500 uppercase">Lender</th>
                         <th class="text-left py-2 px-3 text-xs font-medium text-gray-500 uppercase">Payment</th>
                         <th class="text-left py-2 px-3 text-xs font-medium text-gray-500 uppercase">Frequency</th>
-                        <th class="text-right py-2 px-3 text-xs font-medium text-gray-500 uppercase">Funded</th>
+                        <th class="text-right py-2 px-3 text-xs font-medium text-gray-500 uppercase">Seen</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -299,7 +299,7 @@
                         <td class="py-2 px-3 text-gray-200 font-medium">{{ pos.lender || 'Unknown' }}</td>
                         <td class="py-2 px-3 text-red-400 font-mono">{{ formatCurrency(pos.payment) }}</td>
                         <td class="py-2 px-3 text-gray-400 text-xs">{{ pos.frequency || 'N/A' }}</td>
-                        <td class="py-2 px-3 text-right text-green-400 font-mono">{{ formatCurrency(pos.funded) }}</td>
+                        <td class="py-2 px-3 text-right text-gray-400 font-mono text-xs" :title="pos.evidence || (pos.dates || []).join(', ')">{{ pos.occurrences ? pos.occurrences + 'x' : '' }} {{ pos.source === 'single payment identified by model' ? 'model' : 'parser' }}</td>
                       </tr>
                     </tbody>
                   </table>
@@ -383,6 +383,36 @@
                     <p class="text-lg font-bold text-violet-300 font-mono">{{ parsedData?.debt_leverage?.leverage_ratio || 'N/A' }}</p>
                     <p class="text-xs text-violet-600">Debt-to-revenue</p>
                   </div>
+                </div>
+              </div>
+
+              <!-- === SECTION 3b: VERIFICATION (parser vs statement) === -->
+              <div v-if="parsedData?.verification" class="bg-background border border-border rounded-lg p-4 font-mono text-xs">
+                <h4 class="text-xs font-medium text-gray-500 uppercase mb-2 font-sans">Verification</h4>
+                <div class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-gray-400">
+                  <span class="text-gray-600">credits</span>
+                  <span>stated {{ formatCurrency(parsedData.verification.stated_total_credits) }}, parsed {{ formatCurrency(parsedData.verification.parsed_total_credits) }}</span>
+                  <span class="text-gray-600">debits</span>
+                  <span>stated {{ formatCurrency(parsedData.verification.stated_total_debits) }}, parsed {{ formatCurrency(parsedData.verification.parsed_total_debits) }}</span>
+                  <span class="text-gray-600">lines</span>
+                  <span>{{ parsedData.verification.transactions_parsed }} transactions, {{ parsedData.verification.daily_balances_found }} daily balances</span>
+                  <span class="text-gray-600">pages</span>
+                  <span>{{ (parsedData.verification.pages || []).filter(p => p.method === 'ocr').length }} of {{ (parsedData.verification.pages || []).length }} via OCR</span>
+                </div>
+                <div v-if="parsedData.verification.funding_deposits?.length" class="mt-2">
+                  <p class="text-gray-600">funding deposits excluded from revenue</p>
+                  <p v-for="(f, i) in parsedData.verification.funding_deposits" :key="'f' + i" class="text-gray-400 truncate">{{ f.date }} {{ formatCurrency(f.amount) }} {{ f.description }}</p>
+                </div>
+                <div v-if="parsedData.verification.large_deposits_to_verify?.length" class="mt-2">
+                  <p class="text-gray-600">large deposits counted as revenue, verify source</p>
+                  <p v-for="(f, i) in parsedData.verification.large_deposits_to_verify" :key="'l' + i" class="text-gray-400 truncate">{{ f.date }} {{ formatCurrency(f.amount) }} {{ f.description || 'no description' }}</p>
+                </div>
+                <div v-if="parsedData.verification.nsf_items?.length" class="mt-2">
+                  <p class="text-gray-600">NSF and returned items</p>
+                  <p v-for="(f, i) in parsedData.verification.nsf_items" :key="'n' + i" class="text-gray-400 truncate">{{ f.date }} {{ formatCurrency(f.amount) }} {{ f.description }}</p>
+                </div>
+                <div v-if="parsedData.verification.sources?.length" class="mt-2">
+                  <p v-for="(src, i) in parsedData.verification.sources" :key="'s' + i" class="text-gray-500">{{ src }}</p>
                 </div>
               </div>
 

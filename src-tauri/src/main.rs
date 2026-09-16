@@ -516,6 +516,25 @@ fn main() {
         ])
         .manage(engine::runtime::EngineProcess::default())
         .setup(|app| {
+            // Ctrl-C or `kill` on the app must still take llama-server down with it.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    handle.state::<engine::runtime::EngineProcess>().stop();
+                    std::process::exit(130);
+                }
+            });
+            #[cfg(unix)]
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Ok(mut term) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                        term.recv().await;
+                        handle.state::<engine::runtime::EngineProcess>().stop();
+                        std::process::exit(143);
+                    }
+                });
+            }
             // `--headless-analyze` runs the pipeline from a terminal for testing.
             if let Some(args) = engine::headless::parse_args() {
                 engine::headless::run(app.handle(), args);

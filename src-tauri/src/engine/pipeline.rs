@@ -2,12 +2,15 @@
 //!
 //! Stage 1, per page: get text. Digital pages use the PDF text layer (exact and
 //! instant). Scanned pages are rendered and read by the OCR model.
-//! Stage 2, once per job: the reasoning model reads all page text and fills the
-//! dashboard JSON, constrained by a JSON schema so the output always parses.
+//! Stage 2, once per job: `ledger.rs` parses every transaction and computes the
+//! totals; the reasoning model only classifies (which debits are positions, which
+//! deposits are funding) and writes the risk judgment, constrained by a JSON schema.
+//! The report is assembled from the computed numbers.
 //!
 //! One reasoning call per job replaces the old per-page vision call plus merge call,
 //! and several statements of the same merchant are analyzed together as one batch.
 
+use super::ledger;
 use super::llama::{self, ChatOptions, Message};
 use super::runtime::Endpoint;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -58,7 +61,7 @@ pub fn page_count(pdf: &str) -> Result<usize, String> {
         .ok_or_else(|| "pdfinfo did not report a page count".to_string())
 }
 
-fn text_layer(pdf: &str, page: usize) -> Result<String, String> {
+pub fn text_layer(pdf: &str, page: usize) -> Result<String, String> {
     let p = page.to_string();
     let out = run("pdftotext", &["-layout", "-f", &p, "-l", &p, pdf, "-"])?;
     if !out.status.success() {
@@ -149,65 +152,150 @@ pub async fn extract_pages(
     Ok(pages)
 }
 
-/// The dashboard schema. Enforced by the server, so the frontend parser never
-/// sees prose, markdown fences or truncated arrays.
-pub fn result_schema() -> Value {
+/// What the model is asked for. Only classification and judgment: which recurring
+/// debits are positions, which large deposits are funding, business identity, risk
+/// score, recommendation and notes. Every dollar figure in the report is computed in
+/// `ledger.rs` from these answers.
+pub fn classification_schema(recurring_ids: &[usize], funding_ids: &[usize]) -> Value {
+    let rec_ids: Vec<Value> = recurring_ids.iter().map(|i| json!(i)).collect();
+    let fund_ids: Vec<Value> = funding_ids.iter().map(|i| json!(i)).collect();
     json!({
       "type": "object",
       "properties": {
         "business": { "type": "object", "properties": {
             "name": { "type": ["string", "null"] },
-            "account": { "type": ["string", "null"] },
-            "period": { "type": ["string", "null"] }
-          }, "required": ["name", "account", "period"] },
-        "positions": { "type": "array", "maxItems": 12, "items": { "type": "object", "properties": {
-            "lender": { "type": "string" },
+            "account_last4": { "type": ["string", "null"], "maxLength": 4 },
+            "industry": { "type": ["string", "null"], "maxLength": 60 },
+            "period_start": { "type": ["string", "null"] },
+            "period_end": { "type": ["string", "null"] }
+          }, "required": ["name", "account_last4", "industry", "period_start", "period_end"] },
+        "recurring_debits": { "type": "array", "maxItems": recurring_ids.len().max(1), "items": { "type": "object", "properties": {
+            "id": { "type": "integer", "enum": if rec_ids.is_empty() { vec![json!(0)] } else { rec_ids } },
+            "is_position": { "type": "boolean" },
+            "lender": { "type": "string", "maxLength": 60 }
+          }, "required": ["id", "is_position", "lender"] } },
+        "other_positions": { "type": "array", "maxItems": 8, "items": { "type": "object", "properties": {
+            "lender": { "type": "string", "maxLength": 60 },
             "payment": { "type": "number" },
-            "frequency": { "type": "string", "enum": ["daily", "weekly", "monthly"] },
-            "funded": { "type": ["number", "null"] },
-            "funded_date": { "type": ["string", "null"] }
-          }, "required": ["lender", "payment", "frequency", "funded", "funded_date"] } },
-        "bank_metrics": { "type": "object", "properties": {
-            "true_revenue": { "type": "number" },
-            "negative_days": { "type": "integer" },
-            "avg_daily_balance": { "type": "number" },
-            "nsf_count": { "type": "integer" }
-          }, "required": ["true_revenue", "negative_days", "avg_daily_balance", "nsf_count"] },
-        "debt_leverage": { "type": "object", "properties": {
-            "total_debt_service": { "type": "number" },
-            "safe_new_payment": { "type": "number" },
-            "leverage_ratio": { "type": "string" }
-          }, "required": ["total_debt_service", "safe_new_payment", "leverage_ratio"] },
-        "risk": { "type": "object", "properties": { "score": { "type": "integer", "minimum": 1, "maximum": 10 } }, "required": ["score"] },
+            "frequency": { "type": "string", "enum": ["daily", "weekly", "biweekly", "monthly"] },
+            "evidence": { "type": "string", "maxLength": 120 }
+          }, "required": ["lender", "payment", "frequency", "evidence"] } },
+        "funding_deposit_ids": { "type": "array", "maxItems": funding_ids.len().max(1),
+            "items": { "type": "integer", "enum": if fund_ids.is_empty() { vec![json!(-1)] } else { fund_ids } } },
+        "risk_score": { "type": "integer", "minimum": 1, "maximum": 10 },
         "recommendation": { "type": "string", "enum": ["APPROVE", "REVIEW", "DECLINE"] },
-        "notes": { "type": "string", "maxLength": 600 }
+        "notes": { "type": "string", "maxLength": 700 }
       },
-      "required": ["business", "positions", "bank_metrics", "debt_leverage", "risk", "recommendation", "notes"]
+      "required": ["business", "recurring_debits", "other_positions", "funding_deposit_ids", "risk_score", "recommendation", "notes"]
     })
 }
 
-const UNDERWRITER_SYSTEM_PROMPT: &str = r#"You are an underwriting analyst for Merchant Cash Advance (MCA) funding. You receive the text of one or more bank statement pages for one merchant and fill a JSON report.
+const UNDERWRITER_SYSTEM_PROMPT: &str = r#"You are an underwriting analyst for Merchant Cash Advance (MCA) funding. A parser has already read the bank statement and computed the totals. You do not compute numbers. You classify and judge.
 
 Definitions
 - MERCHANT: the account holder named on the statement. Never the bank.
-- POSITION: an existing MCA or loan being repaid. It shows as a recurring debit of the same (or near-same) amount to the same payee every business day or every week. Known MCA funders include OnDeck, Kabbage, Fundbox, Forward Financing, Rapid Finance, Credibly, Fora, CAN Capital, Kapitus, Libertas, Bluevine. Unnamed recurring daily/weekly debits are "Unknown MCA". Vendor payments, payroll, floor plan or manufacturer settlements, taxes, transfers and one-off debits are NOT positions.
-- FUNDING DEPOSIT: an incoming lump sum from a funder or lender (loan proceeds, MCA funding).
-- TRUE REVENUE: total deposits for the period minus funding deposits and minus transfers from the merchant's own accounts.
+- POSITION: an existing MCA or business loan being repaid by recurring ACH debits. Typical MCA funders: OnDeck, Kabbage, Fundbox, Forward Financing, Rapid Finance, Credibly, Fora, CAN Capital, Kapitus, Libertas, Bluevine, CFG Merchant Solutions, Cromwell Capital, Everest, Mantis, Fox, Spartan, Vader, "MCA Servicing", "Capital", "Funding", "Advance". Vendor bills, payroll, taxes, insurance, utilities, credit cards, floor plan or manufacturer settlements (auto dealers: Nissan WFS, NMAC, Ally, CAF, Chrysler Capital), internal transfers between the merchant's own accounts, and bank loan interest are NOT MCA positions. A conventional bank term loan payment is a position only if it is a recurring debt payment; mark it with the bank's name.
+- FUNDING DEPOSIT: an incoming lump sum that is borrowed money (MCA funding, loan proceeds, line of credit draw). Manufacturer incentives, floor plan advances that fund inventory, customer payments, card settlements, sales proceeds and owner transfers are revenue or working capital, not MCA funding, unless the description says loan/funding/proceeds/advance/capital.
 
-Rules
-1. Use the statement's own summary lines when present (Beginning Balance, total Deposits/Credits, total Checks/Debits, Ending Balance, days in period). Do not recompute totals the statement already states.
-2. negative_days: number of calendar days whose ending balance was below zero. nsf_count: count of NSF, returned item, overdraft and insufficient funds fees.
-3. avg_daily_balance: average of the daily ending balances if a daily balance section exists; otherwise the mean of beginning and ending balance.
-4. total_debt_service is the sum of position payments expressed per day (weekly payment / 5, monthly / 21). safe_new_payment = (true_revenue / days_in_period) * 0.10 - total_debt_service, floored at 0. leverage_ratio = total_debt_service / (true_revenue / days_in_period) formatted like "0.4x".
-5. risk.score is 1 (safest) to 10 (riskiest). Weigh negative days, NSF count, leverage, revenue level and stability, stacking of positions.
-6. recommendation: APPROVE, REVIEW or DECLINE.
-7. Unknown text fields are null. Unknown numbers are 0. Do not invent lenders, amounts or dates.
-8. notes: two or three plain sentences an underwriter would want: what drives the score, anything to verify.
-9. Several statements in the input are consecutive months of the same merchant; report period as the full span and totals across all of them.
-10. Read once, decide once. Keep working silently and output only the JSON."#;
+Tasks
+1. business: merchant name and account last four from the header text; industry in a few words from the payees; the statement period.
+2. recurring_debits: for every candidate id, say whether it is a position and name the lender (short, cleaned up: "CFG Merchant Solutions", not the raw ACH text).
+3. other_positions: debt payments to MCA funders or lenders that appear only once in the period (so the parser could not see a cadence). Give payment, likely frequency and the line you saw.
+4. funding_deposit_ids: the subset of candidate ids that are borrowed money.
+5. risk_score 1 (safest) to 10 (riskiest), recommendation, and notes: two to four plain sentences an underwriter needs: what drives the score, what to verify. Mention data limits (e.g. partial statement, no daily balances) when the facts block says so.
+Do not restate the numbers in notes beyond what is needed. Output only the JSON."#;
 
-/// Stage 2. Streams reasoning to `stream-thought` and tokens to `stream-token`,
-/// returns the JSON text of the report.
+fn money(v: f64) -> String {
+    format!("{:.2}", v)
+}
+
+/// Compact facts block the model reads instead of raw statement text.
+fn facts_block(ledger: &ledger::Ledger, pages: &[PageText]) -> String {
+    let s = &ledger.summary;
+    let mut out = String::new();
+    let files: Vec<String> = {
+        let mut v: Vec<String> = pages.iter().map(|p| p.file_name.clone()).collect();
+        v.dedup();
+        v
+    };
+    let ocr_pages = pages.iter().filter(|p| p.method == "ocr").count();
+    out.push_str(&format!("PAGES READ: {} pages from {} file(s) ({} via OCR). All pages of the provided files were read.\n", pages.len(), files.len(), ocr_pages));
+    if let Some(a) = &s.account_last4 {
+        out.push_str(&format!("ACCOUNT LAST 4 (parsed): {a}\n"));
+    }
+    out.push_str("STATEMENT SUMMARY (from the bank):\n");
+    out.push_str(&format!("  beginning balance: {}\n", s.beginning_balance.map(money).unwrap_or("not printed".into())));
+    out.push_str(&format!("  ending balance: {}\n", s.ending_balance.map(money).unwrap_or("not printed".into())));
+    out.push_str(&format!("  total credits: {}   (parser summed {} credit lines = {})\n", s.total_credits.map(money).unwrap_or("not printed".into()), ledger.transactions.iter().filter(|t| t.kind == ledger::Kind::Credit).count(), money(ledger.parsed_credit_total)));
+    out.push_str(&format!("  total debits: {}   (parser summed {} debit lines = {})\n", s.total_debits.map(money).unwrap_or("not printed".into()), ledger.transactions.iter().filter(|t| t.kind == ledger::Kind::Debit).count(), money(ledger.parsed_debit_total)));
+    out.push_str(&format!("  days in period: {}   period: {} to {}\n", s.days_in_period.map(|d| d.to_string()).unwrap_or("not printed".into()), s.period_start.clone().unwrap_or("?".into()), s.period_end.clone().unwrap_or("?".into())));
+    out.push_str(&format!("  average balance: {}   minimum balance: {}\n", s.average_balance.map(money).unwrap_or("not printed".into()), s.minimum_balance.map(money).unwrap_or("not printed".into())));
+    out.push_str(&format!("  daily balance table: {} entries, {} negative days\n", ledger.daily_balances.len(), ledger.daily_balances.iter().filter(|b| b.balance < 0.0).count()));
+    out.push_str(&format!("  NSF / returned item lines: {}\n", ledger.nsf_items.len()));
+    for i in &ledger.nsf_items {
+        let t = &ledger.transactions[*i];
+        out.push_str(&format!("    {} {} {}\n", t.date, money(t.amount), t.description.chars().take(70).collect::<String>()));
+    }
+
+    out.push_str("\nRECURRING DEBIT CANDIDATES (same payee, same amount, seen more than once):\n");
+    if ledger.recurring_debits.is_empty() {
+        out.push_str("  none\n");
+    }
+    for r in &ledger.recurring_debits {
+        out.push_str(&format!("  id {}: {} x {} {} | {} | dates {}\n", r.id, r.count, money(r.amount), r.cadence, r.payee.chars().take(80).collect::<String>(), r.dates.join(", ")));
+    }
+
+    out.push_str("\nFUNDING DEPOSIT CANDIDATES (credits with loan/funding wording; pick the ones that are borrowed money):\n");
+    if ledger.funding_candidates.is_empty() {
+        out.push_str("  none\n");
+    }
+    for i in &ledger.funding_candidates {
+        let t = &ledger.transactions[*i];
+        out.push_str(&format!("  id {}: {} {} | {}\n", t.id, t.date, money(t.amount), t.description.chars().take(80).collect::<String>()));
+    }
+    if !ledger.large_unlabeled_credits.is_empty() {
+        out.push_str("\nLARGE DEPOSITS WITHOUT A DESCRIPTION (counted as revenue; mention in notes if they need verification):\n");
+        for i in &ledger.large_unlabeled_credits {
+            let t = &ledger.transactions[*i];
+            out.push_str(&format!("  {} {} | {}\n", t.date, money(t.amount), t.description.chars().take(80).collect::<String>()));
+        }
+    }
+
+    out.push_str("\nPAYEES SEEN MORE THAN ONCE (count, total, side):\n");
+    for p in ledger.payees.iter().take(30) {
+        out.push_str(&format!("  {} x {} {:?} | {}\n", p.count, money(p.total), p.kind, p.payee.chars().take(80).collect::<String>()));
+    }
+
+    out.push_str("\nSINGLE DEBITS OF 500 OR MORE (not checks):\n");
+    let mut singles: Vec<&ledger::Txn> = ledger
+        .transactions
+        .iter()
+        .filter(|t| t.kind == ledger::Kind::Debit && t.amount >= 500.0 && !t.description.starts_with("Check "))
+        .filter(|t| {
+            let key = ledger::payee_key(&t.description);
+            ledger.transactions.iter().filter(|o| o.kind == ledger::Kind::Debit && ledger::payee_key(&o.description) == key).count() == 1
+        })
+        .collect();
+    singles.sort_by(|a, b| b.amount.partial_cmp(&a.amount).unwrap());
+    for t in singles.iter().take(40) {
+        out.push_str(&format!("  {} {} | {}\n", t.date, money(t.amount), t.description.chars().take(80).collect::<String>()));
+    }
+    out
+}
+
+/// Header text (top of the first three pages of each file, since court exhibits and
+/// cover sheets often precede the statement) so the model can read the merchant name.
+fn header_text(pages: &[PageText]) -> String {
+    let mut out = String::new();
+    for p in pages.iter().filter(|p| p.page <= 3) {
+        let head: String = p.text.lines().filter(|l| !l.trim().is_empty()).take(30).collect::<Vec<_>>().join("\n");
+        out.push_str(&format!("--- {} page {} ---\n{}\n", p.file_name, p.page, head));
+    }
+    out
+}
+
+/// Stage 2. Deterministic parse, one classification call, then the report is assembled
+/// from computed numbers. Streams model output to `stream-thought` / `stream-token`.
 pub async fn underwrite(
     app: &tauri::AppHandle,
     ep: &Endpoint,
@@ -216,16 +304,19 @@ pub async fn underwrite(
     temperature: f32,
     max_tokens: i32,
 ) -> Result<String, String> {
-    let mut input = String::new();
-    for p in pages {
-        input.push_str(&format!("=== {} | page {} ({}) ===\n{}\n\n", p.file_name, p.page, p.method, p.text.trim()));
-    }
+    let page_refs: Vec<(usize, &str)> = pages.iter().enumerate().map(|(i, p)| (i + 1, p.text.as_str())).collect();
+    let ledger = ledger::parse(&page_refs);
+    let recurring_ids: Vec<usize> = ledger.recurring_debits.iter().map(|r| r.id).collect();
+    let funding_ids: Vec<usize> = ledger.funding_candidates.clone();
+
+    let facts = facts_block(&ledger, pages);
     let custom = custom_instructions.trim();
-    let user = if custom.is_empty() || custom.starts_with("Add custom underwriting focus") {
-        format!("BANK STATEMENT TEXT:\n\n{input}")
-    } else {
-        format!("ADDITIONAL INSTRUCTIONS FROM THE UNDERWRITER:\n{custom}\n\nBANK STATEMENT TEXT:\n\n{input}")
-    };
+    let mut user = String::new();
+    if !custom.is_empty() && !custom.starts_with("Add custom underwriting focus") {
+        user.push_str(&format!("ADDITIONAL INSTRUCTIONS FROM THE UNDERWRITER:\n{custom}\n\n"));
+    }
+    user.push_str(&format!("STATEMENT HEADER TEXT:\n{}\n\nFACTS FROM THE PARSER:\n{facts}", header_text(pages)));
+    println!("[Engine] facts block {} chars, {} recurring candidates, {} funding candidates", facts.len(), recurring_ids.len(), funding_ids.len());
 
     let msgs = [
         Message { role: "system", text: UNDERWRITER_SYSTEM_PROMPT, image_data_uri: None },
@@ -235,7 +326,7 @@ pub async fn underwrite(
         model: "underwriter",
         temperature,
         max_tokens,
-        json_schema: Some(result_schema()),
+        json_schema: Some(classification_schema(&recurring_ids, &funding_ids)),
         enable_thinking: false,
         idle_timeout: Duration::from_secs(600),
     };
@@ -249,8 +340,106 @@ pub async fn underwrite(
         }
     })
     .await?;
-    println!("[Engine] underwrite: {} prompt tokens, {} completion tokens", r.prompt_tokens, r.completion_tokens);
-    Ok(r.content)
+    println!("[Engine] classify: {} prompt tokens, {} completion tokens", r.prompt_tokens, r.completion_tokens);
+    let cls: Value = serde_json::from_str(&r.content).map_err(|e| format!("Model returned invalid JSON despite schema: {e}"))?;
+
+    Ok(assemble_report(&ledger, &cls, pages).to_string())
+}
+
+/// Build the dashboard JSON from the ledger and the model's classification.
+fn assemble_report(ledger: &ledger::Ledger, cls: &Value, pages: &[PageText]) -> Value {
+    // Positions: confirmed recurring candidates plus model-identified single payments.
+    let mut positions: Vec<Value> = Vec::new();
+    let mut confirmed: Vec<(f64, String)> = Vec::new();
+    for item in cls["recurring_debits"].as_array().cloned().unwrap_or_default() {
+        if item["is_position"].as_bool() != Some(true) {
+            continue;
+        }
+        let Some(id) = item["id"].as_u64() else { continue };
+        let Some(r) = ledger.recurring_debits.iter().find(|r| r.id as u64 == id) else { continue };
+        let lender = item["lender"].as_str().unwrap_or("Unknown MCA").to_string();
+        confirmed.push((r.amount, r.cadence.to_string()));
+        positions.push(json!({
+            "lender": lender, "payment": r.amount, "frequency": r.cadence,
+            "funded": null, "funded_date": null,
+            "occurrences": r.count, "dates": r.dates, "source": "recurring debit detected by parser"
+        }));
+    }
+    for item in cls["other_positions"].as_array().cloned().unwrap_or_default() {
+        let payment = item["payment"].as_f64().unwrap_or(0.0);
+        let freq = item["frequency"].as_str().unwrap_or("monthly").to_string();
+        if payment <= 0.0 {
+            continue;
+        }
+        confirmed.push((payment, freq.clone()));
+        positions.push(json!({
+            "lender": item["lender"], "payment": payment, "frequency": freq,
+            "funded": null, "funded_date": null,
+            "occurrences": 1, "evidence": item["evidence"], "source": "single payment identified by model"
+        }));
+    }
+
+    let funding_ids: Vec<usize> = cls["funding_deposit_ids"].as_array().cloned().unwrap_or_default().iter().filter_map(|v| v.as_u64()).map(|v| v as usize).filter(|id| ledger.funding_candidates.contains(id)).collect();
+    let m = ledger::compute_metrics(ledger, &funding_ids, &confirmed);
+
+    let funding_lines: Vec<Value> = funding_ids.iter().filter_map(|id| ledger.transactions.get(*id)).map(|t| json!({ "date": t.date, "amount": t.amount, "description": t.description })).collect();
+
+    let s = &ledger.summary;
+    let period = match (&s.period_start, &s.period_end) {
+        (Some(a), Some(b)) => Some(format!("{a} to {b}")),
+        _ => match (cls["business"]["period_start"].as_str(), cls["business"]["period_end"].as_str()) {
+            (Some(a), Some(b)) if !a.is_empty() && !b.is_empty() => Some(format!("{a} to {b}")),
+            _ => None,
+        },
+    };
+    let account = s
+        .account_last4
+        .clone()
+        .or_else(|| cls["business"]["account_last4"].as_str().filter(|a| a.len() == 4 && a.chars().all(|c| c.is_ascii_digit())).map(String::from))
+        .map(|a| format!("****{a}"));
+
+    json!({
+        "business": {
+            "name": cls["business"]["name"],
+            "account": account,
+            "period": period,
+            "industry": cls["business"]["industry"]
+        },
+        "positions": positions,
+        "bank_metrics": {
+            "true_revenue": round2(m.true_revenue),
+            "negative_days": m.negative_days,
+            "avg_daily_balance": round2(m.avg_daily_balance),
+            "nsf_count": m.nsf_count,
+            "total_credits": round2(m.total_credits),
+            "funding_deposits": round2(m.funding_deposits),
+            "days_in_period": m.days_in_period
+        },
+        "debt_leverage": {
+            "total_debt_service": round2(m.total_debt_service_daily),
+            "safe_new_payment": round2(m.safe_new_payment),
+            "leverage_ratio": format!("{:.2}x", m.leverage_ratio)
+        },
+        "risk": { "score": cls["risk_score"] },
+        "recommendation": cls["recommendation"],
+        "notes": cls["notes"],
+        "verification": {
+            "stated_total_credits": s.total_credits, "parsed_total_credits": round2(ledger.parsed_credit_total),
+            "stated_total_debits": s.total_debits, "parsed_total_debits": round2(ledger.parsed_debit_total),
+            "beginning_balance": s.beginning_balance, "ending_balance": s.ending_balance,
+            "transactions_parsed": ledger.transactions.len(),
+            "daily_balances_found": ledger.daily_balances.len(),
+            "funding_deposits": funding_lines,
+            "large_deposits_to_verify": ledger.large_unlabeled_credits.iter().filter_map(|i| ledger.transactions.get(*i)).map(|t| json!({ "date": t.date, "amount": t.amount, "description": t.description })).collect::<Vec<_>>(),
+            "nsf_items": ledger.nsf_items.iter().filter_map(|i| ledger.transactions.get(*i)).map(|t| json!({ "date": t.date, "amount": t.amount, "description": t.description })).collect::<Vec<_>>(),
+            "sources": m.sources,
+            "pages": pages.iter().map(|p| json!({ "file": p.file_name, "page": p.page, "method": p.method, "seconds": p.seconds })).collect::<Vec<_>>()
+        }
+    })
+}
+
+fn round2(v: f64) -> f64 {
+    (v * 100.0).round() / 100.0
 }
 
 /// Free-form follow-up question about a finished analysis.

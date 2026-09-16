@@ -39,6 +39,7 @@ impl Default for EngineConfig {
 #[derive(Default)]
 pub struct EngineProcess {
     inner: Mutex<Option<Running>>,
+    pid_path: Mutex<Option<PathBuf>>,
 }
 
 struct Running {
@@ -91,6 +92,9 @@ impl EngineProcess {
         let Some(mut r) = running else { return };
         let pid = r.child.id();
         println!("[Engine] Stopping llama-server (pid {pid})");
+        if let Some(p) = self.pid_path.lock().ok().and_then(|g| g.clone()) {
+            let _ = std::fs::remove_file(p);
+        }
         graceful_terminate(pid);
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
@@ -289,6 +293,48 @@ fn write_presets(app: &tauri::AppHandle, ocr: &ModelSpec, underwriter: &ModelSpe
     Ok(path)
 }
 
+fn pid_file(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(engine_dir(app)?.join("llama-server.pid"))
+}
+
+/// Kill a llama-server left behind by a previous run of this app (crash, kill -9, power
+/// loss). Only touches the pid recorded in our own pid file, and only if that process
+/// is still a llama-server from our runtime directory.
+fn reap_stale_server(app: &tauri::AppHandle) {
+    let Ok(path) = pid_file(app) else { return };
+    let Ok(text) = std::fs::read_to_string(&path) else { return };
+    let _ = std::fs::remove_file(&path);
+    let Ok(pid) = text.trim().parse::<u32>() else { return };
+    if process_is_our_server(pid, app) {
+        println!("[Engine] Reaping stale llama-server pid {pid} from a previous run");
+        graceful_terminate(pid);
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn process_is_our_server(pid: u32, app: &tauri::AppHandle) -> bool {
+    let Ok(cmd) = std::fs::read(format!("/proc/{pid}/cmdline")) else { return false };
+    let cmd = String::from_utf8_lossy(&cmd);
+    let dir = engine_dir(app).map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
+    cmd.contains("llama-server") && !dir.is_empty() && cmd.contains(&dir)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn process_is_our_server(pid: u32, _app: &tauri::AppHandle) -> bool {
+    // Without /proc we only check liveness; the pid file is ours, so the risk of hitting an
+    // unrelated process that reused the pid is accepted for a graceful terminate.
+    #[cfg(unix)]
+    {
+        Command::new("kill").args(["-0", &pid.to_string()]).status().map(|s| s.success()).unwrap_or(false)
+    }
+    #[cfg(windows)]
+    {
+        Command::new("tasklist").args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"]).output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_ascii_lowercase().contains("llama-server")).unwrap_or(false)
+    }
+}
+
 fn free_port() -> Result<u16, String> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
     Ok(listener.local_addr().map_err(|e| e.to_string())?.port())
@@ -320,6 +366,7 @@ pub async fn start(app: &tauri::AppHandle, cfg: &EngineConfig) -> Result<Endpoin
         return Err(format!("{} is not installed", underwriter.display_name));
     }
 
+    reap_stale_server(app);
     let presets = write_presets(app, &ocr, &underwriter)?;
     let port = free_port()?;
     let api_key = random_key();
@@ -352,8 +399,22 @@ pub async fn start(app: &tauri::AppHandle, cfg: &EngineConfig) -> Result<Endpoin
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
+    #[cfg(target_os = "linux")]
+    {
+        // If this app dies for any reason, the kernel sends the router SIGTERM.
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                Ok(())
+            });
+        }
+    }
 
     let mut child = cmd.spawn().map_err(|e| format!("Cannot start llama-server: {e}"))?;
+    if let Ok(p) = pid_file(app) {
+        let _ = std::fs::write(p, child.id().to_string());
+    }
     println!("[Engine] llama-server pid {} on port {port} ({:?})", child.id(), cfg.backend);
 
     let base_url = format!("http://127.0.0.1:{port}");
@@ -380,6 +441,9 @@ pub async fn start(app: &tauri::AppHandle, cfg: &EngineConfig) -> Result<Endpoin
     let endpoint = Endpoint { base_url, api_key: api_key.clone() };
     if let Ok(mut g) = state.inner.lock() {
         *g = Some(Running { child, port, api_key });
+    }
+    if let Ok(mut g) = state.pid_path.lock() {
+        *g = pid_file(app).ok();
     }
     Ok(endpoint)
 }
