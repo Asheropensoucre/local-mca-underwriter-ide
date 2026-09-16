@@ -40,6 +40,9 @@ impl Default for EngineConfig {
 pub struct EngineProcess {
     inner: Mutex<Option<Running>>,
     pid_path: Mutex<Option<PathBuf>>,
+    /// Serializes `start` so two callers (UI boot and a job, or two windows) cannot
+    /// spawn two servers or reap each other's pid file.
+    start_lock: tokio::sync::Mutex<()>,
 }
 
 struct Running {
@@ -351,6 +354,7 @@ fn random_key() -> String {
 /// `/health` answers. Model weights load lazily on the first request for each role.
 pub async fn start(app: &tauri::AppHandle, cfg: &EngineConfig) -> Result<Endpoint, String> {
     let state = app.state::<EngineProcess>();
+    let _guard = state.start_lock.lock().await;
     if state.is_running() {
         return state.endpoint().ok_or("engine state inconsistent".into());
     }
@@ -399,18 +403,6 @@ pub async fn start(app: &tauri::AppHandle, cfg: &EngineConfig) -> Result<Endpoin
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    #[cfg(target_os = "linux")]
-    {
-        // If this app dies for any reason, the kernel sends the router SIGTERM.
-        use std::os::unix::process::CommandExt;
-        unsafe {
-            cmd.pre_exec(|| {
-                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
-                Ok(())
-            });
-        }
-    }
-
     let mut child = cmd.spawn().map_err(|e| format!("Cannot start llama-server: {e}"))?;
     if let Ok(p) = pid_file(app) {
         let _ = std::fs::write(p, child.id().to_string());

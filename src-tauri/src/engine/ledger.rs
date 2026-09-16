@@ -216,6 +216,10 @@ fn has_phrase(lower: &str, phrase: &str) -> bool {
     }
     false
 }
+/// Recurring debits with these words are never MCA positions: the merchant moving its own
+/// money, payroll, taxes, card bills, utilities, insurance. They stay out of the candidate list.
+const NOT_POSITION_WORDS: &[&str] = &["tr to acct", "transfer", "xfer", "payroll", "irs ", "usataxpymt", "tax", "dept of reven", "amex", "american express", "credit card", "utilit", "insurance", " ins ", "401k", "ach offset", "fee"];
+
 const FUNDING_WORDS: &[&str] = &["loan", "funding", "proceeds", "advance", "capital", "mca", "fund ", "financ", "lending", "kabbage", "ondeck", "fundbox", "bluevine", "credibly", "kapitus", "libertas", "forward fin", "rapid fin"];
 
 /// Parse one page. `year_hint` fills in years for MM/DD dates.
@@ -543,6 +547,10 @@ fn derive(ledger: &mut Ledger) {
     // Recurring debits: same payee key and same amount (within 1%) at least twice.
     let mut groups: BTreeMap<(String, i64), Vec<&Txn>> = BTreeMap::new();
     for t in ledger.transactions.iter().filter(|t| t.kind == Kind::Debit && !t.description.starts_with("Check ")) {
+        let lower = t.description.to_ascii_lowercase();
+        if NOT_POSITION_WORDS.iter().any(|w| lower.contains(w)) {
+            continue;
+        }
         let key = payee_key(&t.description);
         if key.is_empty() {
             continue;
