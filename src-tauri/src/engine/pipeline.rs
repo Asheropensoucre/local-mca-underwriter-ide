@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 /// Text layers with fewer words than this are "thin": a scan with a bad OCR layer, or a
 /// nearly empty page. Combined with the presence of an image, the page goes to OCR.
@@ -239,8 +239,6 @@ pub fn page_method(pdf: &str, page: usize, layer: &str, force_ocr: bool) -> &'st
     }
 }
 
-/// How many pages the OCR model reads at once. Matches the OCR preset's slot count.
-const OCR_CONCURRENCY: usize = 4;
 
 /// Error returned when a page needs the OCR model but no engine endpoint was given.
 pub const NEEDS_ENGINE: &str = "scanned pages need the engine";
@@ -339,8 +337,10 @@ async fn ocr_into(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdf: &str, page
     let file_name = pages.first().map(|p| p.file_name.clone()).unwrap_or_default();
     let n = pages.len();
     let ocr_start = Instant::now();
-    // MCA_OCR_CONCURRENCY lowers the load when the machine is shared (corpus runs).
-    let concurrency = std::env::var("MCA_OCR_CONCURRENCY").ok().and_then(|v| v.parse().ok()).unwrap_or(OCR_CONCURRENCY).clamp(1, OCR_CONCURRENCY);
+    // Slots come from the memory plan the engine started with; MCA_OCR_CONCURRENCY
+    // lowers it further when the machine is shared (corpus runs).
+    let planned = app.state::<super::runtime::EngineProcess>().ocr_parallel() as usize;
+    let concurrency = std::env::var("MCA_OCR_CONCURRENCY").ok().and_then(|v| v.parse().ok()).unwrap_or(planned).clamp(1, planned.max(1));
     let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(concurrency));
     println!("[Engine] {file_name}: {} page(s) to OCR, {concurrency} at a time", queue.len());
     let mut tasks = Vec::new();

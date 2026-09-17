@@ -1156,6 +1156,14 @@ const refreshEngineStatus = async () => {
   engineReady.value = engineStatus.value.running
 }
 
+// The memory watchdog stopped llama-server: say so where the user is looking.
+listen('engine-stopped', (event) => {
+  engineReady.value = false
+  engineError.value = event.payload.reason
+  errorMessage.value = event.payload.reason
+  refreshEngineStatus().catch(() => {})
+})
+
 // On launch: show setup until everything is downloaded, otherwise start the server.
 const bootEngine = async () => {
   try {

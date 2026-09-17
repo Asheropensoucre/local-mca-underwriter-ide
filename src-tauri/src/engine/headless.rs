@@ -3,7 +3,9 @@
 //! ```text
 //! local-mca-underwriter-ide --headless-analyze a.pdf [b.pdf ...] [--instructions "text"]
 //! local-mca-underwriter-ide --headless-ledger a.pdf [b.pdf ...] [--ocr]
+//! local-mca-underwriter-ide --headless-plan
 //! ```
+//! `--headless-plan` prints the memory plan the engine would start with right now.
 //! `--headless-ledger` runs only the deterministic parser on the text layers and prints
 //! the ledger. With `--ocr` it starts the engine and reads scanned pages with the OCR
 //! model (cached, see `pipeline::ocr_cache_dir`), so the parser sees what the app sees.
@@ -19,13 +21,16 @@ pub struct HeadlessArgs {
     pub ledger_only: bool,
     /// `--ocr` with `--headless-ledger`: OCR scanned pages through the engine first.
     pub ocr: bool,
+    /// `--headless-plan`: print the memory plan and exit.
+    pub plan_only: bool,
 }
 
 /// Parse `--headless-analyze` from argv. None when the app should start normally.
 pub fn parse_args() -> Option<HeadlessArgs> {
     let args: Vec<String> = std::env::args().collect();
-    let pos = args.iter().position(|a| a == "--headless-analyze" || a == "--headless-ledger")?;
+    let pos = args.iter().position(|a| a == "--headless-analyze" || a == "--headless-ledger" || a == "--headless-plan")?;
     let ledger_only = args[pos] == "--headless-ledger";
+    let plan_only = args[pos] == "--headless-plan";
     let mut pdfs = Vec::new();
     let mut instructions = String::new();
     let mut ocr = false;
@@ -42,7 +47,7 @@ pub fn parse_args() -> Option<HeadlessArgs> {
             i += 1;
         }
     }
-    Some(HeadlessArgs { pdfs, instructions, ledger_only, ocr })
+    Some(HeadlessArgs { pdfs, instructions, ledger_only, ocr, plan_only })
 }
 
 /// Called from the Tauri setup hook. Hides the window, runs the job, exits the process.
@@ -77,6 +82,12 @@ pub fn run(app: &tauri::AppHandle, args: HeadlessArgs) {
 }
 
 async fn run_job(app: &tauri::AppHandle, args: HeadlessArgs) -> Result<String, String> {
+    if args.plan_only {
+        let cfg = super::runtime::load_config(app);
+        let uw = super::registry::underwriter_model(&cfg.underwriter_model).ok_or("unknown reasoning model")?;
+        let plan = super::memory::plan(&super::registry::ocr_model(), &uw);
+        return serde_json::to_string_pretty(&plan).map_err(|e| e.to_string());
+    }
     if args.pdfs.is_empty() {
         return Err("no PDF paths given".into());
     }

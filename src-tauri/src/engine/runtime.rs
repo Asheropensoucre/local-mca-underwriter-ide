@@ -10,7 +10,9 @@
 //!   llama-server.log          stdout/stderr of the last run
 //! ```
 
+use super::memory::{self, MemoryPlan};
 use super::registry::{self, Asset, Backend, ModelSpec};
+use std::sync::atomic::{AtomicU32, Ordering};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -43,12 +45,22 @@ pub struct EngineProcess {
     /// Serializes `start` so two callers (UI boot and a job, or two windows) cannot
     /// spawn two servers or reap each other's pid file.
     start_lock: tokio::sync::Mutex<()>,
+    /// OCR pages in flight at once under the current memory plan (0 when not running).
+    pub ocr_parallel: AtomicU32,
+    /// Why the watchdog stopped the engine, if it did; shown by the UI.
+    pub stopped_reason: Mutex<Option<String>>,
 }
 
 struct Running {
     child: Child,
     port: u16,
     api_key: String,
+}
+
+impl EngineProcess {
+    pub fn ocr_parallel(&self) -> u32 {
+        self.ocr_parallel.load(Ordering::Relaxed).max(1)
+    }
 }
 
 /// Connection details the HTTP client needs.
@@ -109,6 +121,40 @@ impl EngineProcess {
         let _ = r.child.kill();
         let _ = r.child.wait();
     }
+
+    /// Emergency stop: kill the router and every model child immediately (no grace
+    /// period), used by the memory watchdog when a graceful stop could itself hang.
+    pub fn kill_now(&self) {
+        let running = match self.inner.lock() {
+            Ok(mut g) => g.take(),
+            Err(_) => None,
+        };
+        let Some(mut r) = running else { return };
+        let pid = r.child.id();
+        if let Some(p) = self.pid_path.lock().ok().and_then(|g| g.clone()) {
+            let _ = std::fs::remove_file(p);
+        }
+        kill_tree(pid);
+        let _ = r.child.kill();
+        let _ = r.child.wait();
+        self.ocr_parallel.store(0, Ordering::Relaxed);
+    }
+}
+
+#[cfg(unix)]
+fn kill_tree(pid: u32) {
+    // Children first (the router spawns one llama-server per loaded model), then the router.
+    if let Ok(out) = Command::new("pgrep").args(["-P", &pid.to_string()]).output() {
+        for child in String::from_utf8_lossy(&out.stdout).split_whitespace() {
+            let _ = Command::new("kill").args(["-KILL", child]).status();
+        }
+    }
+    let _ = Command::new("kill").args(["-KILL", &pid.to_string()]).status();
+}
+
+#[cfg(windows)]
+fn kill_tree(pid: u32) {
+    let _ = Command::new("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]).status();
 }
 
 #[cfg(unix)]
@@ -281,16 +327,16 @@ pub fn model_installed(app: &tauri::AppHandle, model: &ModelSpec) -> bool {
 // ─── Run ──────────────────────────────────────────────────────────────────
 
 /// Write the preset file llama-server reads: one section per role.
-fn write_presets(app: &tauri::AppHandle, ocr: &ModelSpec, underwriter: &ModelSpec) -> Result<PathBuf, String> {
+fn write_presets(app: &tauri::AppHandle, ocr: &ModelSpec, underwriter: &ModelSpec, plan: &MemoryPlan) -> Result<PathBuf, String> {
     let mut ini = String::new();
-    for m in [ocr, underwriter] {
+    for (m, ctx, parallel) in [(ocr, plan.ocr_ctx, plan.ocr_parallel), (underwriter, plan.underwriter_ctx, 1)] {
         ini.push_str(&format!("[{}]\n", m.role));
         ini.push_str(&format!("model = {}\n", asset_path(app, m, m.main_file())?.display()));
         if let Some(mm) = m.mmproj_file() {
             ini.push_str(&format!("mmproj = {}\n", asset_path(app, m, mm)?.display()));
         }
-        ini.push_str(&format!("ctx-size = {}\n", m.ctx_size));
-        ini.push_str(&format!("parallel = {}\n\n", m.parallel));
+        ini.push_str(&format!("ctx-size = {}\n", ctx));
+        ini.push_str(&format!("parallel = {}\n\n", parallel));
     }
     let path = engine_dir(app)?.join("models.ini");
     std::fs::write(&path, ini).map_err(|e| format!("Cannot write presets: {e}"))?;
@@ -371,31 +417,28 @@ pub async fn start(app: &tauri::AppHandle, cfg: &EngineConfig) -> Result<Endpoin
         return Err(format!("{} is not installed", underwriter.display_name));
     }
 
+    // Size everything to the memory free right now, and refuse rather than freeze the
+    // machine when it does not fit (see `memory`).
+    let plan = memory::plan(&ocr, &underwriter);
+    println!("[Engine] memory: {}", plan.message);
+    if !plan.fits {
+        return Err(plan.message);
+    }
     reap_stale_server(app);
-    let presets = write_presets(app, &ocr, &underwriter)?;
+    let presets = write_presets(app, &ocr, &underwriter, &plan)?;
     let port = free_port()?;
     let api_key = random_key();
     let log_path = engine_dir(app)?.join("llama-server.log");
     let log = std::fs::File::create(&log_path).map_err(|e| format!("Cannot create log: {e}"))?;
     let log_err = log.try_clone().map_err(|e| e.to_string())?;
-
-    // Keep both models resident only when memory clearly allows it. Otherwise the router
-    // holds one model at a time and swaps on demand: the pipeline reads all pages (OCR)
-    // before the single classification call, so the swap happens once per job. On an
-    // integrated GPU an oversized allocation thrashes GPU memory to swap for minutes.
-    let mut sys = sysinfo::System::new();
-    sys.refresh_memory();
-    let total_ram = sys.total_memory() as f64;
-    let model_bytes = (ocr.total_size() + underwriter.total_size()) as f64;
-    let models_max = if model_bytes * 1.5 < total_ram * 0.6 { "2" } else { "1" };
-    println!("[Engine] {:.1} GB RAM, {:.1} GB of models: models-max {models_max}", total_ram / 1e9, model_bytes / 1e9);
+    let models_max = plan.models_max.to_string();
 
     let mut cmd = Command::new(&bin);
     cmd.args([
         "--models-preset", &presets.to_string_lossy(),
         "--host", "127.0.0.1",
         "--port", &port.to_string(),
-        "--models-max", models_max,
+        "--models-max", &models_max,
         "-ngl", "auto",
         "--jinja",
         "--no-webui",
@@ -448,5 +491,41 @@ pub async fn start(app: &tauri::AppHandle, cfg: &EngineConfig) -> Result<Endpoin
     if let Ok(mut g) = state.pid_path.lock() {
         *g = pid_file(app).ok();
     }
+    state.ocr_parallel.store(plan.ocr_parallel, Ordering::Relaxed);
+    if let Ok(mut g) = state.stopped_reason.lock() {
+        *g = None;
+    }
+    spawn_watchdog(app.clone(), port);
     Ok(endpoint)
+}
+
+/// Stops the engine the moment free memory collapses, before the graphics driver
+/// starts swapping GPU buffers and takes the desktop with it. Polls every second while
+/// this server instance (identified by its port) is the running one.
+fn spawn_watchdog(app: tauri::AppHandle, port: u16) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let state = app.state::<EngineProcess>();
+            let same = state.inner.lock().ok().map(|g| g.as_ref().map(|r| r.port) == Some(port)).unwrap_or(false);
+            if !same {
+                return;
+            }
+            let (total, available) = memory::available_bytes();
+            if available < memory::WATCHDOG_FLOOR_BYTES {
+                let reason = format!(
+                    "The engine was stopped to protect the system: free memory fell to {:.1} GB of {:.0} GB. Close other programs before starting it again.",
+                    available as f64 / 1e9, total as f64 / 1e9
+                );
+                eprintln!("[Engine] WATCHDOG: {reason}");
+                state.kill_now();
+                if let Ok(mut g) = state.stopped_reason.lock() {
+                    *g = Some(reason.clone());
+                }
+                use tauri::Emitter;
+                let _ = app.emit("engine-stopped", serde_json::json!({ "reason": reason }));
+                return;
+            }
+        }
+    });
 }

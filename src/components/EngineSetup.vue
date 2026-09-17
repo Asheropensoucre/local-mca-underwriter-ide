@@ -18,6 +18,8 @@
         </span>
         <span class="text-gray-500">Compute</span>
         <span class="col-span-3">{{ backendLabel }}</span>
+        <span class="text-gray-500">Memory now</span>
+        <span class="col-span-3" :class="status.memory.fits ? '' : 'text-red-400'">{{ status.memory.message }}</span>
         <span class="text-gray-500">Folder</span>
         <span class="col-span-3 truncate" :title="status.engine_dir">{{ status.engine_dir }}</span>
       </div>
@@ -80,13 +82,18 @@
         <button
           v-if="status && status.ready"
           @click="start"
-          :disabled="starting"
-          class="px-5 py-2 bg-primary hover:bg-blue-600 text-white disabled:opacity-50"
+          :disabled="starting || !status.memory.fits"
+          :title="status.memory.fits ? '' : status.memory.message"
+          class="px-5 py-2 bg-primary hover:bg-blue-600 text-white disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {{ starting ? 'Starting engine' : 'Start engine' }}
+          {{ starting ? 'Starting engine' : (status.memory.fits ? 'Start engine' : 'Not enough free memory') }}
+        </button>
+        <button v-if="status && !status.memory.fits" @click="refresh" class="px-3 py-2 bg-surface border border-border text-gray-300 hover:border-gray-500">
+          Check again
         </button>
       </div>
 
+      <p v-if="status?.stopped_reason" class="mt-4 text-red-400 font-mono text-xs">{{ status.stopped_reason }}</p>
       <div v-if="error" class="mt-4 text-red-400 whitespace-pre-wrap font-mono text-xs">
         {{ error }}
         <div v-if="canFallbackToCpu" class="mt-2">

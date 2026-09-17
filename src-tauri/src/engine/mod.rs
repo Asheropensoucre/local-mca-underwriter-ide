@@ -7,6 +7,7 @@ pub mod download;
 pub mod headless;
 pub mod ledger;
 pub mod llama;
+pub mod memory;
 pub mod ocr_table;
 pub mod pipeline;
 pub mod registry;
@@ -61,6 +62,10 @@ pub struct EngineStatus {
     /// Runtime plus both required models are on disk.
     pub ready: bool,
     pub engine_dir: String,
+    /// Memory sizing for the chosen models against the RAM free right now.
+    pub memory: memory::MemoryPlan,
+    /// Set when the memory watchdog stopped the engine.
+    pub stopped_reason: Option<String>,
 }
 
 fn model_status(app: &tauri::AppHandle, m: &ModelSpec) -> ModelStatus {
@@ -121,8 +126,14 @@ pub fn engine_status(app: tauri::AppHandle) -> Result<EngineStatus, String> {
     let runtime_asset = registry::runtime_asset(config.backend);
     let runtime_installed = runtime::server_binary(&app, config.backend).is_some();
     let chosen_installed = underwriters.iter().any(|m| m.id == config.underwriter_model && m.installed);
-    let running = app.state::<EngineProcess>().is_running();
+    let state = app.state::<EngineProcess>();
+    let running = state.is_running();
+    let chosen = registry::underwriter_model(&config.underwriter_model).unwrap_or_else(|| registry::underwriter_models()[0].clone());
+    let memory = memory::plan(&registry::ocr_model(), &chosen);
+    let stopped_reason = state.stopped_reason.lock().ok().and_then(|g| g.clone());
     Ok(EngineStatus {
+        memory,
+        stopped_reason,
         platform_supported: runtime_asset.is_some(),
         runtime_size: runtime_asset.map(|a| a.size).unwrap_or(0),
         runtime_installed,
@@ -203,7 +214,16 @@ pub fn engine_devices(app: tauri::AppHandle) -> Result<String, String> {
 async fn ensure_running(app: &tauri::AppHandle) -> Result<runtime::Endpoint, String> {
     let state = app.state::<EngineProcess>();
     if let Some(ep) = state.endpoint().filter(|_| state.is_running()) {
+        // Models are resident; the job's working set must still fit with headroom.
+        memory::check_before_job(state.ocr_parallel())?;
         return Ok(ep);
+    }
+    if let Some(reason) = state.stopped_reason.lock().ok().and_then(|g| g.clone()) {
+        // The watchdog stopped it: only restart when memory has recovered.
+        let plan = memory::plan(&registry::ocr_model(), &registry::underwriter_model(&runtime::load_config(app).underwriter_model).unwrap_or_else(registry::ocr_model));
+        if !plan.fits {
+            return Err(format!("{reason}\n{}", plan.message));
+        }
     }
     let cfg = runtime::load_config(app);
     runtime::start(app, &cfg).await

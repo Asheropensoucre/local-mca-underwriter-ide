@@ -76,6 +76,9 @@ pub struct ModelSpec {
     /// Concurrent request slots. Batched decoding on a bandwidth-bound GPU costs little
     /// per extra slot, so OCR pages run several at a time.
     pub parallel: u32,
+    /// KV (or recurrent state) cache bytes per context token, measured with llama.cpp;
+    /// `memory::plan` sizes contexts with it.
+    pub kv_bytes_per_token: u64,
 }
 
 impl ModelSpec {
@@ -123,6 +126,7 @@ pub fn ocr_model() -> ModelSpec {
         // 4 slots x 6144 tokens: a page image is about 2,700 tokens plus up to 1,500 of text.
         ctx_size: 24576,
         parallel: 4,
+        kv_bytes_per_token: 65_536,
     }
 }
 
@@ -143,8 +147,11 @@ pub fn underwriter_models() -> Vec<ModelSpec> {
                 sha256: Some("00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4"),
             }],
             min_ram_gb: 8,
-            ctx_size: 32768,
+            // The facts block for a 9-page statement is about 5,000 tokens; 16k leaves room
+            // for several months in one job. Measured KV: 256 MiB at 8k (hybrid attention).
+            ctx_size: 16384,
             parallel: 1,
+            kv_bytes_per_token: 32_768,
         },
         ModelSpec {
             role: "underwriter",
@@ -161,6 +168,7 @@ pub fn underwriter_models() -> Vec<ModelSpec> {
             min_ram_gb: 16,
             ctx_size: 16384,
             parallel: 1,
+            kv_bytes_per_token: 49_152,
         },
     ]
 }
