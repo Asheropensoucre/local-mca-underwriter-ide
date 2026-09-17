@@ -248,6 +248,8 @@ async fn ocr_page(ep: &Endpoint, pdf: &str, page: usize, raw: &RawOcr, progress:
     let mut uri: Option<String> = None; // rendered once, only when a task is not cached
     let prompt = std::env::var("MCA_OCR_PROMPT").unwrap_or_else(|_| OCR_PROMPT.to_string()); // testing aid
     let text = ocr_cached(ep, &mut uri, pdf, page, &prompt, raw.text.as_ref(), progress, "reading").await?;
+    // The text task sometimes returns tables as Markdown; turn those into aligned lines.
+    let text = super::ocr_table::expand_markdown_tables(&text);
     let missing = ledger::rows_missing_amounts(&text);
     if missing == 0 || prompt != OCR_PROMPT {
         return Ok(text);

@@ -1013,7 +1013,7 @@ fn capture_summary(lower: &str, line: &str, s: &mut Summary, page: usize) {
         if let Some(last) = toks.last() {
             let prev_minus = toks.len() >= 2 && toks[toks.len() - 2] == "-";
             let label: String = toks[..toks.len() - 1].join(" ").to_ascii_lowercase();
-            if is_amount_token(last) && !lower.contains("balance") && !lower.contains("interest") && !lower.contains("days") && toks.len() <= 6 {
+            if is_amount_token(last) && !lower.contains("balance") && !lower.contains("interest") && !lower.contains("days") && toks.len() <= 8 {
                 let v = parse_amount(last).map(f64::abs);
                 if last.starts_with('-') || last.starts_with("-$") || prev_minus {
                     // Chase: signed categories.

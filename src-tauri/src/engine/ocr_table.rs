@@ -54,7 +54,56 @@ fn amount_label(cell: &str) -> Option<&'static str> {
 /// Convert the table to aligned text. None when the HTML has no header row with a date
 /// column and an amount column, in which case the caller keeps the plain OCR text.
 pub fn table_html_to_layout(html: &str) -> Option<String> {
-    let rows = rows(html);
+    rows_to_layout(rows(html))
+}
+
+/// Rows of a Markdown pipe table ("| 1/5 | | Description | 68,729.64 | | |"), separator
+/// rows dropped. GLM-OCR's plain text task emits these for some statement tables.
+fn markdown_rows(block: &[&str]) -> Vec<Vec<String>> {
+    block
+        .iter()
+        .filter(|l| !l.trim().trim_start_matches('|').trim().chars().all(|c| c == ':' || c == '-' || c == '|' || c == ' '))
+        .map(|l| {
+            let t = l.trim();
+            let inner = t.strip_prefix('|').unwrap_or(t);
+            let inner = inner.strip_suffix('|').unwrap_or(inner);
+            inner.split('|').map(|c| c.split_whitespace().collect::<Vec<_>>().join(" ")).collect()
+        })
+        .collect()
+}
+
+/// Replace every Markdown pipe table in plain OCR `text` with aligned layout lines the
+/// ledger parser reads; text outside the tables is kept as is.
+pub fn expand_markdown_tables(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].trim_start().starts_with('|') {
+            let start = i;
+            while i < lines.len() && lines[i].trim_start().starts_with('|') {
+                i += 1;
+            }
+            match rows_to_layout(markdown_rows(&lines[start..i])) {
+                Some(layout) => out.push_str(&layout),
+                None => {
+                    // Not a transaction table: keep the cells as words.
+                    for row in markdown_rows(&lines[start..i]) {
+                        out.push_str(&row.join(" "));
+                        out.push('\n');
+                    }
+                }
+            }
+            continue;
+        }
+        out.push_str(lines[i]);
+        out.push('\n');
+        i += 1;
+    }
+    out
+}
+
+fn rows_to_layout(rows: Vec<Vec<String>>) -> Option<String> {
     let header_idx = rows.iter().position(|r| r.iter().any(|c| c.eq_ignore_ascii_case("date") || c.to_ascii_lowercase().ends_with(" date")) && r.iter().any(|c| amount_label(c).is_some()))?;
     let header = &rows[header_idx];
     let labels: Vec<Option<&'static str>> = header.iter().map(|c| amount_label(c)).collect();
@@ -161,5 +210,17 @@ mod tests {
         assert_eq!(credits.len(), 2, "{:?}", ledger.transactions);
         assert_eq!(ledger.transactions.len(), 5);
         assert!((ledger.parsed_debit_total - 350.70).abs() < 0.001, "{}", ledger.parsed_debit_total);
+    }
+
+    #[test]
+    fn markdown_tables_are_expanded_into_layout() {
+        let text = "Transaction history\n\n| Date | Check Number | Description | Deposits/ Credits | Withdrawals/ Debits | Ending daily balance |\n| :--- | :--- | :--- | :--- | :--- | :--- |\n| 1/5 | | Etransfer IN Branch | 68,729.64 | | |\n| 1/5 | | Online Transfer to Ward | | 24,925.00 | 43,804.64 |\n\nEnding balance on 1/31: 34,039.66\n";
+        let out = expand_markdown_tables(text);
+        assert!(out.contains("Ending balance on 1/31"));
+        let l = crate::engine::ledger::parse(&[(1, &out)]);
+        assert_eq!(l.transactions.len(), 2, "{out}");
+        assert_eq!(l.transactions[0].kind, crate::engine::ledger::Kind::Credit);
+        assert_eq!(l.transactions[1].kind, crate::engine::ledger::Kind::Debit);
+        assert_eq!(l.daily_balances.len(), 1);
     }
 }
