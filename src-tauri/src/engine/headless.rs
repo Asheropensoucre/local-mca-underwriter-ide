@@ -92,7 +92,8 @@ async fn run_job(app: &tauri::AppHandle, args: HeadlessArgs) -> Result<String, S
         return Err("no PDF paths given".into());
     }
     if args.ledger_only {
-        let pages = if args.ocr { ocr_pages(app, &args.pdfs).await? } else { text_pages(&args.pdfs)? };
+        let pdfs = super::pipeline::prepare_inputs(app, &args.pdfs)?;
+        let pages = if args.ocr { ocr_pages(app, &pdfs).await? } else { text_pages(&pdfs)? };
         return ledger_dump(pages);
     }
     let t = std::time::Instant::now();

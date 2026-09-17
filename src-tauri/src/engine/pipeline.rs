@@ -60,14 +60,65 @@ fn run(cmd: &str, args: &[&str]) -> Result<std::process::Output, String> {
 
 pub fn page_count(pdf: &str) -> Result<usize, String> {
     let out = run("pdfinfo", &[pdf])?;
-    if !out.status.success() {
-        return Err(format!("pdfinfo failed: {}", String::from_utf8_lossy(&out.stderr)));
+    // Poppler prints syntax warnings for slightly damaged files and still answers; only a
+    // missing page count is a failure, and then the message is one sentence, not the dump.
+    let pages = String::from_utf8_lossy(&out.stdout).lines().find_map(|l| l.strip_prefix("Pages:")).and_then(|v| v.trim().parse().ok());
+    match pages {
+        Some(n) => Ok(n),
+        None => {
+            let err = String::from_utf8_lossy(&out.stderr);
+            let name = Path::new(pdf).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            if err.contains("Encrypted") || err.contains("Incorrect password") {
+                Err(format!("{name} is password protected. Remove the password and try again."))
+            } else if err.contains("xref") || err.contains("trailer") || err.contains("Length") {
+                Err(format!("{name} is damaged (broken cross-reference table) and could not be repaired. Re-save it from the bank's site or print it to a new PDF and try again."))
+            } else {
+                Err(format!("{name} could not be read as a PDF: {}", err.lines().last().unwrap_or("unknown error")))
+            }
+        }
     }
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .find_map(|l| l.strip_prefix("Pages:"))
-        .and_then(|v| v.trim().parse().ok())
-        .ok_or_else(|| "pdfinfo did not report a page count".to_string())
+}
+
+/// Damaged PDFs (broken cross-reference tables, bad stream lengths) are common in
+/// files that went through email, scanners and portals. When Poppler cannot read one,
+/// rebuild it with qpdf or Ghostscript if either is installed, into the engine's
+/// `repaired/` folder, and return the new path. None when no tool could fix it.
+pub fn repair_pdf(app: &tauri::AppHandle, pdf: &str) -> Option<PathBuf> {
+    let dir = super::runtime::engine_dir(app).ok()?.join("repaired");
+    std::fs::create_dir_all(&dir).ok()?;
+    let name = Path::new(pdf).file_name()?.to_string_lossy().to_string();
+    let out = dir.join(format!("{}-{name}", file_hash(pdf).unwrap_or_default()));
+    let attempts: [(&str, Vec<String>); 2] = [
+        ("qpdf", vec![pdf.to_string(), out.to_string_lossy().to_string()]),
+        ("gs", vec!["-q".into(), "-dNOPAUSE".into(), "-dBATCH".into(), "-sDEVICE=pdfwrite".into(), format!("-sOutputFile={}", out.to_string_lossy()), pdf.to_string()]),
+    ];
+    for (tool, args) in &attempts {
+        let _ = std::fs::remove_file(&out);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let Ok(res) = Command::new(tool).args(&args).output() else { continue };
+        // qpdf exits 3 for "succeeded with warnings"; judge by whether Poppler can read the result.
+        let _ = res;
+        if out.exists() && page_count(&out.to_string_lossy()).is_ok() {
+            println!("[Engine] {name}: repaired with {tool}");
+            return Some(out);
+        }
+    }
+    None
+}
+
+/// Paths the job will actually read: damaged files replaced by repaired copies.
+pub fn prepare_inputs(app: &tauri::AppHandle, pdfs: &[String]) -> Result<Vec<String>, String> {
+    let mut out = Vec::with_capacity(pdfs.len());
+    for pdf in pdfs {
+        match page_count(pdf) {
+            Ok(_) => out.push(pdf.clone()),
+            Err(e) => match repair_pdf(app, pdf) {
+                Some(fixed) => out.push(fixed.to_string_lossy().to_string()),
+                None => return Err(e),
+            },
+        }
+    }
+    Ok(out)
 }
 
 pub fn text_layer(pdf: &str, page: usize) -> Result<String, String> {

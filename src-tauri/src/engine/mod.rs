@@ -240,6 +240,9 @@ pub async fn engine_analyze(
     if pdf_paths.is_empty() {
         return Err("No files to analyze".into());
     }
+    // Damaged files are repaired first (qpdf or Ghostscript when installed), before the
+    // engine is even started; unreadable ones fail here with one clear sentence.
+    let pdf_paths = pipeline::prepare_inputs(&app, &pdf_paths)?;
     let ep = ensure_running(&app).await?;
 
     let mut total_pages = 0;
