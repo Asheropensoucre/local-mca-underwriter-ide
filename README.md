@@ -47,6 +47,24 @@ Registry of pinned files: `src-tauri/src/engine/registry.rs`.
 - Verification block on every report: stated vs parsed credit and debit totals, transaction count, page read method and timing.
 - Follow-up chat about the finished analysis, prompt templates, analysis history, JSON/CSV export, print view.
 
+## Statement layouts the parser understands
+
+Every statement is checked against itself: the parser sums the transaction lines and compares them with the totals the bank printed. The verification block in the report shows both numbers, so a layout the parser does not fully understand is visible, never silent. Layouts verified to the cent so far (`scripts/parser_check.py` over public court-filing exhibits and the test statements):
+
+| Bank | Layout features |
+|---|---|
+| Wells Fargo (business and consumer, digital and scanned) | credit, debit and running-balance columns; two-line column headers; "Totals" row; "Items returned unpaid" and fee summaries skipped |
+| Legends Bank | date-first / amount-last lines, section headers, multi-column check tables, check image captions |
+| Sunrise Banks | column-style two-line summary, 20-row daily balance table |
+| Webster Bank | running-balance table plus per-type lists (duplicates dropped), "N Debit(s) this period" summary, `-$` amounts |
+| Pinnacle Bank | `$.00` amounts, "Credits + / Debits -" summary, check image pages |
+| Truist (commercial) | "Checks" plus "Other withdrawals" summary, `2.197.40` OCR amounts; needs the OCR re-read (see below) |
+| Bank of America, Chase, BMO | single-page exhibits, summary only |
+
+Scanned pages: the OCR model reads plain text first; when rows under a transaction table lose their amounts (wrapped descriptions), the table is read as a table and every amount lands in its column. Statements whose text layer is someone else's poor OCR (court filings) are detected by the totals mismatch and re-read with the OCR model automatically.
+
+Not handled yet: multi-account credit union statements (several accounts on one statement), statements with no printed totals at all (parsed lines are still shown, but cannot be verified), and layouts not seen in the corpus. Adding a bank means adding its statement to the corpus, fixing the parser and adding a fixture test in `src-tauri/src/engine/ledger.rs`.
+
 ## Prerequisites
 
 - Poppler (`pdftocairo`, `pdftotext`, `pdfinfo`, `pdfimages`) on PATH. Ubuntu/Debian: `sudo apt install poppler-utils`. Arch: `sudo pacman -S poppler`. macOS: `brew install poppler`. Windows: a Poppler build such as https://github.com/oschwartz10612/poppler-windows, folder added to PATH.
@@ -65,8 +83,12 @@ The full pipeline runs from a terminal, no window, and prints the report JSON:
 
 ```bash
 ./src-tauri/target/debug/local-mca-underwriter-ide --headless-analyze statement.pdf [more.pdf ...]
-./src-tauri/target/debug/local-mca-underwriter-ide --headless-ledger statement.pdf   # parser only
+./src-tauri/target/debug/local-mca-underwriter-ide --headless-ledger statement.pdf          # parser only, text layers
+./src-tauri/target/debug/local-mca-underwriter-ide --headless-ledger statement.pdf --ocr    # parser with OCR of scanned pages
+python3 scripts/parser_check.py <folder of PDFs> [--ocr] [--markdown]                        # parsed vs printed totals per statement
 ```
+
+OCR page text is cached under `engine/ocr-cache/` (keyed by file hash, page, DPI and model), so re-analyzing a statement never pays for OCR twice.
 
 ## Measured on a laptop with an AMD Radeon 680M (integrated) and 14 GB RAM
 
