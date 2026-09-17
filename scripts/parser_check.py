@@ -18,8 +18,18 @@ separately: those are layouts the parser does not understand yet.
 --snapshot <file>  compare with the previous run saved in <file> (regressions and new passes
             are listed), then overwrite it with this run.
 """
-import json, os, subprocess, sys
+import json, os, re, subprocess, sys
 from collections import defaultdict
+
+# A recurring debit whose payee reads like a funder: the statement shows MCA activity (a
+# position). Data-quality signal for the corpus, reported per bank and in total.
+LENDER = re.compile(r"capital|funding|fund\b|advance|kabbage|ondeck|on deck|fundbox|bluevine|credibly|kapitus|libertas|forward fin|rapid fin|everest|fora fin|national fund|cfg merch|\bmca\b|merchant|lendio|clearco|yellowstone|itria|pearl|torro|reliant|fox cap|seamless|byzfunder|greenbox|cloudfund|mantis|premium merch|newco|fundkite|lendr|expansion cap|last chance|one park|unique fund|lending|financ|loan", re.I)
+NOT_LENDER = re.compile(r"payroll|tax|insur|utilit|transfer|amex|american express|card|mortgage|lease|rent\b|irs\b", re.I)
+
+
+def lender_activity(d):
+    """Recurring debits to funder-like payees in a ledger dump."""
+    return [r for r in d.get("recurring_debits", []) if LENDER.search(r["payee"]) and not NOT_LENDER.search(r["payee"])]
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.path.join(ROOT, "src-tauri", "target", "debug", "local-mca-underwriter-ide")
@@ -59,7 +69,8 @@ def main():
         scans = d.get("pages", {}).get("scan", 0)
         stated_c, stated_d = s.get("total_credits"), s.get("total_debits")
         row = {"name": name, "bank": s.get("bank") or "unknown", "stated_c": stated_c, "parsed_c": round(p["credit_total"], 2),
-               "stated_d": stated_d, "parsed_d": round(p["debit_total"], 2), "lines": len(d["transactions"]), "scans": scans}
+               "stated_d": stated_d, "parsed_d": round(p["debit_total"], 2), "lines": len(d["transactions"]), "scans": scans,
+               "lenders": [r["payee"][:40] for r in lender_activity(d)]}
         statements = d.get("statements") or []
         row["statements"] = len(statements) or 1
         if len(statements) > 1:
@@ -96,20 +107,28 @@ def main():
         by_bank = defaultdict(list)
         for r in rows:
             by_bank[r["bank"]].append(r)
-        print("| Bank | Files | Pass | Fail | No summary | Scan pages skipped |")
-        print("|---|---|---|---|---|---|")
+        print("| Bank | Files | Pass | Fail | No summary | Scan pages skipped | With lender activity |")
+        print("|---|---|---|---|---|---|---|")
         for bank in sorted(by_bank, key=lambda b: -len(by_bank[b])):
             rs = by_bank[bank]
             n = lambda st: sum(1 for r in rs if r.get("status") == st)
             scans = sum(1 for r in rs if r.get("scans"))
-            print(f"| {bank} | {len(rs)} | {n('pass')} | {n('fail')} | {n('no summary')} | {scans} |")
+            lend = sum(1 for r in rs if r.get("lenders"))
+            print(f"| {bank} | {len(rs)} | {n('pass')} | {n('fail')} | {n('no summary')} | {scans} | {lend} |")
+        total_lend = sum(1 for r in rows if r.get("lenders"))
+        print(f"\nStatements with lender activity (funder-like recurring debits): {total_lend} of {len(rows)}")
         return
 
     passed = [r for r in rows if r["status"] == "pass"]
     failed = [r for r in rows if r["status"] == "fail"]
     no_summary = [r for r in rows if r["status"] == "no summary"]
     errors = [r for r in rows if r["status"] == "error"]
-    print(f"passed {len(passed)}, failed {len(failed)}, no summary found {len(no_summary)}, errors {len(errors)}")
+    lend = [r for r in rows if r.get("lenders")]
+    print(f"passed {len(passed)}, failed {len(failed)}, no summary found {len(no_summary)}, errors {len(errors)}; with lender activity {len(lend)}")
+    if lend and verbose:
+        print("\nLENDER ACTIVITY:")
+        for r in lend:
+            print("  ", r["name"], r["bank"], ", ".join(r["lenders"][:4]))
     fmt = lambda r: f"{r['name']}  {r['bank']:<16} credits {r['stated_c']} / {r['parsed_c']}  debits {r['stated_d']} / {r['parsed_d']}  lines {r['lines']}" + (f"  [{r['scans']} scan pages skipped]" if r["scans"] else "") + (f"  [{r['statements']} statements in file]" if r.get("statements", 1) > 1 else "")
     if failed:
         print("\nFAILED (stated / parsed):")
