@@ -55,6 +55,8 @@ struct Running {
     child: Child,
     port: u16,
     api_key: String,
+    /// systemd scope unit holding the whole engine tree (Linux with systemd-run).
+    unit: Option<String>,
 }
 
 impl EngineProcess {
@@ -110,6 +112,10 @@ impl EngineProcess {
         if let Some(p) = self.pid_path.lock().ok().and_then(|g| g.clone()) {
             let _ = std::fs::remove_file(p);
         }
+        #[cfg(target_os = "linux")]
+        if let Some(unit) = &r.unit {
+            signal_unit(unit, "SIGTERM");
+        }
         graceful_terminate(pid);
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
@@ -133,6 +139,10 @@ impl EngineProcess {
         let pid = r.child.id();
         if let Some(p) = self.pid_path.lock().ok().and_then(|g| g.clone()) {
             let _ = std::fs::remove_file(p);
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(unit) = &r.unit {
+            signal_unit(unit, "SIGKILL");
         }
         kill_tree(pid);
         let _ = r.child.kill();
@@ -354,7 +364,19 @@ fn reap_stale_server(app: &tauri::AppHandle) {
     let Ok(path) = pid_file(app) else { return };
     let Ok(text) = std::fs::read_to_string(&path) else { return };
     let _ = std::fs::remove_file(&path);
-    let Ok(pid) = text.trim().parse::<u32>() else { return };
+    let mut lines = text.lines();
+    let Some(Ok(pid)) = lines.next().map(|l| l.trim().parse::<u32>()) else { return };
+    let unit = lines.next().map(str::trim).filter(|u| !u.is_empty());
+    #[cfg(target_os = "linux")]
+    if let Some(unit) = unit {
+        // The scope outlives a crashed app; stopping it takes the whole tree with it.
+        println!("[Engine] Stopping stale engine scope {unit} from a previous run");
+        signal_unit(unit, "SIGTERM");
+        std::thread::sleep(Duration::from_millis(500));
+        signal_unit(unit, "SIGKILL");
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = unit;
     if process_is_our_server(pid, app) {
         println!("[Engine] Reaping stale llama-server pid {pid} from a previous run");
         graceful_terminate(pid);
@@ -433,19 +455,26 @@ pub async fn start(app: &tauri::AppHandle, cfg: &EngineConfig) -> Result<Endpoin
     let log_err = log.try_clone().map_err(|e| e.to_string())?;
     let models_max = plan.models_max.to_string();
 
-    let mut cmd = Command::new(&bin);
+    // CPU-only builds and the CPU mode keep everything off the GPU.
+    let ngl = if cfg.backend == Backend::Cpu || plan.mode == memory::Mode::Cpu { "0" } else { "auto" };
+    let threads = plan.threads.to_string();
+    let (mut cmd, unit) = capped_command(&bin, plan.cap_bytes, port);
     cmd.args([
         "--models-preset", &presets.to_string_lossy(),
         "--host", "127.0.0.1",
         "--port", &port.to_string(),
         "--models-max", &models_max,
-        "-ngl", "auto",
+        "-ngl", ngl,
+        "-t", &threads,
         "--jinja",
         "--no-webui",
         "--api-key", &api_key,
     ])
     // Keep the router from discovering unrelated GGUFs in the user's llama.cpp cache.
     .env("LLAMA_CACHE", engine_dir(app)?.join("cache"))
+    // The image encoder is the spiky allocation; in GpuText and Cpu modes it stays in
+    // ordinary memory. Model child processes inherit this.
+    .env("LLAMA_ARG_MMPROJ_OFFLOAD", if plan.mode == memory::Mode::GpuFull && ngl != "0" { "1" } else { "0" })
     .current_dir(bin.parent().unwrap_or(Path::new(".")))
     .stdin(Stdio::null())
     .stdout(Stdio::from(log))
@@ -459,7 +488,8 @@ pub async fn start(app: &tauri::AppHandle, cfg: &EngineConfig) -> Result<Endpoin
     }
     let mut child = cmd.spawn().map_err(|e| format!("Cannot start llama-server: {e}"))?;
     if let Ok(p) = pid_file(app) {
-        let _ = std::fs::write(p, child.id().to_string());
+        // pid, and the scope unit when there is one, for reaping after a crash.
+        let _ = std::fs::write(p, format!("{}\n{}", child.id(), unit.clone().unwrap_or_default()));
     }
     println!("[Engine] llama-server pid {} on port {port} ({:?})", child.id(), cfg.backend);
 
@@ -486,7 +516,7 @@ pub async fn start(app: &tauri::AppHandle, cfg: &EngineConfig) -> Result<Endpoin
 
     let endpoint = Endpoint { base_url, api_key: api_key.clone() };
     if let Ok(mut g) = state.inner.lock() {
-        *g = Some(Running { child, port, api_key });
+        *g = Some(Running { child, port, api_key, unit });
     }
     if let Ok(mut g) = state.pid_path.lock() {
         *g = pid_file(app).ok();
@@ -499,13 +529,67 @@ pub async fn start(app: &tauri::AppHandle, cfg: &EngineConfig) -> Result<Endpoin
     Ok(endpoint)
 }
 
+/// The llama-server command, wrapped so the operating system caps the whole engine
+/// process tree at `cap_bytes` and runs it at low priority. If the engine ever outgrows
+/// its budget the OS kills the engine, never the desktop.
+///
+/// Linux: a transient systemd user scope with MemoryMax and no swap (falls back to a
+/// plain low-priority process when systemd-run is missing). Windows/macOS: low priority
+/// only; the watchdog is the cap there.
+fn capped_command(bin: &Path, cap_bytes: u64, port: u16) -> (Command, Option<String>) {
+    #[cfg(target_os = "linux")]
+    {
+        if Command::new("systemd-run").args(["--user", "--scope", "-q", "-p", "MemoryMax=1G", "true"]).status().map(|s| s.success()).unwrap_or(false) {
+            let unit = format!("mca-engine-{port}.scope");
+            let mut cmd = Command::new("systemd-run");
+            cmd.args([
+                "--user", "--scope", "-q",
+                "--unit", &unit,
+                "-p", &format!("MemoryMax={cap_bytes}"),
+                "-p", "MemorySwapMax=0",
+                "--nice=10",
+                "--",
+            ]);
+            cmd.arg(bin);
+            println!("[Engine] memory cap {:.1} GB via systemd scope {unit}, nice 10", cap_bytes as f64 / 1e9);
+            return (cmd, Some(unit));
+        }
+        let mut cmd = Command::new("nice");
+        cmd.args(["-n", "10"]).arg(bin);
+        println!("[Engine] systemd-run unavailable: low priority only (watchdog caps memory)");
+        return (cmd, None);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (cap_bytes, port);
+        let mut cmd = Command::new("nice");
+        cmd.args(["-n", "10"]).arg(bin);
+        return (cmd, None);
+    }
+    #[cfg(windows)]
+    {
+        let _ = (cap_bytes, port);
+        // BELOW_NORMAL_PRIORITY_CLASS keeps the desktop responsive.
+        let mut cmd = Command::new(bin);
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0000_4000);
+        (cmd, None)
+    }
+}
+
+/// Signal every process in a systemd scope (router and model children alike).
+#[cfg(target_os = "linux")]
+fn signal_unit(unit: &str, signal: &str) {
+    let _ = Command::new("systemctl").args(["--user", "kill", "-s", signal, unit]).status();
+}
+
 /// Stops the engine the moment free memory collapses, before the graphics driver
 /// starts swapping GPU buffers and takes the desktop with it. Polls every second while
 /// this server instance (identified by its port) is the running one.
 fn spawn_watchdog(app: tauri::AppHandle, port: u16) {
     tauri::async_runtime::spawn(async move {
         loop {
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
             let state = app.state::<EngineProcess>();
             let same = state.inner.lock().ok().map(|g| g.as_ref().map(|r| r.port) == Some(port)).unwrap_or(false);
             if !same {

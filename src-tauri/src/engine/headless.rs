@@ -137,7 +137,9 @@ async fn ocr_pages(app: &tauri::AppHandle, pdfs: &[String]) -> Result<Vec<super:
             let url = super::engine_start(app.clone()).await?;
             eprintln!("[headless] engine at {url}");
             let ep = app.state::<super::runtime::EngineProcess>().endpoint().ok_or("engine not running")?;
-            super::pipeline::read_pages(app, Some(&ep), pdfs, total).await
+            super::pipeline::read_pages(app, Some(&ep), pdfs, total).await.map_err(|e| {
+                app.state::<super::runtime::EngineProcess>().stopped_reason.lock().ok().and_then(|g| g.clone()).unwrap_or(e)
+            })
         }
         r => r,
     }

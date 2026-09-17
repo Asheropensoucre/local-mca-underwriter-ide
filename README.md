@@ -38,6 +38,15 @@ Files land in the OS app-data directory under `engine/`. `llama-server` runs in 
 
 Registry of pinned files: `src-tauri/src/engine/registry.rs`.
 
+### Living with the rest of the machine
+
+On laptops the GPU has no memory of its own; models and caches come out of system RAM, and a graphics driver that runs out of it can stall the whole desktop. The engine is built to never get there:
+
+- Before starting, it measures the RAM that is actually free and sizes itself to it (`src-tauri/src/engine/memory.rs`): one model resident at a time on machines under 24 GB, 2 OCR pages at a time with a 12k context, 16k for the reasoning model. Fastest mode that leaves headroom wins: full GPU, then GPU for the text models with the image encoder on the CPU, then CPU only. It refuses only when even CPU mode would not fit, with the numbers in the message.
+- The engine process tree runs at low priority with an operating-system memory cap (a systemd scope on Linux), so if it ever outgrows its budget the OS kills the engine, not the desktop.
+- A watchdog checks free memory twice a second and kills the engine the moment it drops under 1.2 GB, then tells you why. Analysis is refused up front when the job's working set would not fit.
+- `--headless-plan` prints the plan the engine would start with right now.
+
 ## Features
 
 - Batch: several months of statements are analyzed as one job and one report.

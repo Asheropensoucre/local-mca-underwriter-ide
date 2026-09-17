@@ -211,6 +211,12 @@ pub fn engine_devices(app: tauri::AppHandle) -> Result<String, String> {
         .join("\n"))
 }
 
+/// If the memory watchdog stopped the engine, its reason is the error the user should
+/// see, not the broken connection that followed.
+fn watchdog_reason(app: &tauri::AppHandle) -> Option<String> {
+    app.state::<EngineProcess>().stopped_reason.lock().ok().and_then(|g| g.clone())
+}
+
 async fn ensure_running(app: &tauri::AppHandle) -> Result<runtime::Endpoint, String> {
     let state = app.state::<EngineProcess>();
     if let Some(ep) = state.endpoint().filter(|_| state.is_running()) {
@@ -255,7 +261,7 @@ pub async fn engine_analyze(
     }));
 
     let started = std::time::Instant::now();
-    let pages = pipeline::read_pages(&app, Some(&ep), &pdf_paths, total_pages).await?;
+    let pages = pipeline::read_pages(&app, Some(&ep), &pdf_paths, total_pages).await.map_err(|e| watchdog_reason(&app).unwrap_or(e))?;
     let ocr_pages = pages.iter().filter(|p| p.method == "ocr").count();
     println!("[Engine] {} pages read in {:.1}s ({ocr_pages} via OCR)", pages.len(), started.elapsed().as_secs_f32());
 
@@ -263,7 +269,7 @@ pub async fn engine_analyze(
         "type": "aggregating", "total_pages": total_pages,
         "message": "Underwriting: the reasoning model is writing the report"
     }));
-    let result = pipeline::underwrite(&app, &ep, &pages, &custom_instructions, temperature, max_tokens).await?;
+    let result = pipeline::underwrite(&app, &ep, &pages, &custom_instructions, temperature, max_tokens).await.map_err(|e| watchdog_reason(&app).unwrap_or(e))?;
     println!("[Engine] job done in {:.1}s", started.elapsed().as_secs_f32());
 
     let _ = app.emit("analysis-complete", json!({
