@@ -1509,10 +1509,22 @@ fn segment_statements<'a>(pages: &[(usize, &'a str)]) -> Vec<Vec<(usize, &'a str
         let mut st = State::default();
         parse_page(&unfold_two_columns(text), page, None, &mut probe, &mut st);
         let begins = probe.summary.beginning_balance;
-        let bank = detect_bank(&[text]);
-        // A different bank named on the page is a new statement too (bundles of several
-        // banks' statements, even when the beginning balance is garbled).
-        let bank_changes = matches!((&bank, &current_bank), (Some(b), Some(cur)) if b != cur);
+        // A different bank named on a summary page is a new statement too (bundles of
+        // several banks' statements, even when the beginning balance is garbled). The new
+        // name must be mentioned at least twice and the current bank not at all, so a
+        // transfer "to Bank of America" in a description does not split a statement.
+        let votes = bank_votes(&[text]);
+        let bank = votes.iter().max_by_key(|(_, n)| *n).map(|(name, _)| name.to_string());
+        let lower = text.to_ascii_lowercase();
+        let summary_words = lower.contains("beginning balance") || lower.contains("previous balance") || lower.contains("balance summary") || lower.contains("account summary") || lower.contains("opening balance");
+        let bank_changes = summary_words && match (&bank, &current_bank) {
+            (Some(b), Some(cur)) if b != cur => {
+                let new_n = votes.iter().find(|(name, _)| *name == b).map(|(_, n)| *n).unwrap_or(0);
+                let cur_n = votes.iter().find(|(name, _)| *name == cur).map(|(_, n)| *n).unwrap_or(0);
+                new_n >= 2 && cur_n == 0
+            }
+            _ => false,
+        };
         let starts_new = bank_changes || match (begins, current_beginning) {
             (Some(b), Some(cur)) if (b - cur).abs() >= 0.005 => true,
             _ => false,
@@ -1623,6 +1635,11 @@ pub fn rows_missing_amounts(text: &str) -> usize {
 /// frequent name from a fixed list, so a Wells Fargo statement that mentions Zelle or a
 /// wire to Chase still reads "Wells Fargo".
 pub fn detect_bank(texts: &[&str]) -> Option<String> {
+    bank_votes(texts).into_iter().max_by_key(|(_, n)| *n).map(|(name, _)| name.to_string())
+}
+
+/// Mentions per bank name on the given pages.
+fn bank_votes(texts: &[&str]) -> Vec<(&'static str, usize)> {
     const BANKS: &[(&str, &str)] = &[
         ("wells fargo", "Wells Fargo"), ("truist", "Truist"), ("jpmorgan chase", "Chase"), ("chase.com", "Chase"),
         ("bank of america", "Bank of America"), ("pnc bank", "PNC"), ("pnc.com", "PNC"), ("td bank", "TD Bank"), ("u.s. bank", "U.S. Bank"), ("usbank.com", "U.S. Bank"),
@@ -1639,7 +1656,7 @@ pub fn detect_bank(texts: &[&str]) -> Option<String> {
         ("first republic", "First Republic"), ("umpqua", "Umpqua"), ("banner bank", "Banner Bank"), ("amerant", "Amerant"), ("city national", "City National"),
         ("credit union", "Credit Union"),
     ];
-    let mut votes: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut votes: BTreeMap<&'static str, usize> = BTreeMap::new();
     for text in texts.iter().take(3) {
         let lower = text.to_ascii_lowercase();
         for (needle, name) in BANKS {
@@ -1649,7 +1666,7 @@ pub fn detect_bank(texts: &[&str]) -> Option<String> {
             }
         }
     }
-    votes.into_iter().max_by_key(|(_, n)| *n).map(|(name, _)| name.to_string())
+    votes.into_iter().collect()
 }
 
 // ─── Report math ──────────────────────────────────────────────────────────
