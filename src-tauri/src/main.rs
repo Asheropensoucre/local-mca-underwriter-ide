@@ -280,11 +280,13 @@ async fn read_file_as_base64(file_path: String) -> Result<String, String> {
 /// Convert PDF to temporary JPEG images on disk
 /// Returns file paths instead of base64 to avoid memory limits
 #[tauri::command]
-async fn convert_pdf_to_images(pdf_path: String, dpi: u32) -> Result<PdfConversionResult, String> {
+async fn convert_pdf_to_images(app: tauri::AppHandle, pdf_path: String, dpi: u32) -> Result<PdfConversionResult, String> {
     use std::process::Command;
     use image::ImageFormat;
 
     println!("[PDF] Converting PDF to JPEG images at {} DPI...", dpi);
+    // Damaged files are repaired first, the same way the analysis does it.
+    let pdf_path = engine::pipeline::prepare_inputs(&app, &[pdf_path])?.remove(0);
 
     // DON'T cleanup old temp dirs here - they're needed for the preview!
     // Cleanup happens when the app closes or via explicit cleanup_temp_images() call
@@ -319,13 +321,26 @@ async fn convert_pdf_to_images(pdf_path: String, dpi: u32) -> Result<PdfConversi
         Ok(output) if output.status.success() => {
             let mut pages = Vec::new();
             let mut image_paths = Vec::new();
-            let mut page_num = 1;
 
             println!("[PDF] Conversion successful, compressing to JPEG...");
 
-            loop {
-                let png_path = format!("{}-{}.png", output_pattern, page_num);
-                if std::path::Path::new(&png_path).exists() {
+            // pdftocairo zero-pads page numbers once a file has ten or more pages
+            // ("page-01.png"), so list what it wrote instead of guessing names.
+            let mut pngs: Vec<(usize, std::path::PathBuf)> = fs::read_dir(temp_dir_arc.path())
+                .map_err(|e| format!("Cannot list rendered pages: {e}"))?
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.extension().map(|x| x == "png").unwrap_or(false))
+                .filter_map(|p| {
+                    let stem = p.file_stem()?.to_string_lossy().to_string();
+                    let n: usize = stem.rsplit('-').next()?.parse().ok()?;
+                    Some((n, p))
+                })
+                .collect();
+            pngs.sort();
+
+            for (page_num, png_path) in pngs {
+                let png_path = png_path.to_string_lossy().to_string();
+                {
                     println!("[PDF] Processing page {}...", page_num);
 
                     // Read PNG
@@ -351,10 +366,6 @@ async fn convert_pdf_to_images(pdf_path: String, dpi: u32) -> Result<PdfConversi
 
                     // Clean up temp PNG immediately
                     let _ = fs::remove_file(&png_path);
-
-                    page_num += 1;
-                } else {
-                    break;
                 }
             }
 
