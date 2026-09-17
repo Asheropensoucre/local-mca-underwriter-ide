@@ -62,13 +62,16 @@ Every statement is checked against itself: the parser sums the transaction lines
 | Legends Bank | date-first / amount-last lines, section headers, multi-column check tables, check image captions |
 | Sunrise Banks | column-style two-line summary, 20-row daily balance table |
 | Pinnacle Bank | `$.00` amounts, "Credits + / Debits -" summary, check image pages |
+| TD Bank | "DEBIT / CREDIT / BALANCE" columns, "Statement Balance as of" beginning and ending, three-line descriptions |
+| Chase (business) | summary with one line per debit category (card, electronic, checks, fees) summed; sectioned lists where the section decides credit or debit |
+| Wintrust | "Jun 03" dates, mailing barcodes in the margin, "Analysis or Maintenance Fees" counted with debits |
 | Hancock Whitney | two transaction columns side by side (unfolded), "22 CREDITS / 9 DEBITS / SERVICE CHARGES" summary |
 | Mabrey Bank | "2 Deposits/Credits / 31 Checks/Debits" summary, check table, image caption pages skipped |
 | BMO, Capital One | single-page exhibits, summary only |
 
 Scanned pages: the OCR model reads plain text first; when rows under a transaction table lose their amounts (wrapped descriptions), the table is read as a table and every amount lands in its column. Statements whose text layer is someone else's poor OCR (court filings) are detected by the totals mismatch and re-read with the OCR model automatically.
 
-Not handled yet: files that bundle several statements or accounts (the parser reads them as one and flags it), multi-account credit union statements, statements with no printed totals at all (parsed lines are still shown, but cannot be verified), and layouts not seen in the corpus. Adding a bank means adding its statement to the corpus, fixing the parser and adding a fixture test in `src-tauri/src/engine/ledger.rs`.
+Files that bundle several statements (months, or several banks) are split where a new statement starts and each part is parsed on its own; the report lists them. Not handled yet: multi-account credit union statements, statements with no printed totals at all (parsed lines are still shown, but cannot be verified), and layouts not seen in the corpus. Adding a bank means adding its statement to the corpus, fixing the parser and adding a fixture test in `src-tauri/src/engine/ledger.rs`.
 
 ## Prerequisites
 
