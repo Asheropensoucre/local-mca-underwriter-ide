@@ -51,7 +51,9 @@ def main():
         stated_c, stated_d = s.get("total_credits"), s.get("total_debits")
         row = {"name": name, "bank": s.get("bank") or "unknown", "stated_c": stated_c, "parsed_c": round(p["credit_total"], 2),
                "stated_d": stated_d, "parsed_d": round(p["debit_total"], 2), "lines": len(d["transactions"]), "scans": scans}
-        if stated_c is None and stated_d is None:
+        if len(s.get("beginning_balances_seen", [])) >= 2:
+            row["status"] = "multi-statement"
+        elif stated_c is None and stated_d is None:
             row["status"] = "no summary"
         else:
             ok_c = stated_c is None or abs(stated_c - p["credit_total"]) <= 1.0
@@ -63,20 +65,21 @@ def main():
         by_bank = defaultdict(list)
         for r in rows:
             by_bank[r["bank"]].append(r)
-        print("| Bank | Statements | Pass | Fail | No summary | Scan pages skipped |")
-        print("|---|---|---|---|---|---|")
+        print("| Bank | Files | Pass | Fail | No summary | Multi-statement | Scan pages skipped |")
+        print("|---|---|---|---|---|---|---|")
         for bank in sorted(by_bank, key=lambda b: -len(by_bank[b])):
             rs = by_bank[bank]
             n = lambda st: sum(1 for r in rs if r.get("status") == st)
             scans = sum(1 for r in rs if r.get("scans"))
-            print(f"| {bank} | {len(rs)} | {n('pass')} | {n('fail')} | {n('no summary')} | {scans} |")
+            print(f"| {bank} | {len(rs)} | {n('pass')} | {n('fail')} | {n('no summary')} | {n('multi-statement')} | {scans} |")
         return
 
     passed = [r for r in rows if r["status"] == "pass"]
     failed = [r for r in rows if r["status"] == "fail"]
     no_summary = [r for r in rows if r["status"] == "no summary"]
+    multi = [r for r in rows if r["status"] == "multi-statement"]
     errors = [r for r in rows if r["status"] == "error"]
-    print(f"passed {len(passed)}, failed {len(failed)}, no summary found {len(no_summary)}, errors {len(errors)}")
+    print(f"passed {len(passed)}, failed {len(failed)}, no summary found {len(no_summary)}, multi-statement files {len(multi)}, errors {len(errors)}")
     fmt = lambda r: f"{r['name']}  {r['bank']:<16} credits {r['stated_c']} / {r['parsed_c']}  debits {r['stated_d']} / {r['parsed_d']}  lines {r['lines']}" + (f"  [{r['scans']} scan pages skipped]" if r["scans"] else "")
     if failed:
         print("\nFAILED (stated / parsed):")
@@ -85,6 +88,10 @@ def main():
     if no_summary:
         print("\nNO SUMMARY FOUND:")
         for r in no_summary[:40]:
+            print("  ", fmt(r))
+    if multi:
+        print("\nMULTI-STATEMENT FILES (several statements or accounts in one PDF, not separated yet):")
+        for r in multi:
             print("  ", fmt(r))
     if verbose and passed:
         print("\nPASSED:")

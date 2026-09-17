@@ -55,6 +55,15 @@ pub struct Summary {
     /// figures; this holds the checks part until both are known.
     #[serde(skip)]
     checks_total: Option<f64>,
+    /// Bank of America prints "Service fees -16.00" as a third debit figure.
+    #[serde(skip)]
+    fees_total: Option<f64>,
+    /// The key that gave `total_debits`; decides whether checks and fees are already in it.
+    #[serde(skip)]
+    debits_key: &'static str,
+    /// Distinct "beginning balance" figures seen. More than one means the file bundles
+    /// several statements or accounts, which the parser does not separate yet.
+    pub beginning_balances_seen: Vec<f64>,
 }
 
 /// A group of debits to the same payee with the same amount, i.e. a possible position.
@@ -413,6 +422,7 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
     // Column-style summaries ("Previous Balance  Total Credits  Total Debits  Current Balance")
     // put the labels on one line and the values on the next.
     let mut pending_columns: Vec<&'static str> = Vec::new();
+    let mut pending_has_checks = false;
     for raw in text.lines() {
         let line = raw.trim_end();
         let trimmed = line.trim();
@@ -423,12 +433,21 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
 
         if !pending_columns.is_empty() {
             let amounts: Vec<f64> = trimmed.split_whitespace().filter(|t| is_amount_token(t)).filter_map(parse_amount).collect();
+            // Second header line ("balance  other credits  other debits  balance"): keep waiting.
+            if amounts.is_empty() && trimmed.split_whitespace().count() <= 8 && ["balance", "credits", "debits", "other"].iter().any(|w| lower.contains(w)) {
+                continue;
+            }
             if amounts.len() >= pending_columns.len() {
                 for (label, value) in pending_columns.iter().zip(amounts) {
                     match *label {
                         "beginning" => ledger.summary.beginning_balance.get_or_insert(value),
                         "credits" => ledger.summary.total_credits.get_or_insert(value),
-                        "debits" => ledger.summary.total_debits.get_or_insert(value),
+                        "debits" => {
+                            if ledger.summary.total_debits.is_none() {
+                                ledger.summary.debits_key = if pending_has_checks { "checks and other debits" } else { "debits" };
+                            }
+                            ledger.summary.total_debits.get_or_insert(value)
+                        }
                         _ => ledger.summary.ending_balance.get_or_insert(value),
                     };
                 }
@@ -439,6 +458,7 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         let labels = column_labels(&lower);
         if labels.len() >= 2 && !trimmed.split_whitespace().any(is_amount_token) {
             pending_columns = labels;
+            pending_has_checks = lower.contains("check");
             continue;
         }
 
@@ -448,6 +468,19 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         if tokens.len() <= 6 && INFORMATIONAL_HEADERS.iter().any(|h| lower.starts_with(h)) {
             st.informational = true;
             columns = None;
+            last_txn = None;
+            continue;
+        }
+        // Daily balance tables: a "Daily Balance" heading, or a header repeating "Date ...
+        // balance" for several columns ("Date  Ledger balance  Date  Ledger balance").
+        let has_amount = tokens.iter().any(|t| is_amount_token(t));
+        let repeated_date_balance_header = !has_amount && lower.matches("date").count() >= 2 && lower.contains("balance") && tokens.len() <= 12;
+        // A transaction table header naming a credit or debit column ("... Ending daily balance") is not a daily balance block.
+        let hdr = Columns::labels(line);
+        let names_txn_columns = hdr.credit.is_some() || hdr.debit.is_some();
+        if !names_txn_columns && (lower.contains("daily balance") || lower.contains("daily ending balance") || lower.contains("daily ledger balance") || repeated_date_balance_header) {
+            st.enter_table("daily balances");
+            st.in_daily = true;
             last_txn = None;
             continue;
         }
@@ -476,12 +509,6 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
             }
         }
 
-        if lower.contains("daily balance") || lower.contains("daily ending balance") {
-            st.enter_table("daily balances");
-            st.in_daily = true;
-            last_txn = None;
-            continue;
-        }
         if let Some(k) = section_for(trimmed) {
             st.enter_table(trimmed);
             st.section = Some(k);
@@ -528,8 +555,10 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
             if any {
                 continue;
             }
-            // Any other non-date line ends the daily balance block.
-            if tokens.first().and_then(|t| parse_date_token(t)).is_none() && !lower.contains("date") {
+            // Real content (an amount, or a long line) ends the daily balance block; short
+            // header words ("Ledger", "Date Balance Date Balance") do not.
+            let header_words = tokens.len() <= 6 && !tokens.iter().any(|t| is_amount_token(t));
+            if tokens.first().and_then(|t| parse_date_token(t)).is_none() && !header_words {
                 st.in_daily = false;
             }
         }
@@ -598,6 +627,13 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
             }
         }
 
+        // Image captions ("Regular Deposit  Date: 12/04  Amount: $2,364.21") repeat items
+        // already listed; they are not transactions.
+        if lower.contains("date:") && lower.contains("amount:") {
+            last_txn = None;
+            continue;
+        }
+
         // Multi-column check tables: two or more (date, amount) pairs on one line, in either
         // "date check# amount" or "check# date amount" order.
         let date_idx: Vec<usize> = tokens.iter().enumerate().filter(|(_, t)| parse_date_token(t).is_some()).map(|(i, _)| i).collect();
@@ -611,7 +647,9 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
             for (&d, &a) in date_idx.iter().zip(&amt_idx) {
                 let mut desc: Vec<&str> = tokens[d + 1..a].to_vec();
                 // A check number printed just before the date belongs to this entry.
-                if d > prev_end && d >= 1 && !check_no(tokens[d - 1]).is_empty() && check_no(tokens[d - 1]).chars().all(|c| c.is_ascii_digit()) {
+                // (Reference numbers are longer; check numbers have at most seven digits.)
+                let n = check_no(tokens[d.saturating_sub(1)]);
+                if d > prev_end && d >= 1 && !n.is_empty() && n.len() <= 7 && n.chars().all(|c| c.is_ascii_digit()) {
                     desc.insert(0, tokens[d - 1]);
                 }
                 let desc: Vec<&str> = desc.into_iter().filter(|t| *t != "*").collect();
@@ -647,10 +685,26 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         // Transaction line: date first, amount last.
         let starts_with_date = tokens.first().and_then(|t| parse_date_token(t)).is_some();
         let ends_with_amount = tokens.last().map(|t| is_amount_token(t)).unwrap_or(false);
+
+        // PNC corporate: "06/03  28,273.92  Corporate ACH Txns/Fees  00024155901130577" and
+        // "06/21  12490  450.00  017261553": date first, exactly one amount, a reference
+        // number last. The reference (nine or more digits) is dropped from the description.
+        let amount_positions: Vec<usize> = (1..tokens.len()).filter(|&i| is_amount_token(tokens[i])).collect();
+        let summary_row = lower.contains("beginning balance") || lower.contains("ending balance") || lower.contains("previous balance") || lower.contains("balance forward");
+        if starts_with_date && !ends_with_amount && tokens.len() >= 3 && amount_positions.len() == 1 && !summary_row {
+            let a = amount_positions[0];
+            let rest: Vec<&str> = tokens[1..].iter().enumerate().filter(|(i, t)| *i + 1 != a && !(t.len() >= 9 && t.chars().all(|c| c.is_ascii_digit()))).map(|(_, t)| *t).collect();
+            let desc = if rest.len() == 1 && rest[0].len() <= 7 && rest[0].chars().all(|c| c.is_ascii_digit()) { format!("Check {}", rest[0]) } else { rest.join(" ") };
+            let id = ledger.transactions.len();
+            let (date, day) = resolve_date(tokens[0], year_hint);
+            ledger.transactions.push(Txn { id, date, day, kind: kind_from_words(&desc, st.section), amount: parse_amount(tokens[a]).unwrap_or(0.0).abs(), description: desc, page, table: st.table });
+            last_txn = Some(id);
+            continue;
+        }
         if starts_with_date && ends_with_amount && tokens.len() >= 2 {
             let amount = parse_amount(tokens[tokens.len() - 1]).unwrap_or(0.0).abs();
             // Statement summary rows also start with a date ("11/01/2025 Beginning Balance"); skip them.
-            if lower.contains("beginning balance") || lower.contains("ending balance") || lower.contains("previous balance") {
+            if summary_row {
                 last_txn = None;
                 continue;
             }
@@ -720,32 +774,45 @@ fn last_amount(line: &str) -> Option<f64> {
 }
 
 fn capture_summary(lower: &str, line: &str, s: &mut Summary) {
-    if s.beginning_balance.is_none() && (lower.contains("beginning balance") || lower.contains("previous balance")) {
+    if lower.contains("beginning balance") || lower.contains("previous balance") || lower.contains("opening ledger balance") || lower.contains("opening balance") {
         // Sunrise puts the values on the next line; Legends on the same line.
-        s.beginning_balance = first_amount_after(line, &["beginning balance", "previous balance"]);
-    }
-    if lower.contains("ending balance") || lower.contains("current balance") || lower.contains("new balance") {
-        if let Some(v) = last_amount(line) {
-            s.ending_balance = Some(v);
+        let v = first_amount_after(line, &["beginning balance", "previous balance", "opening ledger balance", "opening balance"]);
+        if let Some(v) = v {
+            if !s.beginning_balances_seen.iter().any(|b| (b - v).abs() < 0.005) {
+                s.beginning_balances_seen.push(v);
+            }
+        }
+        if s.beginning_balance.is_none() {
+            s.beginning_balance = v;
         }
     }
     let ntok = lower.split_whitespace().count();
-    let short_with_amount = ntok <= 5 && last_amount(line).is_some();
-    // Credits: Legends "Deposits/Other Credits", Sunrise "Total Credits", Wells "Deposits/Additions",
-    // Webster "26 Credit(s) this period", Truist "Deposits, credits and interest", Pinnacle "Credits + $.00".
-    if s.total_credits.is_none()
-        && (lower.contains("deposits/other credits") || lower.contains("total credits") || lower.contains("total deposits") || lower.starts_with("deposits/additions") || lower.starts_with("deposits and additions") || lower.starts_with("total deposits and additions")
-            || lower.contains("credit(s) this period") || lower.starts_with("deposits, credits and interest") || (lower.starts_with("credits") && short_with_amount))
-        && !lower.contains("---")
-    {
-        s.total_credits = last_amount(line).map(f64::abs);
+    if s.ending_balance.is_none() && (lower.contains("ending balance") || lower.contains("current balance") || lower.contains("new balance") || lower.contains("ending ledger balance") || lower.contains("closing balance")) {
+        s.ending_balance = last_amount(line);
     }
-    if s.total_debits.is_none()
-        && (lower.contains("checks/other debits") || lower.contains("total debits") || lower.contains("total withdrawals") || lower.starts_with("withdrawals/subtractions") || lower.starts_with("withdrawals and subtractions") || lower.starts_with("total withdrawals and subtractions")
-            || lower.contains("debit(s) this period") || lower.starts_with("other withdrawals, debits and service charges") || (lower.starts_with("debits") && short_with_amount))
-        && !lower.contains("---")
-    {
-        s.total_debits = last_amount(line).map(f64::abs);
+    // Summary totals. Two-column summaries put unrelated figures to the right of the value
+    // ("2 Deposits/Credits  53,633.89  Average Ledger  154,454"), so the first amount after
+    // the key is the value. Keys, by bank: Legends "Deposits/Other Credits", Sunrise "Total
+    // Credits", Wells "Deposits/Additions", Webster "26 Credit(s) this period", Truist
+    // "Deposits, credits and interest", Chase "Deposits and Credits", BofA "Deposits and other
+    // credits", Mabrey "Deposits/Credits", Pinnacle "Credits + $.00".
+    const CREDIT_KEYS: &[&str] = &["deposits/other credits", "total credits", "total deposits", "deposits/additions", "deposits and additions", "credit(s) this period", "deposits, credits and interest", "deposits and credits", "deposits and other credits", "deposits/credits"];
+    const DEBIT_KEYS: &[&str] = &["checks/other debits", "total debits", "total withdrawals", "withdrawals/subtractions", "withdrawals and subtractions", "debit(s) this period", "other withdrawals, debits and service charges", "withdrawals and debits", "withdrawals and other debits", "checks/debits", "withdrawals/debits"];
+    if s.total_credits.is_none() && !lower.contains("---") {
+        if CREDIT_KEYS.iter().any(|k| lower.contains(k)) {
+            s.total_credits = first_amount_after(line, CREDIT_KEYS).map(f64::abs);
+        } else if lower.starts_with("credits") && ntok <= 5 {
+            s.total_credits = first_amount_after(line, &["credits"]).map(f64::abs);
+        }
+    }
+    if s.total_debits.is_none() && !lower.contains("---") {
+        if let Some(k) = DEBIT_KEYS.iter().find(|k| lower.contains(*k)) {
+            s.total_debits = first_amount_after(line, DEBIT_KEYS).map(f64::abs);
+            s.debits_key = k;
+        } else if lower.starts_with("debits") && ntok <= 5 {
+            s.total_debits = first_amount_after(line, &["debits"]).map(f64::abs);
+            s.debits_key = "debits";
+        }
     }
     // Pinnacle-style summary cells anywhere on the line: "Credits + $.00", "Debits - $94,340.67".
     let toks: Vec<&str> = line.split_whitespace().collect();
@@ -756,7 +823,7 @@ fn capture_summary(lower: &str, line: &str, s: &mut Summary) {
         }
         let next = toks.get(i + 1).copied().unwrap_or("");
         let value = if next == "+" || next == "-" { toks.get(i + 2).copied().unwrap_or("") } else { next };
-        if is_amount_token(value) && (next == "+" || next == "-" || i + 1 == toks.len() - 1) {
+        if is_amount_token(value) {
             let v = parse_amount(value).map(f64::abs);
             if tl == "credits" && s.total_credits.is_none() {
                 s.total_credits = v;
@@ -765,9 +832,14 @@ fn capture_summary(lower: &str, line: &str, s: &mut Summary) {
             }
         }
     }
-    // Truist lists "Checks - 0.00" as a separate debit figure above "Other withdrawals".
-    if s.checks_total.is_none() && lower.starts_with("checks") && ntok <= 4 && !lower.contains("paid") {
-        s.checks_total = last_amount(line).map(f64::abs);
+    // Truist lists "Checks - 0.00" and Chase "Checks Paid 16 $17,652.08" as a separate debit
+    // figure next to "Other withdrawals" / "Withdrawals and Debits"; the two are summed.
+    // Two-column summaries put unrelated figures to the right, so take the first amount after the key.
+    if s.checks_total.is_none() && lower.starts_with("checks") && !lower.starts_with("checks paid") || s.checks_total.is_none() && lower.starts_with("checks paid") && ntok <= 5 {
+        s.checks_total = first_amount_after(line, &["checks"]).map(f64::abs);
+    }
+    if s.fees_total.is_none() && (lower.starts_with("service fees") || lower.starts_with("service charge") || lower.starts_with("- service charge")) {
+        s.fees_total = first_amount_after(line, &["service fees", "service charges", "service charge"]).map(f64::abs);
     }
     // "Beginning balance on 11/1" / "Ending balance on 11/30" carry the period.
     if lower.contains("beginning balance on ") || lower.contains("ending balance on ") {
@@ -787,7 +859,7 @@ fn capture_summary(lower: &str, line: &str, s: &mut Summary) {
         s.days_in_period = after_colon.or(before).filter(|d| (1..=366).contains(d));
     }
     if s.average_balance.is_none() && (lower.contains("average balance") || lower.contains("average ledger balance") || lower.contains("avg daily balance")) {
-        s.average_balance = last_amount(line);
+        s.average_balance = first_amount_after(line, &["average balance", "average ledger balance", "avg daily balance"]);
     }
     if s.minimum_balance.is_none() && lower.contains("minimum balance") {
         s.minimum_balance = line.split_whitespace().find(|t| is_amount_token(t)).and_then(parse_amount);
@@ -817,12 +889,27 @@ fn column_labels(lower: &str) -> Vec<&'static str> {
     let mut found: Vec<(usize, &'static str)> = Vec::new();
     for (needle, label) in [
         ("previous balance", "beginning"), ("beginning balance", "beginning"),
-        ("total credits", "credits"), ("total deposits", "credits"),
-        ("total debits", "debits"), ("total withdrawals", "debits"),
+        ("total credits", "credits"), ("total deposits", "credits"), ("deposits and other credits", "credits"), ("deposits/credits", "credits"),
+        ("total debits", "debits"), ("total withdrawals", "debits"), ("checks and other debits", "debits"), ("withdrawals/debits", "debits"), ("checks/debits", "debits"),
         ("current balance", "ending"), ("ending balance", "ending"), ("new balance", "ending"),
     ] {
         if let Some(p) = lower.find(needle) {
             found.push((p, label));
+        }
+    }
+    // PNC wraps the labels: "Beginning   Deposits and   Checks and   Ending" over
+    // "balance   other credits   other debits   balance". Single words carry the order.
+    if found.len() < 2 {
+        let mut words: Vec<(usize, &'static str)> = Vec::new();
+        for (needle, label) in [("beginning", "beginning"), ("deposits", "credits"), ("credits", "credits"), ("checks", "debits"), ("withdrawals", "debits"), ("debits", "debits"), ("ending", "ending")] {
+            if let Some(p) = lower.find(needle) {
+                if !words.iter().any(|(_, l)| *l == label) {
+                    words.push((p, label));
+                }
+            }
+        }
+        if words.len() >= 3 && words.iter().any(|(_, l)| *l == "beginning") && words.iter().any(|(_, l)| *l == "ending") {
+            found = words;
         }
     }
     found.sort();
@@ -1037,6 +1124,131 @@ fn year_hint(texts: &[&str]) -> Option<i32> {
     None
 }
 
+/// Some banks (Hancock Whitney, small banks) print two transaction columns side by side:
+/// "Date  Amount  Description        Date  Amount  Description". Split each line of such a
+/// block at the start of the right header and emit the left column, then the right, so the
+/// line parser sees one transaction per line. A block ends at a line that crosses the gap.
+pub fn unfold_two_columns(text: &str) -> String {
+    let mut out = String::new();
+    let mut split: Option<usize> = None;
+    let mut left: Vec<String> = Vec::new();
+    let mut right: Vec<String> = Vec::new();
+    let flush = |out: &mut String, left: &mut Vec<String>, right: &mut Vec<String>| {
+        for l in left.drain(..).chain(right.drain(..)) {
+            out.push_str(&l);
+            out.push('\n');
+        }
+    };
+    for line in text.lines() {
+        let lower = line.to_ascii_lowercase();
+        let toks: Vec<&str> = line.split_whitespace().collect();
+        // A header naming date/amount/description twice. The right column starts at the
+        // second occurrence of whichever word repeats ("Description  Date  Amount  Description").
+        let repeated = ["date", "description", "amount"].into_iter().find(|w| lower.matches(w).count() >= 2);
+        let is_header = toks.len() <= 10 && !toks.iter().any(|t| is_amount_token(t)) && repeated.is_some() && lower.contains("date") && (lower.contains("amount") || lower.contains("serial")) && !lower.contains("balance");
+        if is_header {
+            flush(&mut out, &mut left, &mut right);
+            // The right column starts at the second "Date"; when only one "Date" is printed
+            // (left header partly missing) it is that one, as long as a label precedes it.
+            let first = lower.find("date").unwrap();
+            split = match lower[first + 4..].find("date") {
+                Some(p) => Some(first + 4 + p),
+                None if !lower[..first].trim().is_empty() => Some(first),
+                None => None,
+            };
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        // A new section title ("• Checks", "Daily Balance", "Withdrawals and Debits") ends the block.
+        let has_date_or_amount = toks.iter().any(|t| is_amount_token(t) || parse_date_token(t).is_some());
+        let section_title = !has_date_or_amount && !toks.is_empty() && (line.trim_start().starts_with('•') || line.trim_start().starts_with('*') || section_for(line).is_some() || lower.contains("balance") || lower.contains("summary"));
+        if split.is_some() && section_title {
+            flush(&mut out, &mut left, &mut right);
+            split = None;
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        match split {
+            Some(at) if line.len() + 8 > at => {
+                // The right column's data starts inside the gap before the right header, not
+                // exactly under it, so split at the whitespace run nearest the header position.
+                match gap_near(line, at) {
+                    Some(cut) => {
+                        let (l, r) = line.split_at(cut);
+                        if !l.trim().is_empty() {
+                            left.push(l.to_string());
+                        }
+                        if !r.trim().is_empty() {
+                            right.push(r.to_string());
+                        }
+                    }
+                    None => {
+                        // Text running through the gap: a title or footer ends the block.
+                        flush(&mut out, &mut left, &mut right);
+                        split = None;
+                        out.push_str(line);
+                        out.push('\n');
+                    }
+                }
+            }
+            Some(_) => {
+                if !line.trim().is_empty() {
+                    left.push(line.to_string());
+                }
+            }
+            None => {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+    flush(&mut out, &mut left, &mut right);
+    out
+}
+
+/// End offset of a run of three or more spaces that lies within 14 characters before
+/// `at` or 4 after it; None when text runs through that region.
+fn gap_near(line: &str, at: usize) -> Option<usize> {
+    let bytes = line.as_bytes();
+    let lo = at.saturating_sub(14);
+    let hi = (at + 4).min(bytes.len());
+    // Text that starts in or after the gap is the right column alone.
+    let first = line.len() - line.trim_start().len();
+    if first >= lo {
+        return Some(first);
+    }
+    let mut best: Option<(usize, usize)> = None; // (distance to `at`, cut)
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b' ' {
+            let start = i;
+            while i < bytes.len() && bytes[i] == b' ' {
+                i += 1;
+            }
+            let run = i - start;
+            // A gap ending at the end of the line is not a column boundary.
+            if run >= 3 && start > 0 && i < bytes.len() && i >= lo && start <= hi {
+                let d = (i as i64 - at as i64).unsigned_abs() as usize;
+                if best.map(|(bd, _)| d < bd).unwrap_or(true) {
+                    best = Some((d, i));
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+    if let Some((_, cut)) = best {
+        return Some(cut);
+    }
+    // Line ends before the right column: left only.
+    if line.len() <= hi {
+        return Some(line.len());
+    }
+    None
+}
+
 /// Parse a whole statement set. `pages` are (page number, text) in reading order.
 pub fn parse(pages: &[(usize, &str)]) -> Ledger {
     let mut ledger = Ledger::default();
@@ -1045,10 +1257,16 @@ pub fn parse(pages: &[(usize, &str)]) -> Ledger {
     ledger.summary.bank = detect_bank(&texts);
     let mut st = State::default();
     for (page, text) in pages {
-        parse_page(text, *page, year, &mut ledger, &mut st);
+        let unfolded = unfold_two_columns(text);
+        parse_page(&unfolded, *page, year, &mut ledger, &mut st);
     }
-    if let (Some(checks), Some(other)) = (ledger.summary.checks_total, ledger.summary.total_debits) {
-        ledger.summary.total_debits = Some(checks + other);
+    // Checks and fees printed as separate figures are added unless the debit key already
+    // covers them ("Checks and other debits", "... debits and service charges").
+    if let Some(other) = ledger.summary.total_debits {
+        let key = ledger.summary.debits_key;
+        let checks = if key.contains("check") { 0.0 } else { ledger.summary.checks_total.unwrap_or(0.0) };
+        let fees = if key.contains("service") { 0.0 } else { ledger.summary.fees_total.unwrap_or(0.0) };
+        ledger.summary.total_debits = Some(other + checks + fees);
     }
     dedup_across_tables(&mut ledger);
     derive(&mut ledger);
