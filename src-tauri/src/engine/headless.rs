@@ -146,6 +146,7 @@ fn ledger_dump(pages: Vec<super::pipeline::PageText>) -> Result<String, String> 
     let out = serde_json::json!({
         "pages": methods,
         "summary": ledger.summary,
+        "statements": ledger.statements,
         "parsed": { "credit_lines": credits, "debit_lines": ledger.transactions.len() - credits,
                     "credit_total": ledger.parsed_credit_total, "debit_total": ledger.parsed_debit_total },
         "daily_balances": ledger.daily_balances.len(),

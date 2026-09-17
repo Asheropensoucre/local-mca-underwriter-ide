@@ -61,6 +61,10 @@ pub struct Summary {
     /// The key that gave `total_debits`; decides whether checks and fees are already in it.
     #[serde(skip)]
     debits_key: &'static str,
+    /// Page the debit total was read from. Separate checks and fee figures count only from
+    /// the same page, so a fee line on a later bundled page is not added.
+    #[serde(skip)]
+    debits_page: Option<usize>,
     /// Distinct "beginning balance" figures seen. More than one means the file bundles
     /// several statements or accounts, which the parser does not separate yet.
     pub beginning_balances_seen: Vec<f64>,
@@ -97,7 +101,11 @@ pub struct DailyBalance {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Ledger {
     pub transactions: Vec<Txn>,
+    /// Figures for the whole set. With several statements in the input (a bundle of
+    /// months, or several accounts) this is the combination of `statements`.
     pub summary: Summary,
+    /// One summary per statement found in the input; empty when there is only one.
+    pub statements: Vec<Summary>,
     pub daily_balances: Vec<DailyBalance>,
     pub recurring_debits: Vec<RecurringDebit>,
     pub payees: Vec<PayeeTotal>,
@@ -150,6 +158,106 @@ pub fn is_amount_token(tok: &str) -> bool {
     decimals_ok && inner_ok && period_thousands_ok
 }
 
+const MONTHS: &[&str] = &["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+/// Mailing barcodes rendered as text in the left margin ("ACEMBHDOODOPKMBLFEBEPIPK  Jun 14
+/// PREAUTHORIZED CREDIT $2,584.81") would hide the date. Blank out a leading run of 12 or
+/// more uppercase letters when a date follows, keeping the width.
+fn strip_margin_barcode(line: &str) -> String {
+    let trimmed = line.trim_start();
+    let first = trimmed.split_whitespace().next().unwrap_or("");
+    if first.len() >= 12 && first.chars().all(|c| c.is_ascii_uppercase()) {
+        let rest = trimmed[first.len()..].trim_start();
+        if rest.split_whitespace().next().and_then(parse_date_token).is_some() {
+            let indent = line.len() - trimmed.len();
+            return format!("{}{}{}", " ".repeat(indent), " ".repeat(first.len()), &trimmed[first.len()..]);
+        }
+    }
+    line.to_string()
+}
+
+/// Rewrite "Jun 03", "Jun 3, 2024" and "June 3 2024" as "06/03" / "06/03/2024" in place,
+/// keeping the line width so column offsets still line up. Wintrust and a few others
+/// print month names in the date column.
+pub fn normalize_month_dates(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let at_word_start = i == 0 || !chars[i - 1].is_alphanumeric();
+        if at_word_start && chars[i].is_ascii_alphabetic() {
+            // month word
+            let mut j = i;
+            while j < chars.len() && chars[j].is_ascii_alphabetic() {
+                j += 1;
+            }
+            let word: String = chars[i..j].iter().collect::<String>().to_ascii_lowercase();
+            let month = if word.len() >= 3 { MONTHS.iter().position(|m| word.starts_with(m) && (word.len() == 3 || full_month(&word))) } else { None };
+            if let Some(m) = month {
+                // optional ".", then spaces, then day digits, optional ",", optional year
+                let mut k = j;
+                if k < chars.len() && chars[k] == '.' {
+                    k += 1;
+                }
+                let mut sp = k;
+                while sp < chars.len() && chars[sp] == ' ' {
+                    sp += 1;
+                }
+                let day_start = sp;
+                let mut de = day_start;
+                while de < chars.len() && chars[de].is_ascii_digit() && de - day_start < 2 {
+                    de += 1;
+                }
+                let day_ok = de > day_start && sp - k <= 2 && (de == chars.len() || !chars[de].is_alphanumeric());
+                if day_ok {
+                    let day: u32 = chars[day_start..de].iter().collect::<String>().parse().unwrap_or(0);
+                    if (1..=31).contains(&day) {
+                        // year: ", 2024" or " 2024"
+                        let mut ye = de;
+                        let mut y2 = ye;
+                        if y2 < chars.len() && chars[y2] == ',' {
+                            y2 += 1;
+                        }
+                        let mut ys = y2;
+                        while ys < chars.len() && chars[ys] == ' ' && ys - y2 <= 2 {
+                            ys += 1;
+                        }
+                        let mut yend = ys;
+                        while yend < chars.len() && chars[yend].is_ascii_digit() {
+                            yend += 1;
+                        }
+                        let mut date = format!("{:02}/{:02}", m + 1, day);
+                        if yend - ys == 4 && ys > de {
+                            date.push('/');
+                            date.extend(chars[ys..yend].iter());
+                            ye = yend;
+                        }
+                        let span = ye - i;
+                        if date.chars().count() <= span {
+                            out.push_str(&date);
+                            for _ in date.chars().count()..span {
+                                out.push(' ');
+                            }
+                            i = ye;
+                            continue;
+                        }
+                    }
+                }
+            }
+            out.extend(chars[i..j].iter());
+            i = j;
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+fn full_month(word: &str) -> bool {
+    ["january", "february", "march", "april", "may", "june", "july", "august", "september", "sept", "october", "november", "december"].contains(&word)
+}
+
 /// (month, day, year) from MM/DD, MM/DD/YY, MM/DD/YYYY.
 pub fn parse_date_token(tok: &str) -> Option<(u32, u32, Option<i32>)> {
     let parts: Vec<&str> = tok.split('/').collect();
@@ -192,7 +300,10 @@ fn section_for(line: &str) -> Option<Kind> {
     let toks: Vec<&str> = l.split_whitespace().collect();
     let starts_with_date = toks.first().and_then(|t| parse_date_token(t)).is_some();
     let ends_with_amount = toks.last().map(|t| is_amount_token(t)).unwrap_or(false);
-    let header_like = (l.contains("---") || toks.len() <= 6) && !starts_with_date && !ends_with_amount;
+    // Headers carry no reference or account numbers ("TRANSFER TO DEPOSIT SYSTEM ACCOUNT
+    // XXXXXX4516" is a description continuation, not a section).
+    let has_reference = toks.iter().any(|t| t.chars().filter(|c| c.is_ascii_digit()).count() >= 4 || t.contains("xxx"));
+    let header_like = (l.contains("---") || toks.len() <= 6) && !starts_with_date && !ends_with_amount && !has_reference;
     if !header_like {
         return None;
     }
@@ -424,7 +535,9 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
     let mut pending_columns: Vec<&'static str> = Vec::new();
     let mut pending_has_checks = false;
     for raw in text.lines() {
-        let line = raw.trim_end();
+        let normalized = normalize_month_dates(raw);
+        let stripped = strip_margin_barcode(normalized.trim_end());
+        let line: &str = stripped.trim_end();
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
@@ -445,6 +558,7 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
                         "debits" => {
                             if ledger.summary.total_debits.is_none() {
                                 ledger.summary.debits_key = if pending_has_checks { "checks and other debits" } else { "debits" };
+                                ledger.summary.debits_page = Some(page);
                             }
                             ledger.summary.total_debits.get_or_insert(value)
                         }
@@ -462,7 +576,7 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
             continue;
         }
 
-        capture_summary(&lower, trimmed, &mut ledger.summary);
+        capture_summary(&lower, trimmed, &mut ledger.summary, page);
 
         let tokens: Vec<&str> = trimmed.split_whitespace().collect();
         if tokens.len() <= 6 && INFORMATIONAL_HEADERS.iter().any(|h| lower.starts_with(h)) {
@@ -773,7 +887,7 @@ fn last_amount(line: &str) -> Option<f64> {
     line.split_whitespace().rev().find(|t| is_amount_token(t)).and_then(parse_amount)
 }
 
-fn capture_summary(lower: &str, line: &str, s: &mut Summary) {
+fn capture_summary(lower: &str, line: &str, s: &mut Summary, page: usize) {
     if lower.contains("beginning balance") || lower.contains("previous balance") || lower.contains("opening ledger balance") || lower.contains("opening balance") {
         // Sunrise puts the values on the next line; Legends on the same line.
         let v = first_amount_after(line, &["beginning balance", "previous balance", "opening ledger balance", "opening balance"]);
@@ -809,9 +923,11 @@ fn capture_summary(lower: &str, line: &str, s: &mut Summary) {
         if let Some(k) = DEBIT_KEYS.iter().find(|k| lower.contains(*k)) {
             s.total_debits = first_amount_after(line, DEBIT_KEYS).map(f64::abs);
             s.debits_key = k;
+            s.debits_page = Some(page);
         } else if lower.starts_with("debits") && ntok <= 5 {
             s.total_debits = first_amount_after(line, &["debits"]).map(f64::abs);
             s.debits_key = "debits";
+            s.debits_page = Some(page);
         }
     }
     // Pinnacle-style summary cells anywhere on the line: "Credits + $.00", "Debits - $94,340.67".
@@ -835,11 +951,12 @@ fn capture_summary(lower: &str, line: &str, s: &mut Summary) {
     // Truist lists "Checks - 0.00" and Chase "Checks Paid 16 $17,652.08" as a separate debit
     // figure next to "Other withdrawals" / "Withdrawals and Debits"; the two are summed.
     // Two-column summaries put unrelated figures to the right, so take the first amount after the key.
-    if s.checks_total.is_none() && lower.starts_with("checks") && !lower.starts_with("checks paid") || s.checks_total.is_none() && lower.starts_with("checks paid") && ntok <= 5 {
+    let same_block = s.debits_page.map(|p| p == page).unwrap_or(true);
+    if same_block && s.checks_total.is_none() && (lower.starts_with("checks") && !lower.starts_with("checks paid") || lower.starts_with("checks paid") && ntok <= 5) {
         s.checks_total = first_amount_after(line, &["checks"]).map(f64::abs);
     }
-    if s.fees_total.is_none() && (lower.starts_with("service fees") || lower.starts_with("service charge") || lower.starts_with("- service charge")) {
-        s.fees_total = first_amount_after(line, &["service fees", "service charges", "service charge"]).map(f64::abs);
+    if same_block && s.fees_total.is_none() && (lower.starts_with("service fees") || lower.starts_with("service charge") || lower.starts_with("- service charge") || lower.starts_with("analysis or maintenance fee")) {
+        s.fees_total = first_amount_after(line, &["service fees", "service charges", "service charge", "fees for period"]).map(f64::abs);
     }
     // "Beginning balance on 11/1" / "Ending balance on 11/30" carry the period.
     if lower.contains("beginning balance on ") || lower.contains("ending balance on ") {
@@ -1249,8 +1366,36 @@ fn gap_near(line: &str, at: usize) -> Option<usize> {
     None
 }
 
-/// Parse a whole statement set. `pages` are (page number, text) in reading order.
+/// Parse a whole statement set. `pages` are (page number, text) in reading order. A file
+/// that bundles several statements (months, or accounts) is split where a new statement
+/// starts and each part is parsed on its own; the parts are then combined.
 pub fn parse(pages: &[(usize, &str)]) -> Ledger {
+    let segments = segment_statements(pages);
+    if segments.len() <= 1 {
+        let mut ledger = parse_one(pages);
+        derive(&mut ledger);
+        return ledger;
+    }
+    let mut combined = Ledger::default();
+    for seg in &segments {
+        let part = parse_one(seg);
+        let (id_off, table_off) = (combined.transactions.len(), combined.transactions.iter().map(|t| t.table).max().unwrap_or(0) + 1);
+        combined.transactions.extend(part.transactions.into_iter().map(|mut t| {
+            t.id += id_off;
+            t.table += table_off;
+            t
+        }));
+        combined.daily_balances.extend(part.daily_balances);
+        combined.statements.push(part.summary);
+    }
+    combined.summary = combine_summaries(&combined.statements);
+    combined.summary.bank = detect_bank(&pages.iter().map(|(_, t)| *t).collect::<Vec<_>>());
+    derive(&mut combined);
+    combined
+}
+
+/// One statement's worth of pages, no derived facts yet.
+fn parse_one(pages: &[(usize, &str)]) -> Ledger {
     let mut ledger = Ledger::default();
     let texts: Vec<&str> = pages.iter().map(|(_, t)| *t).collect();
     let year = year_hint(&texts);
@@ -1269,8 +1414,66 @@ pub fn parse(pages: &[(usize, &str)]) -> Ledger {
         ledger.summary.total_debits = Some(other + checks + fees);
     }
     dedup_across_tables(&mut ledger);
-    derive(&mut ledger);
     ledger
+}
+
+/// Split pages into statements. A page whose own text yields a beginning balance starts a
+/// new statement, except for the first such page, which starts the first one along with
+/// any cover pages before it. Pages of one statement never repeat its beginning balance
+/// with a different value, so a repeated figure (Webster prints it twice) does not split.
+fn segment_statements<'a>(pages: &[(usize, &'a str)]) -> Vec<Vec<(usize, &'a str)>> {
+    let mut segments: Vec<Vec<(usize, &str)>> = Vec::new();
+    let mut current: Vec<(usize, &str)> = Vec::new();
+    let mut current_beginning: Option<f64> = None;
+    for &(page, text) in pages {
+        let mut probe = Ledger::default();
+        let mut st = State::default();
+        parse_page(&unfold_two_columns(text), page, None, &mut probe, &mut st);
+        let begins = probe.summary.beginning_balance;
+        let starts_new = match (begins, current_beginning) {
+            (Some(b), Some(cur)) if (b - cur).abs() >= 0.005 => true,
+            _ => false,
+        };
+        if starts_new && !current.is_empty() {
+            segments.push(std::mem::take(&mut current));
+        }
+        if begins.is_some() && (starts_new || current_beginning.is_none()) {
+            current_beginning = begins;
+        }
+        current.push((page, text));
+    }
+    if !current.is_empty() {
+        segments.push(current);
+    }
+    segments
+}
+
+/// Whole-set figures from per-statement summaries: totals add up (only when every
+/// statement printed one), balances run from the first beginning to the last ending,
+/// the period spans them all.
+fn combine_summaries(parts: &[Summary]) -> Summary {
+    let sum = |f: fn(&Summary) -> Option<f64>| -> Option<f64> {
+        if parts.iter().all(|p| f(p).is_some()) { Some(parts.iter().filter_map(f).sum()) } else { None }
+    };
+    let days = if parts.iter().all(|p| p.days_in_period.is_some()) { Some(parts.iter().filter_map(|p| p.days_in_period).sum()) } else { None };
+    Summary {
+        beginning_balance: parts.first().and_then(|p| p.beginning_balance),
+        ending_balance: parts.last().and_then(|p| p.ending_balance),
+        total_credits: sum(|p| p.total_credits),
+        total_debits: sum(|p| p.total_debits),
+        days_in_period: days,
+        average_balance: None,
+        minimum_balance: parts.iter().filter_map(|p| p.minimum_balance).reduce(f64::min),
+        period_start: parts.iter().find_map(|p| p.period_start.clone()),
+        period_end: parts.iter().rev().find_map(|p| p.period_end.clone()),
+        account_last4: parts.iter().find_map(|p| p.account_last4.clone()),
+        bank: None,
+        checks_total: None,
+        fees_total: None,
+        debits_key: "",
+        debits_page: None,
+        beginning_balances_seen: parts.iter().flat_map(|p| p.beginning_balances_seen.iter().copied()).collect(),
+    }
 }
 
 /// Drop a transaction that repeats (same date, kind and amount) one read from an earlier
@@ -1333,7 +1536,7 @@ pub fn rows_missing_amounts(text: &str) -> usize {
 pub fn detect_bank(texts: &[&str]) -> Option<String> {
     const BANKS: &[(&str, &str)] = &[
         ("wells fargo", "Wells Fargo"), ("truist", "Truist"), ("jpmorgan chase", "Chase"), ("chase.com", "Chase"),
-        ("bank of america", "Bank of America"), ("pnc bank", "PNC"), ("td bank", "TD Bank"), ("u.s. bank", "U.S. Bank"), ("usbank.com", "U.S. Bank"),
+        ("bank of america", "Bank of America"), ("pnc bank", "PNC"), ("pnc.com", "PNC"), ("td bank", "TD Bank"), ("u.s. bank", "U.S. Bank"), ("usbank.com", "U.S. Bank"),
         ("capital one", "Capital One"), ("citibank", "Citibank"), ("regions bank", "Regions"), ("fifth third", "Fifth Third"),
         ("huntington", "Huntington"), ("keybank", "KeyBank"), ("citizens bank", "Citizens"), ("m&t bank", "M&T Bank"), ("bmo", "BMO"),
         ("webster", "Webster Bank"), ("pinnacle", "Pinnacle Bank"), ("legends bank", "Legends Bank"), ("sunrise bank", "Sunrise Banks"),
@@ -1342,6 +1545,9 @@ pub fn detect_bank(texts: &[&str]) -> Option<String> {
         ("mercury", "Mercury"), ("novo", "Novo"), ("relay", "Relay"), ("axos", "Axos"), ("live oak", "Live Oak"), ("first horizon", "First Horizon"),
         ("flagstar", "Flagstar"), ("valley national", "Valley National"), ("east west bank", "East West Bank"), ("cathay", "Cathay Bank"),
         ("customers bank", "Customers Bank"), ("signature bank", "Signature Bank"), ("silicon valley bank", "Silicon Valley Bank"),
+        ("hancock whitney", "Hancock Whitney"), ("hancockwhitney", "Hancock Whitney"), ("mabrey", "Mabrey Bank"), ("wintrust", "Wintrust"),
+        ("byline", "Byline Bank"), ("old national", "Old National"), ("associated bank", "Associated Bank"),
+        ("first republic", "First Republic"), ("umpqua", "Umpqua"), ("banner bank", "Banner Bank"), ("amerant", "Amerant"), ("city national", "City National"),
         ("credit union", "Credit Union"),
     ];
     let mut votes: BTreeMap<&str, usize> = BTreeMap::new();
@@ -1901,5 +2107,15 @@ ACH Debits                                                   1 transactions for 
         let debits: Vec<f64> = l.transactions.iter().filter(|t| t.kind == Kind::Debit).map(|t| t.amount).collect();
         assert_eq!(debits, vec![8.0, 45.0], "{:?}", l.transactions);
         assert_eq!(l.daily_balances.len(), 2);
+    }
+
+    #[test]
+    fn month_name_dates_are_rewritten_in_place() {
+        assert_eq!(normalize_month_dates("Jun 03    PREAUTHORIZED DEBIT"), "06/03     PREAUTHORIZED DEBIT");
+        assert_eq!(normalize_month_dates("May 31, 2024 balance"), "05/31/2024   balance");
+        assert_eq!(normalize_month_dates("June 3 2024"), "06/03/2024 ");
+        assert_eq!(normalize_month_dates("Mayfield Ave 12"), "Mayfield Ave 12");
+        assert_eq!(normalize_month_dates("Marching band 4"), "Marching band 4");
+        assert_eq!(normalize_month_dates("Dec 5"), "12/05");
     }
 }
