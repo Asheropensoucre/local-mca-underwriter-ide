@@ -68,6 +68,8 @@ pub struct Summary {
     /// Inside the account summary block ("CHECKING SUMMARY" ... "Ending Balance").
     #[serde(skip)]
     in_summary_block: bool,
+    #[serde(skip)]
+    summary_lines: usize,
     /// Negative figures listed in the summary block: Chase prints one line per debit
     /// category (card withdrawals, electronic withdrawals, checks, fees); their sum is the
     /// debit total when two or more are present.
@@ -149,7 +151,8 @@ pub fn parse_amount(raw: &str) -> Option<f64> {
 }
 
 pub fn is_amount_token(tok: &str) -> bool {
-    let t = tok.trim_start_matches(|c| c == '$' || c == '-').trim_end_matches('-').trim_matches(|c| c == '(' || c == ')');
+    // Trailing '+' or '-' are credit/debit markers some community banks print ("12,821.16+").
+    let t = tok.trim_start_matches(|c| c == '$' || c == '-').trim_end_matches(|c| c == '-' || c == '+').trim_matches(|c| c == '(' || c == ')');
     if t.is_empty() {
         return false;
     }
@@ -349,7 +352,7 @@ fn section_for(line: &str) -> Option<Kind> {
     if l.contains("deposit") || l.contains("credit") {
         return Some(Kind::Credit);
     }
-    if l.contains("debit") || l.contains("withdrawal") || l.contains("checks") || l.contains("fees") {
+    if l.contains("debit") || l.contains("withdrawal") || l.contains("checks") || l.contains("fees") || l.contains("payments") {
         return Some(Kind::Debit);
     }
     None
@@ -899,12 +902,18 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
                 continue;
             }
             let desc: String = tokens[1..tokens.len() - 1].join(" ");
-            // Check tables print "check# date amount" pairs without a description; skip those.
-            let kind = kind_from_words(&desc, st.section);
+            // "03/14 1008 212.26": a single check-table pair is a paid check.
+            let bare_check = tokens.len() == 3 && !check_no(tokens[1]).is_empty() && check_no(tokens[1]).len() <= 7 && check_no(tokens[1]).chars().all(|c| c.is_ascii_digit());
+            let (desc, kind) = if bare_check {
+                (format!("Check {}", check_no(tokens[1])), Kind::Debit)
+            } else {
+                let kind = kind_from_words(&desc, st.section);
+                (desc, kind)
+            };
             let id = ledger.transactions.len();
             let (date, day) = resolve_date(tokens[0], year_hint);
             ledger.transactions.push(Txn { id, date, day, kind, amount, description: desc, page, table: st.table });
-            last_txn = Some(id);
+            last_txn = if bare_check { None } else { Some(id) };
             continue;
         }
 
@@ -988,9 +997,9 @@ fn last_amount(line: &str) -> Option<f64> {
 }
 
 fn capture_summary(lower: &str, line: &str, s: &mut Summary, page: usize) {
-    if lower.contains("beginning balance") || lower.contains("previous balance") || lower.contains("opening ledger balance") || lower.contains("opening balance") {
+    if lower.contains("beginning balance") || lower.contains("previous balance") || lower.contains("opening ledger balance") || lower.contains("opening balance") || lower.starts_with("balance forward") {
         // Sunrise puts the values on the next line; Legends on the same line.
-        let v = first_amount_after(line, &["beginning balance", "previous balance", "opening ledger balance", "opening balance"]);
+        let v = first_amount_after(line, &["beginning balance", "previous balance", "opening ledger balance", "opening balance", "balance forward"]);
         if let Some(v) = v {
             if !s.beginning_balances_seen.iter().any(|b| (b - v).abs() < 0.005) {
                 s.beginning_balances_seen.push(v);
@@ -1003,15 +1012,25 @@ fn capture_summary(lower: &str, line: &str, s: &mut Summary, page: usize) {
     let ntok = lower.split_whitespace().count();
     // Summary block: debit categories are the negative figures between the "summary"
     // heading and the ending balance.
-    if lower.contains("summary") && ntok <= 5 && last_amount(line).is_none() {
+    if lower.contains("summary") && ntok <= 12 && last_amount(line).is_none() && !lower.contains("fee") {
         // The first block with two or more categories is the account summary; later
         // "summary" headings (card summaries, fee summaries) do not replace it.
-        if s.debit_parts.len() < 2 {
+        if s.debit_parts.len() < 2 && s.debit_parts_unsigned.len() < 2 && s.credit_parts.len() < 2 {
             s.in_summary_block = true;
+            s.summary_lines = 0;
             s.debit_parts.clear();
+            s.debit_parts_unsigned.clear();
+            s.credit_parts.clear();
         }
     } else if s.in_summary_block {
         let toks: Vec<&str> = line.split_whitespace().collect();
+        // The block ends at the first transaction line or section header, or after 25 lines.
+        s.summary_lines += 1;
+        let first_is_date = toks.first().and_then(|t| parse_date_token(t)).is_some();
+        if first_is_date && ntok >= 3 || section_for(line).is_some() || s.summary_lines > 25 {
+            s.in_summary_block = false;
+            return;
+        }
         if let Some(last) = toks.last() {
             let prev_minus = toks.len() >= 2 && toks[toks.len() - 2] == "-";
             let label: String = toks[..toks.len() - 1].join(" ").to_ascii_lowercase();
@@ -1024,9 +1043,11 @@ fn capture_summary(lower: &str, line: &str, s: &mut Summary, page: usize) {
                     }
                 } else if let Some(v) = v {
                     // TD business: unsigned categories told apart by their words
-                    // ("Deposits", "Electronic Deposits" vs "Checks Paid", "Electronic Payments").
-                    let is_credit = label.contains("deposit") || label.contains("credit");
-                    let is_debit = label.contains("check") || label.contains("payment") || label.contains("withdrawal") || label.contains("debit") || label.contains("charge") || label.contains("fee");
+                    // ("Deposits", "Electronic Deposits" vs "Checks Paid", "Electronic Payments");
+                    // First State Bank marks credits with a trailing '+' ("12,821.16+").
+                    let plus = last.ends_with('+');
+                    let is_credit = plus || label.contains("deposit") || label.contains("credit");
+                    let is_debit = !plus && (label.contains("check") || label.contains("payment") || label.contains("withdrawal") || label.contains("debit") || label.contains("charge") || label.contains("fee") || label.contains("card activity"));
                     if is_credit && !is_debit {
                         s.credit_parts.push(v);
                     } else if is_debit && !is_credit {
@@ -1150,6 +1171,7 @@ fn capture_summary(lower: &str, line: &str, s: &mut Summary, page: usize) {
 /// Summary column labels in left-to-right order, for two-line summaries.
 fn column_labels(lower: &str) -> Vec<&'static str> {
     let mut found: Vec<(usize, &'static str)> = Vec::new();
+    let mut spans: Vec<(usize, usize)> = Vec::new();
     for (needle, label) in [
         ("previous balance", "beginning"), ("beginning balance", "beginning"),
         ("total credits", "credits"), ("total deposits", "credits"), ("deposits and other credits", "credits"), ("deposits/credits", "credits"),
@@ -1158,6 +1180,22 @@ fn column_labels(lower: &str) -> Vec<&'static str> {
     ] {
         if let Some(p) = lower.find(needle) {
             found.push((p, label));
+            spans.push((p, p + needle.len()));
+        }
+    }
+    // Bare "Credits" / "Debits" columns next to the balance labels ("Beginning Balance
+    // Credits Debits Ending Balance") count as labels too.
+    for (needle, label) in [(" credits", "credits"), (" debits", "debits")] {
+        let mut from = 0;
+        while let Some(p) = lower[from..].find(needle) {
+            let at = from + p;
+            let end = at + needle.len();
+            let whole = lower[end..].chars().next().map(|c| !c.is_alphanumeric() && c != '/').unwrap_or(true);
+            let covered = spans.iter().any(|(a, b)| *a <= at + 1 && at + 1 < *b);
+            if whole && !covered && !found.is_empty() {
+                found.push((at + 1, label));
+            }
+            from = end;
         }
     }
     // PNC wraps the labels: "Beginning   Deposits and   Checks and   Ending" over
@@ -1423,6 +1461,15 @@ pub fn unfold_two_columns(text: &str) -> String {
             out.push('\n');
             continue;
         }
+        // A single-column header ("Date  Description  Amount") ends a two-column block.
+        let single_header = split.is_some() && !is_header && toks.len() <= 10 && !toks.iter().any(|t| is_amount_token(t)) && lower.contains("date") && (lower.contains("amount") || lower.contains("description"));
+        if single_header {
+            flush(&mut out, &mut left, &mut right);
+            split = None;
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
         // A new section title ("• Checks", "Daily Balance", "Withdrawals and Debits") ends the block.
         let has_date_or_amount = toks.iter().any(|t| is_amount_token(t) || parse_date_token(t).is_some());
         let section_title = !has_date_or_amount && !toks.is_empty() && (line.trim_start().starts_with('•') || line.trim_start().starts_with('*') || section_for(line).is_some() || lower.contains("balance") || lower.contains("summary"));
@@ -1556,11 +1603,12 @@ fn parse_one(pages: &[(usize, &str)]) -> Ledger {
         ledger.summary.total_debits = Some(ledger.summary.debit_parts.iter().sum());
         ledger.summary.debits_key = "summary parts (checks and service fees included)";
     }
-    // Unsigned categories fill in totals the statement never prints as one figure.
-    if ledger.summary.total_credits.is_none() && !ledger.summary.credit_parts.is_empty() {
+    // Unsigned categories fill in totals the statement never prints as one figure, and
+    // two or more of them outrank a bare "Debits 42 28,151.29" line that is only one category.
+    if !ledger.summary.credit_parts.is_empty() && (ledger.summary.total_credits.is_none() || ledger.summary.credit_parts.len() >= 2) {
         ledger.summary.total_credits = Some(ledger.summary.credit_parts.iter().sum());
     }
-    if ledger.summary.total_debits.is_none() && !ledger.summary.debit_parts_unsigned.is_empty() {
+    if !ledger.summary.debit_parts_unsigned.is_empty() && (ledger.summary.total_debits.is_none() || ledger.summary.debit_parts_unsigned.len() >= 2) {
         ledger.summary.total_debits = Some(ledger.summary.debit_parts_unsigned.iter().sum());
         ledger.summary.debits_key = "summary parts (checks and service fees included)";
     }
@@ -1653,6 +1701,7 @@ fn combine_summaries(parts: &[Summary]) -> Summary {
         debits_key: "",
         debits_page: None,
         in_summary_block: false,
+        summary_lines: 0,
         debit_parts: Vec::new(),
         credit_parts: Vec::new(),
         debit_parts_unsigned: Vec::new(),
@@ -1750,6 +1799,7 @@ fn bank_votes(texts: &[&str]) -> Vec<(&'static str, usize)> {
         ("hancock whitney", "Hancock Whitney"), ("hancockwhitney", "Hancock Whitney"), ("mabrey", "Mabrey Bank"), ("wintrust", "Wintrust"),
         ("byline", "Byline Bank"), ("old national", "Old National"), ("associated bank", "Associated Bank"),
         ("first republic", "First Republic"), ("umpqua", "Umpqua"), ("banner bank", "Banner Bank"), ("amerant", "Amerant"), ("city national", "City National"),
+        ("first state bank", "First State Bank"), ("bell bank", "Bell Bank"), ("choice bank", "Choice Bank"), ("alerus", "Alerus"), ("bremer", "Bremer Bank"), ("gate city", "Gate City Bank"),
         ("credit union", "Credit Union"),
     ];
     let mut votes: BTreeMap<&'static str, usize> = BTreeMap::new();
@@ -2345,5 +2395,93 @@ ACH Debits                                                   1 transactions for 
         assert_eq!(join_split_amounts("ACH  1,860. 70"), "ACH  1,860.70 ");
         assert_eq!(join_split_amounts("Ref. 12 items"), "Ref. 12 items");
         assert_eq!(join_split_amounts("v1. 234"), "v1. 234");
+    }
+
+    // GLM-OCR text of a TD business statement: categories in the summary, and on later
+    // pages the amount printed on the line after the description.
+    const TD_BUSINESS_OCR: &str = r#"
+ACCOUNT SUMMARY
+Beginning Balance 9,125.20
+Average Collected Balance 11,431.13
+Deposits 200.00
+Interest Earned This Period 0.00
+Electronic Deposits 6,743.16
+Checks Paid 212.26
+Days in Period 31
+Electronic Payments 3,695.26
+Ending Balance 12,160.84
+
+DAILY ACCOUNT ACTIVITY
+
+Deposits
+
+POSTING DATE DESCRIPTION AMOUNT
+03/26 DEPOSIT 200.00
+Subtotal: 200.00
+
+Electronic Deposits
+
+POSTING DATE DESCRIPTION AMOUNT
+03/03 CCD DEPOSIT, TOAST DEP MAR 02 ****395300UYBS7 6,743.16
+
+Checks Paid No. Checks: 1 *Indicates break in serial sequence or check processed electronically and listed under Electronic Payments
+
+DATE SERIAL NO. AMOUNT DATE SERIAL NO. AMOUNT
+03/14 1008 212.26
+
+Electronic Payments
+
+POSTING DATE DESCRIPTION AMOUNT
+03/03 DBCRD PMT AP, *****04036545477, AUT 030125 VISA DDA PUR AP
+GOOGLE GSUITE SMOKECRAFT 650 2530000 * CA
+15.26
+03/04 CCD DEBIT, INTUIT 36169250 BILL_PAY VRA CLEANING SE
+3,680.00
+"#;
+
+    #[test]
+    fn td_business_categories_and_split_ocr_rows() {
+        let l = parse(&[(1, TD_BUSINESS_OCR)]);
+        assert!((l.summary.total_credits.unwrap() - 6943.16).abs() < 0.001);
+        assert!((l.summary.total_debits.unwrap() - 3907.52).abs() < 0.001);
+        assert!((l.parsed_credit_total - 6943.16).abs() < 0.001, "{:?}", l.transactions);
+        assert!((l.parsed_debit_total - 3907.52).abs() < 0.001, "{:?}", l.transactions);
+        let check = l.transactions.iter().find(|t| t.description == "Check 1008").expect("check row");
+        assert_eq!(check.kind, Kind::Debit);
+        let intuit = l.transactions.iter().find(|t| t.description.contains("INTUIT")).expect("split row");
+        assert_eq!(intuit.amount, 3680.0);
+    }
+
+    const FIRST_STATE: &str = r#"
+Statement Date: 09/29/2023                                   Account No.:                 7698 Page: 1
+        SMALL BUSINESS CHECKING SUMMARY                                 Type :    **REG    Status :   Active
+      Category                                              Number                      Amount
+      Balance Forward From 08/31/23                                                  10,769.47
+      Deposits                                                   2                    1,125.00+
+      Debits                                                     1                      100.00
+      Automatic Withdrawals                                      1                       50.00
+      Automatic Deposits                                         1                       37.59+
+      SERVICE CHARGE                                                                      2.40
+      Ending Balance On 09/29/23                                                     11,779.66
+        ALL CREDIT ACTIVITY
+      Date           Type                     Amount        Date           Type      Amount
+      09/01/23       Deposit                    226.00      09/11/23       Deposit     899.00
+      Date                        Description                                                     Amount
+      09/01/23                    STRIPE TRANSFER                                                  37.59
+        ALL DEBIT ACTIVITY
+      Date                        Description                                                     Amount
+      09/05/23                    CHECK 1001                                                      100.00
+      09/06/23                    ACH PAYMENT VENDOR                                               50.00
+      09/29/23                    SERVICE CHARGE                                                    2.40
+"#;
+
+    #[test]
+    fn first_state_bank_plus_marked_categories() {
+        let l = parse(&[(1, FIRST_STATE)]);
+        assert_eq!(l.summary.beginning_balance, Some(10769.47));
+        assert!((l.summary.total_credits.unwrap() - 1162.59).abs() < 0.001);
+        assert!((l.summary.total_debits.unwrap() - 152.40).abs() < 0.001);
+        assert!((l.parsed_credit_total - 1162.59).abs() < 0.001, "{:?}", l.transactions);
+        assert!((l.parsed_debit_total - 152.40).abs() < 0.001, "{:?}", l.transactions);
     }
 }

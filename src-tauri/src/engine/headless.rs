@@ -92,7 +92,8 @@ async fn run_job(app: &tauri::AppHandle, args: HeadlessArgs) -> Result<String, S
         return Err("no PDF paths given".into());
     }
     if args.ledger_only {
-        let pdfs = super::pipeline::prepare_inputs(app, &args.pdfs)?;
+        // .txt page dumps are parser inputs, not PDFs: nothing to repair.
+        let pdfs: Vec<String> = if args.pdfs.iter().all(|p| p.ends_with(".txt")) { args.pdfs.clone() } else { super::pipeline::prepare_inputs(app, &args.pdfs)? };
         let pages = if args.ocr { ocr_pages(app, &pdfs).await? } else { text_pages(&pdfs)? };
         return ledger_dump(pages);
     }
