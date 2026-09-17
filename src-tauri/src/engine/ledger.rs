@@ -861,11 +861,13 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
             continue;
         }
 
-        // Lone check entry "365989* 11/17 20,754.66".
-        if tokens.len() == 3 && tokens[0].trim_end_matches('*').chars().all(|c| c.is_ascii_digit()) && parse_date_token(tokens[1]).is_some() && is_amount_token(tokens[2]) {
+        // Lone check entry "365989* 11/17 20,754.66" (Chase prints the gap marker as its own
+        // token: "2846 * 10/18 5,821.77").
+        let no_star: Vec<&str> = tokens.iter().copied().filter(|t| *t != "*").collect();
+        if no_star.len() == 3 && !check_no(no_star[0]).is_empty() && check_no(no_star[0]).chars().all(|c| c.is_ascii_digit()) && parse_date_token(no_star[1]).is_some() && is_amount_token(no_star[2]) {
             let id = ledger.transactions.len();
-            let (date, day) = resolve_date(tokens[1], year_hint);
-            ledger.transactions.push(Txn { id, date, day, kind: Kind::Debit, amount: parse_amount(tokens[2]).unwrap_or(0.0).abs(), description: format!("Check {}", tokens[0].trim_end_matches('*')), page, table: st.table });
+            let (date, day) = resolve_date(no_star[1], year_hint);
+            ledger.transactions.push(Txn { id, date, day, kind: Kind::Debit, amount: parse_amount(no_star[2]).unwrap_or(0.0).abs(), description: format!("Check {}", check_no(no_star[0])), page, table: st.table });
             last_txn = None;
             continue;
         }
@@ -1753,8 +1755,11 @@ fn bank_votes(texts: &[&str]) -> Vec<(&'static str, usize)> {
     let mut votes: BTreeMap<&'static str, usize> = BTreeMap::new();
     for text in texts.iter().take(3) {
         let lower = text.to_ascii_lowercase();
+        // The bank's own name sits in the letterhead, the top of the page; other banks
+        // show up in transaction descriptions ("Capital One Auto" deposits at a dealer).
+        let head: String = lower.lines().take(20).collect::<Vec<_>>().join("\n");
         for (needle, name) in BANKS {
-            let n = lower.matches(needle).count();
+            let n = lower.matches(needle).count() + 5 * head.matches(needle).count();
             if n > 0 {
                 *votes.entry(name).or_default() += n;
             }
