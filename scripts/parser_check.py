@@ -60,8 +60,18 @@ def main():
         stated_c, stated_d = s.get("total_credits"), s.get("total_debits")
         row = {"name": name, "bank": s.get("bank") or "unknown", "stated_c": stated_c, "parsed_c": round(p["credit_total"], 2),
                "stated_d": stated_d, "parsed_d": round(p["debit_total"], 2), "lines": len(d["transactions"]), "scans": scans}
-        row["statements"] = len(d.get("statements") or []) or 1
-        if stated_c is None and stated_d is None:
+        statements = d.get("statements") or []
+        row["statements"] = len(statements) or 1
+        if len(statements) > 1:
+            # A bundle passes when every statement that prints a total matches its own lines.
+            checked = [st for st in statements if st.get("total_credits") is not None or st.get("total_debits") is not None]
+            if not checked:
+                row["status"] = "no summary"
+            else:
+                ok = all((st.get("total_credits") is None or abs(st["total_credits"] - (st.get("parsed_credits") or 0)) <= 1.0)
+                         and (st.get("total_debits") is None or abs(st["total_debits"] - (st.get("parsed_debits") or 0)) <= 1.0) for st in checked)
+                row["status"] = "pass" if ok else "fail"
+        elif stated_c is None and stated_d is None:
             row["status"] = "no summary"
         else:
             ok_c = stated_c is None or abs(stated_c - p["credit_total"]) <= 1.0

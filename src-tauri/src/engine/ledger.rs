@@ -84,6 +84,10 @@ pub struct Summary {
     /// Distinct "beginning balance" figures seen. More than one means the file bundles
     /// several statements or accounts, which the parser does not separate yet.
     pub beginning_balances_seen: Vec<f64>,
+    /// Sums of this statement's own parsed lines (filled for the per-statement entries of
+    /// a bundle, so each statement can be verified on its own).
+    pub parsed_credits: Option<f64>,
+    pub parsed_debits: Option<f64>,
 }
 
 /// A group of debits to the same payee with the same amount, i.e. a possible position.
@@ -1571,7 +1575,9 @@ pub fn parse(pages: &[(usize, &str)]) -> Ledger {
     }
     let mut combined = Ledger::default();
     for seg in &segments {
-        let part = parse_one(seg);
+        let mut part = parse_one(seg);
+        part.summary.parsed_credits = Some(part.transactions.iter().filter(|t| t.kind == Kind::Credit).map(|t| t.amount).sum());
+        part.summary.parsed_debits = Some(part.transactions.iter().filter(|t| t.kind == Kind::Debit).map(|t| t.amount).sum());
         let (id_off, table_off) = (combined.transactions.len(), combined.transactions.iter().map(|t| t.table).max().unwrap_or(0) + 1);
         combined.transactions.extend(part.transactions.into_iter().map(|mut t| {
             t.id += id_off;
@@ -1706,6 +1712,8 @@ fn combine_summaries(parts: &[Summary]) -> Summary {
         credit_parts: Vec::new(),
         debit_parts_unsigned: Vec::new(),
         beginning_balances_seen: parts.iter().flat_map(|p| p.beginning_balances_seen.iter().copied()).collect(),
+        parsed_credits: None,
+        parsed_debits: None,
     }
 }
 
