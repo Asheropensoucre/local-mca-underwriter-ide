@@ -73,6 +73,12 @@ pub struct Summary {
     /// debit total when two or more are present.
     #[serde(skip)]
     debit_parts: Vec<f64>,
+    /// Unsigned category lines in the summary block, told apart by their words (TD
+    /// business: "Deposits", "Electronic Deposits" / "Checks Paid", "Electronic Payments").
+    #[serde(skip)]
+    credit_parts: Vec<f64>,
+    #[serde(skip)]
+    debit_parts_unsigned: Vec<f64>,
     /// Distinct "beginning balance" figures seen. More than one means the file bundles
     /// several statements or accounts, which the parser does not separate yet.
     pub beginning_balances_seen: Vec<f64>,
@@ -566,6 +572,8 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
     let flat = is_flat(text);
     let mut pending_header: Option<Columns> = None;
     let mut last_txn: Option<usize> = None;
+    // Dated OCR line waiting for its amount on a following line (date token, description).
+    let mut pending_flat: Option<(String, String)> = None;
     // Column-style summaries ("Previous Balance  Total Credits  Total Debits  Current Balance")
     // put the labels on one line and the values on the next.
     let mut pending_columns: Vec<&'static str> = Vec::new();
@@ -674,7 +682,7 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         }
         // Long check-table titles ("Summary of checks written (checks listed are also
         // displayed in the preceding Transaction history)") start a new listing too.
-        if !has_amount && lower.contains("check") && (lower.contains("summary of") || lower.contains("checks paid") || lower.contains("checks cleared") || lower.contains("checks written")) && tokens.len() <= 16 {
+        if !has_amount && lower.contains("check") && (lower.starts_with("checks paid") || (lower.contains("summary of") || lower.contains("checks paid") || lower.contains("checks cleared") || lower.contains("checks written")) && tokens.len() <= 16) {
             st.enter_table(trimmed);
             st.section = Some(Kind::Debit);
             st.in_daily = false;
@@ -832,7 +840,9 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
                 seen_on_line.push((label.clone(), amount));
                 let id = ledger.transactions.len();
                 let (date, day) = resolve_date(tokens[d], year_hint);
-                ledger.transactions.push(Txn { id, date, day, kind: st.section.unwrap_or(Kind::Debit), amount, description: label, page, table: st.table });
+                // A check number entry is a paid check, whatever section the page was in.
+                let kind = if label.starts_with("Check ") { Kind::Debit } else { st.section.unwrap_or(Kind::Debit) };
+                ledger.transactions.push(Txn { id, date, day, kind, amount, description: label, page, table: st.table });
             }
             last_txn = None;
             continue;
@@ -894,6 +904,30 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
             ledger.transactions.push(Txn { id, date, day, kind, amount, description: desc, page, table: st.table });
             last_txn = Some(id);
             continue;
+        }
+
+        // OCR of a wrapped row: "03/04 CCD DEBIT, INTUIT ... BILL_PAY VRA CLEANING SE" then
+        // "3,680.00" on the next line. Hold the dated line and complete it when a lone
+        // amount follows (text lines in between extend the description).
+        if flat && starts_with_date && !tokens.iter().any(|t| is_amount_token(t)) && tokens.len() >= 2 && !summary_row {
+            pending_flat = Some((tokens[0].to_string(), tokens[1..].join(" ")));
+            last_txn = None;
+            continue;
+        }
+        if let Some((date_tok, desc)) = pending_flat.take() {
+            if tokens.len() == 1 && is_amount_token(tokens[0]) {
+                let amount = parse_amount(tokens[0]).unwrap_or(0.0).abs();
+                let id = ledger.transactions.len();
+                let (date, day) = resolve_date(&date_tok, year_hint);
+                ledger.transactions.push(Txn { id, date, day, kind: kind_from_words(&desc, st.section), amount, description: desc, page, table: st.table });
+                last_txn = Some(id);
+                continue;
+            }
+            if !starts_with_date && !tokens.iter().any(|t| is_amount_token(t)) && tokens.len() <= 12 {
+                pending_flat = Some((date_tok, format!("{desc} {trimmed}")));
+                continue;
+            }
+            // Anything else: the dated line was not a transaction after all.
         }
 
         // Continuation line: text right after a transaction with no date and no amount adds
@@ -978,9 +1012,24 @@ fn capture_summary(lower: &str, line: &str, s: &mut Summary, page: usize) {
         let toks: Vec<&str> = line.split_whitespace().collect();
         if let Some(last) = toks.last() {
             let prev_minus = toks.len() >= 2 && toks[toks.len() - 2] == "-";
-            if is_amount_token(last) && (last.starts_with('-') || last.starts_with("-$") || prev_minus) && !lower.contains("balance") {
-                if let Some(v) = parse_amount(last) {
-                    s.debit_parts.push(v.abs());
+            let label: String = toks[..toks.len() - 1].join(" ").to_ascii_lowercase();
+            if is_amount_token(last) && !lower.contains("balance") && !lower.contains("interest") && !lower.contains("days") && toks.len() <= 6 {
+                let v = parse_amount(last).map(f64::abs);
+                if last.starts_with('-') || last.starts_with("-$") || prev_minus {
+                    // Chase: signed categories.
+                    if let Some(v) = v {
+                        s.debit_parts.push(v);
+                    }
+                } else if let Some(v) = v {
+                    // TD business: unsigned categories told apart by their words
+                    // ("Deposits", "Electronic Deposits" vs "Checks Paid", "Electronic Payments").
+                    let is_credit = label.contains("deposit") || label.contains("credit");
+                    let is_debit = label.contains("check") || label.contains("payment") || label.contains("withdrawal") || label.contains("debit") || label.contains("charge") || label.contains("fee");
+                    if is_credit && !is_debit {
+                        s.credit_parts.push(v);
+                    } else if is_debit && !is_credit {
+                        s.debit_parts_unsigned.push(v);
+                    }
                 }
             }
         }
@@ -1505,6 +1554,14 @@ fn parse_one(pages: &[(usize, &str)]) -> Ledger {
         ledger.summary.total_debits = Some(ledger.summary.debit_parts.iter().sum());
         ledger.summary.debits_key = "summary parts (checks and service fees included)";
     }
+    // Unsigned categories fill in totals the statement never prints as one figure.
+    if ledger.summary.total_credits.is_none() && !ledger.summary.credit_parts.is_empty() {
+        ledger.summary.total_credits = Some(ledger.summary.credit_parts.iter().sum());
+    }
+    if ledger.summary.total_debits.is_none() && !ledger.summary.debit_parts_unsigned.is_empty() {
+        ledger.summary.total_debits = Some(ledger.summary.debit_parts_unsigned.iter().sum());
+        ledger.summary.debits_key = "summary parts (checks and service fees included)";
+    }
     // Checks and fees printed as separate figures are added unless the debit key already
     // covers them ("Checks and other debits", "... debits and service charges").
     if let Some(other) = ledger.summary.total_debits {
@@ -1595,6 +1652,8 @@ fn combine_summaries(parts: &[Summary]) -> Summary {
         debits_page: None,
         in_summary_block: false,
         debit_parts: Vec::new(),
+        credit_parts: Vec::new(),
+        debit_parts_unsigned: Vec::new(),
         beginning_balances_seen: parts.iter().flat_map(|p| p.beginning_balances_seen.iter().copied()).collect(),
     }
 }
@@ -1654,7 +1713,8 @@ pub fn rows_missing_amounts(text: &str) -> usize {
         if toks.is_empty() {
             continue;
         }
-        if !toks.iter().any(|t| is_amount_token(t)) && Columns::labels(line).is_complete(lower.contains("date")) {
+        let single_amount_header = lower.contains("date") && lower.contains("amount") && toks.len() <= 8;
+        if !toks.iter().any(|t| is_amount_token(t)) && (Columns::labels(line).is_complete(lower.contains("date")) || single_amount_header) {
             under_header = true;
             continue;
         }

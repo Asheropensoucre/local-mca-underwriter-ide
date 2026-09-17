@@ -361,13 +361,23 @@ fn pid_file(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 /// loss). Only touches the pid recorded in our own pid file, and only if that process
 /// is still a llama-server from our runtime directory.
 fn reap_stale_server(app: &tauri::AppHandle) {
-    reap_stale_scopes();
     let Ok(path) = pid_file(app) else { return };
-    let Ok(text) = std::fs::read_to_string(&path) else { return };
-    let _ = std::fs::remove_file(&path);
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
     let mut lines = text.lines();
-    let Some(Ok(pid)) = lines.next().map(|l| l.trim().parse::<u32>()) else { return };
-    let unit = lines.next().map(str::trim).filter(|u| !u.is_empty());
+    let pid = lines.next().and_then(|l| l.trim().parse::<u32>().ok());
+    let unit = lines.next().map(str::trim).filter(|u| !u.is_empty()).map(str::to_string);
+    let owner = lines.next().and_then(|l| l.trim().parse::<u32>().ok());
+    // Another live instance of the app (window plus a headless run) owns this engine:
+    // leave it alone. Only engines whose app is gone are stale.
+    let owner_alive = owner.map(|o| o != std::process::id() && process_alive(o)).unwrap_or(false);
+    if owner_alive {
+        reap_stale_scopes(unit.as_deref());
+        return;
+    }
+    reap_stale_scopes(None);
+    let _ = std::fs::remove_file(&path);
+    let Some(pid) = pid else { return };
+    let unit = unit.as_deref();
     #[cfg(target_os = "linux")]
     if let Some(unit) = unit {
         // The scope outlives a crashed app; stopping it takes the whole tree with it.
@@ -388,19 +398,36 @@ fn reap_stale_server(app: &tauri::AppHandle) {
 /// Kill every `mca-engine-*.scope` left behind by an earlier instance of this app. The
 /// scope names are ours alone, so this cannot touch anything else on the machine.
 #[cfg(target_os = "linux")]
-fn reap_stale_scopes() {
+fn reap_stale_scopes(keep: Option<&str>) {
     let Ok(out) = Command::new("systemctl").args(["--user", "list-units", "--no-legend", "--plain", "mca-engine-*.scope"]).output() else { return };
+    let mut killed = false;
     for line in String::from_utf8_lossy(&out.stdout).lines() {
         if let Some(unit) = line.split_whitespace().next().filter(|u| u.starts_with("mca-engine-") && u.ends_with(".scope")) {
+            if Some(unit) == keep {
+                continue;
+            }
             println!("[Engine] Stopping stale engine scope {unit}");
             signal_unit(unit, "SIGKILL");
+            killed = true;
         }
     }
-    std::thread::sleep(Duration::from_millis(300));
+    if killed {
+        std::thread::sleep(Duration::from_millis(300));
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
-fn reap_stale_scopes() {}
+fn reap_stale_scopes(_keep: Option<&str>) {}
+
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    Command::new("kill").args(["-0", &pid.to_string()]).status().map(|s| s.success()).unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn process_alive(pid: u32) -> bool {
+    Command::new("tasklist").args(["/FI", &format!("PID eq {pid}"), "/NH"]).output().map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string())).unwrap_or(false)
+}
 
 #[cfg(target_os = "linux")]
 fn process_is_our_server(pid: u32, app: &tauri::AppHandle) -> bool {
@@ -512,7 +539,7 @@ pub async fn start(app: &tauri::AppHandle, cfg: &EngineConfig) -> Result<Endpoin
     let mut child = cmd.spawn().map_err(|e| format!("Cannot start llama-server: {e}"))?;
     if let Ok(p) = pid_file(app) {
         // pid, and the scope unit when there is one, for reaping after a crash.
-        let _ = std::fs::write(p, format!("{}\n{}", child.id(), unit.clone().unwrap_or_default()));
+        let _ = std::fs::write(p, format!("{}\n{}\n{}", child.id(), unit.clone().unwrap_or_default(), std::process::id()));
     }
     println!("[Engine] llama-server pid {} on port {port} ({:?})", child.id(), cfg.backend);
 
