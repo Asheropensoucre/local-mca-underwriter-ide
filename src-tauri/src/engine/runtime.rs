@@ -361,6 +361,7 @@ fn pid_file(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 /// loss). Only touches the pid recorded in our own pid file, and only if that process
 /// is still a llama-server from our runtime directory.
 fn reap_stale_server(app: &tauri::AppHandle) {
+    reap_stale_scopes();
     let Ok(path) = pid_file(app) else { return };
     let Ok(text) = std::fs::read_to_string(&path) else { return };
     let _ = std::fs::remove_file(&path);
@@ -383,6 +384,23 @@ fn reap_stale_server(app: &tauri::AppHandle) {
         std::thread::sleep(Duration::from_millis(500));
     }
 }
+
+/// Kill every `mca-engine-*.scope` left behind by an earlier instance of this app. The
+/// scope names are ours alone, so this cannot touch anything else on the machine.
+#[cfg(target_os = "linux")]
+fn reap_stale_scopes() {
+    let Ok(out) = Command::new("systemctl").args(["--user", "list-units", "--no-legend", "--plain", "mca-engine-*.scope"]).output() else { return };
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        if let Some(unit) = line.split_whitespace().next().filter(|u| u.starts_with("mca-engine-") && u.ends_with(".scope")) {
+            println!("[Engine] Stopping stale engine scope {unit}");
+            signal_unit(unit, "SIGKILL");
+        }
+    }
+    std::thread::sleep(Duration::from_millis(300));
+}
+
+#[cfg(not(target_os = "linux"))]
+fn reap_stale_scopes() {}
 
 #[cfg(target_os = "linux")]
 fn process_is_our_server(pid: u32, app: &tauri::AppHandle) -> bool {
@@ -439,14 +457,14 @@ pub async fn start(app: &tauri::AppHandle, cfg: &EngineConfig) -> Result<Endpoin
         return Err(format!("{} is not installed", underwriter.display_name));
     }
 
-    // Size everything to the memory free right now, and refuse rather than freeze the
-    // machine when it does not fit (see `memory`).
+    // A previous instance that died without stopping (crash, dev rebuild) may still hold
+    // a model in memory: reap it first, then size to the memory that is really free.
+    reap_stale_server(app);
     let plan = memory::plan(&ocr, &underwriter);
     println!("[Engine] memory: {}", plan.message);
     if !plan.fits {
         return Err(plan.message);
     }
-    reap_stale_server(app);
     let presets = write_presets(app, &ocr, &underwriter, &plan)?;
     let port = free_port()?;
     let api_key = random_key();
