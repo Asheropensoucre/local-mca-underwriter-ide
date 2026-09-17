@@ -131,16 +131,57 @@ const OCR_TABLE_PROMPT: &str = "Table Recognition:";
 /// Read one scanned page. Plain text first; when rows under a transaction table header
 /// come back without amounts (the text task drops cells of wrapped rows), the table task
 /// is run as well and its rows replace the table in the text.
-async fn ocr_page(ep: &Endpoint, pdf: &str, page: usize) -> Result<String, String> {
-    let uri = render_page_data_uri(pdf, page)?;
+/// Raw model outputs for one page, cached separately so post-processing can change
+/// without re-reading the page. `text` is the plain task; `table` the table task.
+struct RawOcr {
+    text: Option<PathBuf>,
+    table: Option<PathBuf>,
+}
+
+impl RawOcr {
+    fn for_page(cache: Option<&(PathBuf, String)>, page: usize) -> RawOcr {
+        let base = cache.map(|(dir, h)| dir.join(format!("{h}-p{page:03}-{}dpi-{}", ocr_dpi(), super::registry::ocr_model().id)));
+        RawOcr {
+            text: base.as_ref().map(|b| b.with_extension("txt")),
+            table: base.as_ref().map(|b| b.with_extension("table.html")),
+        }
+    }
+
+    /// Text is cached; the table is only needed when the text lost amounts, so a page
+    /// counts as cached when the text is there and either needs no table or has one.
+    fn is_complete(&self) -> bool {
+        match self.text.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
+            Some(text) => ledger::rows_missing_amounts(&text) == 0 || self.table.as_ref().map(|p| p.exists()).unwrap_or(false),
+            None => false,
+        }
+    }
+}
+
+/// Run `prompt` on the page image, serving and filling the raw cache at `path`.
+async fn ocr_cached(ep: &Endpoint, uri: &mut Option<String>, pdf: &str, page: usize, prompt: &str, path: Option<&PathBuf>) -> Result<String, String> {
+    if let Some(text) = path.and_then(|p| std::fs::read_to_string(p).ok()) {
+        return Ok(text);
+    }
+    if uri.is_none() {
+        *uri = Some(render_page_data_uri(pdf, page)?);
+    }
+    let out = ocr_prompt(ep, uri.as_deref().unwrap(), prompt).await?;
+    if let Some(p) = path {
+        let _ = std::fs::write(p, &out);
+    }
+    Ok(out)
+}
+
+async fn ocr_page(ep: &Endpoint, pdf: &str, page: usize, raw: &RawOcr) -> Result<String, String> {
+    let mut uri: Option<String> = None; // rendered once, only when a task is not cached
     let prompt = std::env::var("MCA_OCR_PROMPT").unwrap_or_else(|_| OCR_PROMPT.to_string()); // testing aid
-    let text = ocr_prompt(ep, &uri, &prompt).await?;
+    let text = ocr_cached(ep, &mut uri, pdf, page, &prompt, raw.text.as_ref()).await?;
     let missing = ledger::rows_missing_amounts(&text);
     if missing == 0 || prompt != OCR_PROMPT {
         return Ok(text);
     }
     println!("[Engine] page {page}: {missing} table row(s) lost their amounts in plain OCR, reading the table");
-    let html = ocr_prompt(ep, &uri, OCR_TABLE_PROMPT).await?;
+    let html = ocr_cached(ep, &mut uri, pdf, page, OCR_TABLE_PROMPT, raw.table.as_ref()).await?;
     match super::ocr_table::table_html_to_layout(&html) {
         Some(table) => Ok(splice_table(&text, &table)),
         None => Ok(text),
@@ -221,10 +262,6 @@ fn file_hash(pdf: &str) -> Option<String> {
     Some(format!("{:x}", Sha256::digest(&bytes))[..16].to_string())
 }
 
-fn ocr_cache_path(dir: &Path, hash: &str, page: usize) -> PathBuf {
-    dir.join(format!("{hash}-p{page:03}-{}dpi-{}.txt", ocr_dpi(), super::registry::ocr_model().id))
-}
-
 /// Stage 1 for one file. Decides per page whether the text layer is enough, then reads
 /// the OCR pages concurrently. Emits `analysis-progress` page events on `app`.
 pub async fn extract_pages(
@@ -280,7 +317,7 @@ async fn ocr_into(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdf: &str, page
     let ep = match ep {
         Some(ep) => ep.clone(),
         None => {
-            let all_cached = cache.as_ref().map(|(dir, h)| queue.iter().all(|p| ocr_cache_path(dir, h, *p).exists())).unwrap_or(false);
+            let all_cached = cache.is_some() && queue.iter().all(|p| RawOcr::for_page(cache.as_ref(), *p).is_complete());
             if !all_cached {
                 return Err(NEEDS_ENGINE.to_string());
             }
@@ -299,18 +336,15 @@ async fn ocr_into(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdf: &str, page
         let sem = sem.clone();
         let ep = ep.clone();
         let pdf = pdf.to_string();
-        let cache_path = cache.as_ref().map(|(dir, h)| ocr_cache_path(dir, h, page));
+        let raw = RawOcr::for_page(cache.as_ref(), page);
         tasks.push(tokio::spawn(async move {
             let started = Instant::now();
-            if let Some(text) = cache_path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
+            if raw.is_complete() {
+                let text = ocr_page(&ep, &pdf, page, &raw).await?;
                 return Ok::<(usize, String, f32), String>((page, text, 0.0));
             }
-
             let _permit = sem.acquire().await.map_err(|e| e.to_string())?;
-            let text = ocr_page(&ep, &pdf, page).await?;
-            if let Some(p) = &cache_path {
-                let _ = std::fs::write(p, &text);
-            }
+            let text = ocr_page(&ep, &pdf, page, &raw).await?;
             Ok::<(usize, String, f32), String>((page, text, started.elapsed().as_secs_f32()))
         }));
     }

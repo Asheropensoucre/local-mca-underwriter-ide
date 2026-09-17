@@ -747,6 +747,24 @@ fn capture_summary(lower: &str, line: &str, s: &mut Summary) {
     {
         s.total_debits = last_amount(line).map(f64::abs);
     }
+    // Pinnacle-style summary cells anywhere on the line: "Credits + $.00", "Debits - $94,340.67".
+    let toks: Vec<&str> = line.split_whitespace().collect();
+    for (i, t) in toks.iter().enumerate() {
+        let tl = t.to_ascii_lowercase();
+        if tl != "credits" && tl != "debits" {
+            continue;
+        }
+        let next = toks.get(i + 1).copied().unwrap_or("");
+        let value = if next == "+" || next == "-" { toks.get(i + 2).copied().unwrap_or("") } else { next };
+        if is_amount_token(value) && (next == "+" || next == "-" || i + 1 == toks.len() - 1) {
+            let v = parse_amount(value).map(f64::abs);
+            if tl == "credits" && s.total_credits.is_none() {
+                s.total_credits = v;
+            } else if tl == "debits" && s.total_debits.is_none() {
+                s.total_debits = v;
+            }
+        }
+    }
     // Truist lists "Checks - 0.00" as a separate debit figure above "Other withdrawals".
     if s.checks_total.is_none() && lower.starts_with("checks") && ntok <= 4 && !lower.contains("paid") {
         s.checks_total = last_amount(line).map(f64::abs);
@@ -1475,5 +1493,118 @@ Statement period activity summary                                               
         let m = compute_metrics(&l, &[], &[]);
         assert_eq!(m.negative_days, 2);
         assert_eq!(m.total_credits, 113045.99);
+    }
+
+    const WEBSTER: &str = r#"
+Account Summary
+Date          Description
+06/01/2024    Beginning Balance                     $141,391.00
+              2 Debit(s) this period                $8,674.10
+              3 Credit(s) this period               $11,142.21
+06/30/2024    Ending Balance                        $143,859.11
+Transaction Activity
+ Transaction Date     Description                                         Debits              Credits            Balance
+ 06/01/2024           Beginning Balance                                                                    $141,391.00
+ 06/03/2024           HRTLAND PMT SYS TXNS/FEES THE HEALTHY                               $10,995.75       $152,386.75
+                      CHOICE APO XXXXXXXXXXX2222
+ 06/03/2024           WEPAY PAYMENTS NTE*ZZZ*Payouts\                                          $23.07      $152,409.82
+ 06/03/2024           HRTLAND PMT SYS TXNS/FEES THE HEALTHY           -$8,384.73                           $144,025.09
+ 06/05/2024           VANTIV_INTG_PYMT BILLNG Merch Bankcard             -$289.37                          $143,735.72
+ 06/06/2024           WePay PAYMENTS NTE*ZZZ*Payouts\                                         $123.39      $143,859.11
+ Debits
+ Date               Description                                                                           Amount
+ 06/03/2024         HRTLAND PMT SYS TXNS/FEES THE HEALTHY CHOICE APO                                    -$8,384.73
+ 06/05/2024         VANTIV_INTG_PYMT BILLNG Merch Bankcard 286809 The Heal                                -$289.37
+ Credits
+ Date               Description                                                                           Amount
+ 06/03/2024         HRTLAND PMT SYS TXNS/FEES THE HEALTHY CHOICE APO                                    $10,995.75
+ 06/03/2024         WEPAY PAYMENTS NTE*ZZZ*Payouts\                                                        $23.07
+ 06/06/2024         WePay PAYMENTS NTE*ZZZ*Payouts\                                                       $123.39
+"#;
+
+    #[test]
+    fn webster_per_type_lists_do_not_double_the_running_balance_table() {
+        let l = parse(&[(1, WEBSTER)]);
+        assert_eq!(l.summary.total_debits, Some(8674.10));
+        assert_eq!(l.summary.total_credits, Some(11142.21));
+        assert_eq!(l.summary.bank, None); // no bank name in the snippet
+        assert_eq!(l.transactions.len(), 5, "{:?}", l.transactions);
+        assert!((l.parsed_credit_total - 11142.21).abs() < 0.001);
+        assert!((l.parsed_debit_total - 8674.10).abs() < 0.001);
+        assert_eq!(l.daily_balances.len(), 4); // 06/01 (beginning row), 06/03, 06/05, 06/06
+    }
+
+    const PINNACLE: &str = r#"
+Statement of Account
+       Balance 9/01/22                            Summary
+       $ 127,574.68
+                                                  Credits      + $.00
+       Balance 10/02/22                           Interest     + $.00
+       $ 33,234.01                                Debits       - $94,340.67
+Debit Transactions
+Other Debits
+9/20            BOOKING.COM B.V. 1035078125 10000706034723              4,917.05
+Checks
+9/19            Check 3214                                             17,230.00
+9/27            Check 3218*                                            17,035.65
+Total Debits                                                          $39,182.70
+DAILY BALANCE INFORMATION
+9/01                          127,574.68   9/20                 105,427.63      9/27                  66,230.67
+  #3214                 09/19/2022       $17,230.00   #3214             09/19/2022           $17,230.00
+  #3218                 09/27/2022       $17,035.65   #3218             09/27/2022           $17,035.65
+"#;
+
+    #[test]
+    fn pinnacle_zero_credits_and_check_image_captions() {
+        let l = parse(&[(1, PINNACLE)]);
+        assert_eq!(l.summary.total_credits, Some(0.0));
+        assert_eq!(l.summary.total_debits, Some(94340.67));
+        assert_eq!(l.transactions.len(), 3, "{:?}", l.transactions);
+        assert!((l.parsed_debit_total - 39182.70).abs() < 0.001);
+    }
+
+    // GLM-OCR output of a Wells Fargo page: no alignment, amounts at the end of the line,
+    // running balance only on the last transaction of a day.
+    const WELLS_OCR: &str = r#"
+Statement period activity summary
+Beginning balance on 7/1 $2,014.94
+Deposits/Additions 12,758.10
+Withdrawals/Subtractions - 14,536.85
+Ending balance on 7/31 $236.19
+Transaction history
+Date Check Number Description Deposits/Additions Withdrawals/Subtractions Ending daily balance
+7/2 Zelle From Zermay Law A Professional Corpo on 07/02 Ref # Jpm99Becvg6T 2,000.00
+7/2 Recurring Payment authorized on 06/30 Google *Youtube G.CO/Helppay# CA S305181667547988 Card 9798 106.44
+7/2 Zelle to Carr Mike on 07/02 Ref #Rp0Yzclgvs 2,000.00 1,908.50
+7/15 Lateral Link Gro Payroll 12728400007698x Jowers, Evan P 10,000.00
+7/15 Recurring Payment authorized on 07/14 El Car Wash Lantan 305-603-9565 FL S585195372421625 Card 9798 42.78 11,865.72
+"#;
+
+    #[test]
+    fn flat_ocr_page_uses_words_and_running_balance_arithmetic() {
+        let l = parse(&[(1, WELLS_OCR)]);
+        assert_eq!(l.summary.total_credits, Some(12758.10));
+        assert_eq!(l.transactions.len(), 5, "{:?}", l.transactions);
+        let kinds: Vec<Kind> = l.transactions.iter().map(|t| t.kind).collect();
+        // "Payroll" carries no credit word; the balance change (+9,957.22) proves it is a credit.
+        assert_eq!(kinds, vec![Kind::Credit, Kind::Debit, Kind::Debit, Kind::Credit, Kind::Debit]);
+        assert_eq!(l.daily_balances.len(), 2);
+        assert!((l.parsed_credit_total - 12000.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn ocr_amounts_with_period_thousands_and_dollar_zero() {
+        assert_eq!(parse_amount("2.197.40"), Some(2197.40));
+        assert!(is_amount_token("2.197.40"));
+        assert!(is_amount_token("$.00"));
+        assert_eq!(parse_amount("$.00"), Some(0.0));
+        assert!(!is_amount_token("1.5.00"));
+        assert!(!is_amount_token("10.5"));
+    }
+
+    #[test]
+    fn bank_is_detected_by_most_mentions() {
+        assert_eq!(detect_bank(&["Wells Fargo Bank, N.A.\nZelle to Chase user\nwellsfargo.com Wells Fargo"]), Some("Wells Fargo".into()));
+        assert_eq!(detect_bank(&["Nothing here"]), None);
     }
 }
