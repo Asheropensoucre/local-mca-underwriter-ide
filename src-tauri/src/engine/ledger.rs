@@ -2140,4 +2140,19 @@ ACH Debits                                                   1 transactions for 
         assert_eq!(normalize_month_dates("Marching band 4"), "Marching band 4");
         assert_eq!(normalize_month_dates("Dec 5"), "12/05");
     }
+
+    #[test]
+    fn bundled_statements_are_segmented_and_combined() {
+        let l = parse(&[(1, LEGENDS), (2, SUNRISE)]);
+        assert_eq!(l.statements.len(), 2, "{:?}", l.statements);
+        assert_eq!(l.statements[0].beginning_balance, Some(57739.72));
+        assert_eq!(l.statements[1].beginning_balance, Some(3702.38));
+        assert_eq!(l.summary.beginning_balance, Some(57739.72));
+        assert_eq!(l.summary.ending_balance, Some(9050.86));
+        assert_eq!(l.summary.total_credits, Some(1321117.77 + 113045.99));
+        // Legends' first-page lines and Sunrise's lines both survive, ids stay unique.
+        let ids: std::collections::BTreeSet<usize> = l.transactions.iter().map(|t| t.id).collect();
+        assert_eq!(ids.len(), l.transactions.len());
+        assert!(l.transactions.iter().any(|t| t.page == 1) && l.transactions.iter().any(|t| t.page == 2));
+    }
 }
