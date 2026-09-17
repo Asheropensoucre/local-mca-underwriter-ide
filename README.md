@@ -54,16 +54,21 @@ Every statement is checked against itself: the parser sums the transaction lines
 | Bank | Layout features |
 |---|---|
 | Wells Fargo (business and consumer, digital and scanned) | credit, debit and running-balance columns; two-line column headers; "Totals" row; "Items returned unpaid" and fee summaries skipped |
+| Chase (commercial) | "Deposits and Credits / Withdrawals and Debits / Checks Paid" summary, multi-column check table, two-column daily balance table, multi-line ACH descriptions |
+| Bank of America (business) | "Withdrawals and other debits" plus "Checks" plus "Service fees" summary parts, two-column account summary, daily ledger balances |
+| PNC (corporate) | two-line "Balance Summary" header, date / amount / description / reference lines, ledger balance table, check tables with reference numbers |
+| Truist (commercial) | "Checks" plus "Other withdrawals" summary, `2.197.40` OCR amounts; scanned filings need the OCR re-read (see below) |
+| Webster Bank | running-balance table plus per-type lists (duplicates dropped), "N Debit(s) this period" summary, `-$` amounts |
 | Legends Bank | date-first / amount-last lines, section headers, multi-column check tables, check image captions |
 | Sunrise Banks | column-style two-line summary, 20-row daily balance table |
-| Webster Bank | running-balance table plus per-type lists (duplicates dropped), "N Debit(s) this period" summary, `-$` amounts |
 | Pinnacle Bank | `$.00` amounts, "Credits + / Debits -" summary, check image pages |
-| Truist (commercial) | "Checks" plus "Other withdrawals" summary, `2.197.40` OCR amounts; needs the OCR re-read (see below) |
-| Bank of America, Chase, BMO | single-page exhibits, summary only |
+| Hancock Whitney | two transaction columns side by side (unfolded), "22 CREDITS / 9 DEBITS / SERVICE CHARGES" summary |
+| Mabrey Bank | "2 Deposits/Credits / 31 Checks/Debits" summary, check table, image caption pages skipped |
+| BMO, Capital One | single-page exhibits, summary only |
 
 Scanned pages: the OCR model reads plain text first; when rows under a transaction table lose their amounts (wrapped descriptions), the table is read as a table and every amount lands in its column. Statements whose text layer is someone else's poor OCR (court filings) are detected by the totals mismatch and re-read with the OCR model automatically.
 
-Not handled yet: multi-account credit union statements (several accounts on one statement), statements with no printed totals at all (parsed lines are still shown, but cannot be verified), and layouts not seen in the corpus. Adding a bank means adding its statement to the corpus, fixing the parser and adding a fixture test in `src-tauri/src/engine/ledger.rs`.
+Not handled yet: files that bundle several statements or accounts (the parser reads them as one and flags it), multi-account credit union statements, statements with no printed totals at all (parsed lines are still shown, but cannot be verified), and layouts not seen in the corpus. Adding a bank means adding its statement to the corpus, fixing the parser and adding a fixture test in `src-tauri/src/engine/ledger.rs`.
 
 ## Prerequisites
 

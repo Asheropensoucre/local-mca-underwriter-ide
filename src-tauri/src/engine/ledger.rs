@@ -1825,4 +1825,81 @@ Date Check Number Description Deposits/Additions Withdrawals/Subtractions Ending
         assert_eq!(detect_bank(&["Wells Fargo Bank, N.A.\nZelle to Chase user\nwellsfargo.com Wells Fargo"]), Some("Wells Fargo".into()));
         assert_eq!(detect_bank(&["Nothing here"]), None);
     }
+
+    const PNC: &str = r#"
+Account Summary Information
+Balance Summary
+                                  Beginning                   Deposits and                    Checks and                     Ending
+                                    balance                   other credits                   other debits                  balance
+                             125,033.13                        43,000.00                       2,555.00             165,478.13
+Deposits and Other Credits                                                    Checks and Other Debits
+Description                           Items                   Amount          Description                          Items                    Amount
+Deposits                                  1               4,224.50            Checks                                  2                  2,105.00
+Ledger Balance
+Date             Ledger balance                    Date                Ledger balance                Date            Ledger balance
+06/01            125,033.13                        06/11             201,416.46                      06/21          689,173.34
+Deposits and Other Credits
+ACH Credits                                         2 transactions for a total of $43,000.00
+Date                                               Transaction                                                      Reference
+posted                                    Amount   description                                                        number
+06/03                                 28,273.92    Corporate ACH Txns/Fees                                  00024155901130577
+                                                   Hrtland Pmt Sys 650000011702126
+06/04                                 14,726.08    Corporate ACH Cardinalcp                                 00024155906523827
+Checks and Other Debits
+Checks and Substitute Checks                                 2 transactions for a total of $2,105.00
+Date   Check                 Reference       Date   Check                             Reference
+posted number         Amount   number        posted number                  Amount      number
+06/14    12486         625.00   012830651    06/24   12489                 1,480.00     017680958
+ACH Debits                                                   1 transactions for a total of $450.00
+06/21    12490         450.00   017261553
+"#;
+
+    #[test]
+    fn pnc_two_line_summary_reference_numbers_and_ledger_balance_table() {
+        let l = parse(&[(1, PNC)]);
+        assert_eq!(l.summary.beginning_balance, Some(125033.13));
+        assert_eq!(l.summary.total_credits, Some(43000.0));
+        // "Checks and other debits" already includes the checks figure: not added twice.
+        assert_eq!(l.summary.total_debits, Some(2555.0));
+        assert_eq!(l.summary.ending_balance, Some(165478.13));
+        assert_eq!(l.daily_balances.len(), 3);
+        assert!((l.parsed_credit_total - 43000.0).abs() < 0.001, "{:?}", l.transactions);
+        assert!((l.parsed_debit_total - 2555.0).abs() < 0.001, "{:?}", l.transactions);
+        let check = l.transactions.iter().find(|t| t.amount == 1480.0).unwrap();
+        assert_eq!(check.description, "Check 12489");
+        assert!(!l.transactions.iter().any(|t| t.description.contains("00024155901130577")));
+    }
+
+    const TWO_COLUMN: &str = r#"
+                 PREVIOUS BALANCE                  67,330.01                      AVERAGE BALANCE
+                    +       22 CREDITS             10,585.79                              59,856.14
+                              9 DEBITS                 53.00                     YTD INTEREST PAID
+                    - SERVICE CHARGES                 247.03                                    .00
+                   ENDING BALANCE                  77,615.77
+           • Deposits and Other Credits
+          Date     Amount Description                                          Date       Amount Description
+         06/03        8,010.79    EDI PYMNTS EPIC Pharmacy Ne              06/17          875.00 DEPOSIT
+                                  024155004613040CCD                       06/17        1,700.00 EDI PYMNTS EPIC Pharmacy Ne
+           • Debits
+                Description                                          Date             Amount      Description
+06/04         8.00      2667586742 USPS9000077422                                                     024159006477916CCD
+                            024156005333687CCD                       06/10              45.00     2671017582 USPS9000077422
+ • Balance Bx Date
+   Date         Balance                Date         Balance
+   05/31       67,330.01               06/10       41,678.18
+"#;
+
+    #[test]
+    fn two_column_transaction_lists_are_unfolded() {
+        let l = parse(&[(1, TWO_COLUMN)]);
+        assert_eq!(l.summary.total_credits, Some(10585.79));
+        // debits + service charges
+        assert_eq!(l.summary.total_debits, Some(300.03));
+        assert_eq!(l.summary.average_balance, None); // value is on the next line, not guessed
+        let credits: Vec<f64> = l.transactions.iter().filter(|t| t.kind == Kind::Credit).map(|t| t.amount).collect();
+        assert_eq!(credits, vec![8010.79, 875.0, 1700.0], "{:?}", l.transactions);
+        let debits: Vec<f64> = l.transactions.iter().filter(|t| t.kind == Kind::Debit).map(|t| t.amount).collect();
+        assert_eq!(debits, vec![8.0, 45.0], "{:?}", l.transactions);
+        assert_eq!(l.daily_balances.len(), 2);
+    }
 }
