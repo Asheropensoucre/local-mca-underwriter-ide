@@ -1503,20 +1503,29 @@ fn segment_statements<'a>(pages: &[(usize, &'a str)]) -> Vec<Vec<(usize, &'a str
     let mut segments: Vec<Vec<(usize, &str)>> = Vec::new();
     let mut current: Vec<(usize, &str)> = Vec::new();
     let mut current_beginning: Option<f64> = None;
+    let mut current_bank: Option<String> = None;
     for &(page, text) in pages {
         let mut probe = Ledger::default();
         let mut st = State::default();
         parse_page(&unfold_two_columns(text), page, None, &mut probe, &mut st);
         let begins = probe.summary.beginning_balance;
-        let starts_new = match (begins, current_beginning) {
+        let bank = detect_bank(&[text]);
+        // A different bank named on the page is a new statement too (bundles of several
+        // banks' statements, even when the beginning balance is garbled).
+        let bank_changes = matches!((&bank, &current_bank), (Some(b), Some(cur)) if b != cur);
+        let starts_new = bank_changes || match (begins, current_beginning) {
             (Some(b), Some(cur)) if (b - cur).abs() >= 0.005 => true,
             _ => false,
         };
         if starts_new && !current.is_empty() {
             segments.push(std::mem::take(&mut current));
+            current_beginning = None;
         }
-        if begins.is_some() && (starts_new || current_beginning.is_none()) {
+        if begins.is_some() && current_beginning.is_none() {
             current_beginning = begins;
+        }
+        if bank.is_some() && (starts_new || current_bank.is_none()) {
+            current_bank = bank;
         }
         current.push((page, text));
     }
