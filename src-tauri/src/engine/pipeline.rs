@@ -789,6 +789,12 @@ fn assemble_report(ledger: &ledger::Ledger, cls: &Value, pages: &[PageText]) -> 
             "stated_total_credits": s.total_credits, "parsed_total_credits": round2(ledger.parsed_credit_total),
             "stated_total_debits": s.total_debits, "parsed_total_debits": round2(ledger.parsed_debit_total),
             "beginning_balance": s.beginning_balance, "ending_balance": s.ending_balance,
+            "bank": s.bank,
+            "statements": ledger.statements.iter().map(|st| json!({
+                "bank": st.bank, "account_last4": st.account_last4, "period_start": st.period_start, "period_end": st.period_end,
+                "beginning_balance": st.beginning_balance, "ending_balance": st.ending_balance,
+                "total_credits": st.total_credits, "total_debits": st.total_debits
+            })).collect::<Vec<_>>(),
             "transactions_parsed": ledger.transactions.len(),
             "daily_balances_found": ledger.daily_balances.len(),
             "funding_deposits": funding_lines,

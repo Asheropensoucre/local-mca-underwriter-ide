@@ -390,6 +390,8 @@
               <div v-if="parsedData?.verification" class="bg-background border border-border rounded-lg p-4 font-mono text-xs">
                 <h4 class="text-xs font-medium text-gray-500 uppercase mb-2 font-sans">Verification</h4>
                 <div class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-gray-400">
+                  <span v-if="parsedData.verification.bank" class="text-gray-600">bank</span>
+                  <span v-if="parsedData.verification.bank">{{ parsedData.verification.bank }}<span v-if="parsedData.verification.statements?.length > 1">, {{ parsedData.verification.statements.length }} statements in the files</span></span>
                   <span class="text-gray-600">credits</span>
                   <span>stated {{ formatCurrency(parsedData.verification.stated_total_credits) }}, parsed {{ formatCurrency(parsedData.verification.parsed_total_credits) }}</span>
                   <span class="text-gray-600">debits</span>
@@ -398,6 +400,12 @@
                   <span>{{ parsedData.verification.transactions_parsed }} transactions, {{ parsedData.verification.daily_balances_found }} daily balances</span>
                   <span class="text-gray-600">pages</span>
                   <span>{{ (parsedData.verification.pages || []).filter(p => p.method === 'ocr').length }} of {{ (parsedData.verification.pages || []).length }} via OCR</span>
+                </div>
+                <div v-if="parsedData.verification.statements?.length > 1" class="mt-2">
+                  <p class="text-gray-600">per statement</p>
+                  <p v-for="(st, i) in parsedData.verification.statements" :key="'st' + i" class="text-gray-400 truncate">
+                    {{ st.bank || '' }} {{ st.account_last4 ? '…' + st.account_last4 : '' }} {{ st.period_start || '' }} {{ st.period_end ? 'to ' + st.period_end : '' }}: credits {{ formatCurrency(st.total_credits) }}, debits {{ formatCurrency(st.total_debits) }}, balance {{ formatCurrency(st.beginning_balance) }} to {{ formatCurrency(st.ending_balance) }}
+                  </p>
                 </div>
                 <div v-if="parsedData.verification.funding_deposits?.length" class="mt-2">
                   <p class="text-gray-600">funding deposits excluded from revenue</p>
