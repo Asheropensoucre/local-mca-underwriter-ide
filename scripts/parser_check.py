@@ -15,6 +15,8 @@ separately: those are layouts the parser does not understand yet.
 --ocr-cached  use cached OCR pages only, never start the engine (pages not in the cache are
             skipped as with no --ocr).
 --markdown  print a per-bank coverage table instead of the plain lists.
+--snapshot <file>  compare with the previous run saved in <file> (regressions and new passes
+            are listed), then overwrite it with this run.
 """
 import json, os, subprocess, sys
 from collections import defaultdict
@@ -40,6 +42,7 @@ def main():
     folder = sys.argv[1]
     ocr = "cached" if "--ocr-cached" in sys.argv else ("--ocr" in sys.argv)
     verbose, markdown = "--verbose" in sys.argv, "--markdown" in sys.argv
+    snapshot = sys.argv[sys.argv.index("--snapshot") + 1] if "--snapshot" in sys.argv else None
     rows = []  # dicts: name, bank, status, stated/parsed totals, lines, scan pages
     for name in sorted(os.listdir(folder)):
         if not name.lower().endswith(".pdf"):
@@ -65,6 +68,19 @@ def main():
             ok_d = stated_d is None or abs(stated_d - p["debit_total"]) <= 1.0
             row["status"] = "pass" if ok_c and ok_d else "fail"
         rows.append(row)
+
+    if snapshot:
+        previous = {}
+        if os.path.exists(snapshot):
+            previous = json.load(open(snapshot))
+        current = {r["name"]: r.get("status") for r in rows}
+        regressions = sorted(n for n, st in previous.items() if st == "pass" and current.get(n) not in (None, "pass"))
+        gains = sorted(n for n, st in current.items() if st == "pass" and previous.get(n, "pass") != "pass" and n in previous)
+        if regressions:
+            print("REGRESSIONS (passed before, not now):", ", ".join(regressions))
+        if gains:
+            print("NEW PASSES:", ", ".join(gains))
+        json.dump(current, open(snapshot, "w"), indent=0, sort_keys=True)
 
     if markdown:
         by_bank = defaultdict(list)
