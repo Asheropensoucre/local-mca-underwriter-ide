@@ -7,6 +7,7 @@ pub mod download;
 pub mod headless;
 pub mod ledger;
 pub mod llama;
+pub mod ocr_table;
 pub mod pipeline;
 pub mod registry;
 pub mod runtime;
@@ -234,11 +235,7 @@ pub async fn engine_analyze(
     }));
 
     let started = std::time::Instant::now();
-    let mut pages = Vec::with_capacity(total_pages);
-    for p in &pdf_paths {
-        let offset = pages.len();
-        pages.extend(pipeline::extract_pages(&app, &ep, p, offset, total_pages).await?);
-    }
+    let pages = pipeline::read_pages(&app, Some(&ep), &pdf_paths, total_pages).await?;
     let ocr_pages = pages.iter().filter(|p| p.method == "ocr").count();
     println!("[Engine] {} pages read in {:.1}s ({ocr_pages} via OCR)", pages.len(), started.elapsed().as_secs_f32());
 

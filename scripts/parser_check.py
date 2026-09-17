@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Parser accuracy over a folder of statement PDFs, no model involved.
+"""Parser accuracy over a folder of statement PDFs, no reasoning model involved.
 
 For every PDF, runs the deterministic parser (--headless-ledger) and compares the
 credit and debit totals it summed from transaction lines with the totals the bank
@@ -7,16 +7,23 @@ printed in the statement summary. A statement "passes" when both match within
 one dollar. Statements where the parser found no summary at all are listed
 separately: those are layouts the parser does not understand yet.
 
-    python3 scripts/parser_check.py <folder with PDFs> [--verbose]
+    python3 scripts/parser_check.py <folder with PDFs> [--ocr] [--verbose] [--markdown]
+
+--ocr       read scanned pages with the OCR model through the engine (starts it; cached
+            per page, set MCA_OCR_CACHE=<dir> to keep the cache with the corpus). Without
+            it, scanned pages are skipped and the statement is tagged "scan pages skipped".
+--markdown  print a per-bank coverage table instead of the plain lists.
 """
 import json, os, subprocess, sys
+from collections import defaultdict
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.path.join(ROOT, "src-tauri", "target", "debug", "local-mca-underwriter-ide")
 
 
-def ledger(pdf):
-    p = subprocess.run([BIN, "--headless-ledger", pdf], capture_output=True, text=True, timeout=300)
+def ledger(pdf, ocr):
+    cmd = [BIN, "--headless-ledger", pdf] + (["--ocr"] if ocr else [])
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=3600 if ocr else 300)
     body = "\n".join(l for l in p.stdout.splitlines() if not l.startswith("["))
     return json.loads(body) if body.strip() else None
 
@@ -25,43 +32,66 @@ def main():
     if len(sys.argv) < 2:
         print(__doc__)
         sys.exit(2)
-    folder, verbose = sys.argv[1], "--verbose" in sys.argv
-    passed, failed, no_summary, errors = [], [], [], []
+    folder = sys.argv[1]
+    ocr, verbose, markdown = "--ocr" in sys.argv, "--verbose" in sys.argv, "--markdown" in sys.argv
+    rows = []  # dicts: name, bank, status, stated/parsed totals, lines, scan pages
     for name in sorted(os.listdir(folder)):
         if not name.lower().endswith(".pdf"):
             continue
         path = os.path.join(folder, name)
         try:
-            d = ledger(path)
+            d = ledger(path, ocr)
         except Exception as e:
-            errors.append((name, str(e)[:80]))
+            rows.append({"name": name, "bank": "?", "status": "error", "note": str(e)[:80]})
             continue
-        if not d or not d["transactions"]:
-            continue  # no transaction lines at all: not a statement (or fully scanned)
+        if not d or len(d["transactions"]) < 4 and d["summary"].get("total_credits") is None and d["summary"].get("total_debits") is None:
+            continue  # a page or two of wire confirmations, not a statement (or fully scanned)
         s, p = d["summary"], d["parsed"]
+        scans = d.get("pages", {}).get("scan", 0)
         stated_c, stated_d = s.get("total_credits"), s.get("total_debits")
+        row = {"name": name, "bank": s.get("bank") or "unknown", "stated_c": stated_c, "parsed_c": round(p["credit_total"], 2),
+               "stated_d": stated_d, "parsed_d": round(p["debit_total"], 2), "lines": len(d["transactions"]), "scans": scans}
         if stated_c is None and stated_d is None:
-            no_summary.append((name, len(d["transactions"])))
-            continue
-        ok_c = stated_c is None or abs(stated_c - p["credit_total"]) <= 1.0
-        ok_d = stated_d is None or abs(stated_d - p["debit_total"]) <= 1.0
-        row = (name, stated_c, round(p["credit_total"], 2), stated_d, round(p["debit_total"], 2), len(d["transactions"]))
-        (passed if ok_c and ok_d else failed).append(row)
+            row["status"] = "no summary"
+        else:
+            ok_c = stated_c is None or abs(stated_c - p["credit_total"]) <= 1.0
+            ok_d = stated_d is None or abs(stated_d - p["debit_total"]) <= 1.0
+            row["status"] = "pass" if ok_c and ok_d else "fail"
+        rows.append(row)
+
+    if markdown:
+        by_bank = defaultdict(list)
+        for r in rows:
+            by_bank[r["bank"]].append(r)
+        print("| Bank | Statements | Pass | Fail | No summary | Scan pages skipped |")
+        print("|---|---|---|---|---|---|")
+        for bank in sorted(by_bank, key=lambda b: -len(by_bank[b])):
+            rs = by_bank[bank]
+            n = lambda st: sum(1 for r in rs if r.get("status") == st)
+            scans = sum(1 for r in rs if r.get("scans"))
+            print(f"| {bank} | {len(rs)} | {n('pass')} | {n('fail')} | {n('no summary')} | {scans} |")
+        return
+
+    passed = [r for r in rows if r["status"] == "pass"]
+    failed = [r for r in rows if r["status"] == "fail"]
+    no_summary = [r for r in rows if r["status"] == "no summary"]
+    errors = [r for r in rows if r["status"] == "error"]
     print(f"passed {len(passed)}, failed {len(failed)}, no summary found {len(no_summary)}, errors {len(errors)}")
+    fmt = lambda r: f"{r['name']}  {r['bank']:<16} credits {r['stated_c']} / {r['parsed_c']}  debits {r['stated_d']} / {r['parsed_d']}  lines {r['lines']}" + (f"  [{r['scans']} scan pages skipped]" if r["scans"] else "")
     if failed:
-        print("\nFAILED (name, stated credits, parsed credits, stated debits, parsed debits, lines):")
+        print("\nFAILED (stated / parsed):")
         for r in failed:
-            print("  ", r)
+            print("  ", fmt(r))
     if no_summary:
-        print("\nNO SUMMARY FOUND (name, transaction lines parsed):")
+        print("\nNO SUMMARY FOUND:")
         for r in no_summary[:40]:
-            print("  ", r)
+            print("  ", fmt(r))
     if verbose and passed:
         print("\nPASSED:")
         for r in passed:
-            print("  ", r)
+            print("  ", fmt(r))
     for r in errors:
-        print("  error", r)
+        print("  error", r["name"], r["note"])
 
 
 if __name__ == "__main__":

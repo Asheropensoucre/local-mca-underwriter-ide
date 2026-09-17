@@ -2,7 +2,11 @@
 //!
 //! ```text
 //! local-mca-underwriter-ide --headless-analyze a.pdf [b.pdf ...] [--instructions "text"]
+//! local-mca-underwriter-ide --headless-ledger a.pdf [b.pdf ...] [--ocr]
 //! ```
+//! `--headless-ledger` runs only the deterministic parser on the text layers and prints
+//! the ledger. With `--ocr` it starts the engine and reads scanned pages with the OCR
+//! model (cached, see `pipeline::ocr_cache_dir`), so the parser sees what the app sees.
 //! Installs anything missing, starts the engine, analyzes, prints the report JSON to
 //! stdout (progress and timings go to stderr) and exits with 0, or 1 on failure.
 
@@ -13,6 +17,8 @@ pub struct HeadlessArgs {
     pub instructions: String,
     /// `--headless-ledger`: only run the deterministic parser on the text layer and print it.
     pub ledger_only: bool,
+    /// `--ocr` with `--headless-ledger`: OCR scanned pages through the engine first.
+    pub ocr: bool,
 }
 
 /// Parse `--headless-analyze` from argv. None when the app should start normally.
@@ -22,17 +28,21 @@ pub fn parse_args() -> Option<HeadlessArgs> {
     let ledger_only = args[pos] == "--headless-ledger";
     let mut pdfs = Vec::new();
     let mut instructions = String::new();
+    let mut ocr = false;
     let mut i = pos + 1;
     while i < args.len() {
         if args[i] == "--instructions" {
             instructions = args.get(i + 1).cloned().unwrap_or_default();
             i += 2;
+        } else if args[i] == "--ocr" {
+            ocr = true;
+            i += 1;
         } else {
             pdfs.push(args[i].clone());
             i += 1;
         }
     }
-    Some(HeadlessArgs { pdfs, instructions, ledger_only })
+    Some(HeadlessArgs { pdfs, instructions, ledger_only, ocr })
 }
 
 /// Called from the Tauri setup hook. Hides the window, runs the job, exits the process.
@@ -71,7 +81,8 @@ async fn run_job(app: &tauri::AppHandle, args: HeadlessArgs) -> Result<String, S
         return Err("no PDF paths given".into());
     }
     if args.ledger_only {
-        return ledger_dump(&args.pdfs);
+        let pages = if args.ocr { ocr_pages(app, &args.pdfs).await? } else { text_pages(&args.pdfs)? };
+        return ledger_dump(pages);
     }
     let t = std::time::Instant::now();
     super::engine_install(app.clone()).await?;
@@ -83,25 +94,57 @@ async fn run_job(app: &tauri::AppHandle, args: HeadlessArgs) -> Result<String, S
     Ok(json)
 }
 
-/// Deterministic pass over the PDF text layers, no model involved.
-fn ledger_dump(pdfs: &[String]) -> Result<String, String> {
-    let mut texts: Vec<(usize, String)> = Vec::new();
+/// Page texts from the PDF text layers only. Pages with no text but a full-page image are
+/// marked "scan" so the caller knows the parse is incomplete without `--ocr`.
+fn text_pages(pdfs: &[String]) -> Result<Vec<super::pipeline::PageText>, String> {
+    let mut pages = Vec::new();
     for pdf in pdfs {
         // .txt inputs are page dumps (see MCA_DUMP_PAGES), one page per file.
         if pdf.ends_with(".txt") {
-            texts.push((texts.len() + 1, std::fs::read_to_string(pdf).map_err(|e| e.to_string())?));
+            let text = std::fs::read_to_string(pdf).map_err(|e| e.to_string())?;
+            pages.push(super::pipeline::PageText { file_name: pdf.clone(), page: pages.len() + 1, method: "text", seconds: 0.0, text });
             continue;
         }
         let n = super::pipeline::page_count(pdf)?;
         for page in 1..=n {
-            texts.push((texts.len() + 1, super::pipeline::text_layer(pdf, page)?));
+            let text = super::pipeline::text_layer(pdf, page)?;
+            // Same decision as the app makes; "ocr" here means the page was skipped.
+            let method = match super::pipeline::page_method(pdf, page, &text, false) { "ocr" => "scan", m => m };
+            pages.push(super::pipeline::PageText { file_name: pdf.clone(), page, method, seconds: 0.0, text });
         }
+    }
+    Ok(pages)
+}
+
+/// Page texts the way the app reads them: text layer or OCR. The engine is started only
+/// when a scanned page is not in the OCR cache yet.
+async fn ocr_pages(app: &tauri::AppHandle, pdfs: &[String]) -> Result<Vec<super::pipeline::PageText>, String> {
+    let total: usize = pdfs.iter().map(|p| super::pipeline::page_count(p).unwrap_or(0)).sum();
+    match super::pipeline::read_pages(app, None, pdfs, total).await {
+        Err(e) if e == super::pipeline::NEEDS_ENGINE => {
+            super::engine_install(app.clone()).await?;
+            let url = super::engine_start(app.clone()).await?;
+            eprintln!("[headless] engine at {url}");
+            let ep = app.state::<super::runtime::EngineProcess>().endpoint().ok_or("engine not running")?;
+            super::pipeline::read_pages(app, Some(&ep), pdfs, total).await
+        }
+        r => r,
+    }
+}
+
+/// Deterministic pass over page texts, no reasoning model involved.
+fn ledger_dump(pages: Vec<super::pipeline::PageText>) -> Result<String, String> {
+    let texts: Vec<(usize, String)> = pages.iter().enumerate().map(|(i, p)| (i + 1, p.text.clone())).collect();
+    let mut methods: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for p in &pages {
+        *methods.entry(p.method).or_default() += 1;
     }
     let pages: Vec<(usize, &str)> = texts.iter().map(|(p, t)| (*p, t.as_str())).collect();
     let ledger = super::ledger::parse(&pages);
     let metrics = super::ledger::compute_metrics(&ledger, &ledger.funding_candidates, &[]);
     let credits = ledger.transactions.iter().filter(|t| t.kind == super::ledger::Kind::Credit).count();
     let out = serde_json::json!({
+        "pages": methods,
         "summary": ledger.summary,
         "parsed": { "credit_lines": credits, "debit_lines": ledger.transactions.len() - credits,
                     "credit_total": ledger.parsed_credit_total, "debit_total": ledger.parsed_debit_total },

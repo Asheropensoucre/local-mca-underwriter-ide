@@ -52,7 +52,7 @@ struct Running {
 }
 
 /// Connection details the HTTP client needs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Endpoint {
     pub base_url: String,
     pub api_key: String,

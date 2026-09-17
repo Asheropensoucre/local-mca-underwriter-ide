@@ -16,7 +16,8 @@ use super::runtime::Endpoint;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::path::Path;
+use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 use tauri::Emitter;
@@ -28,6 +29,10 @@ const MIN_TEXT_WORDS: usize = 40;
 const SCAN_IMAGE_MIN_PX: u32 = 300;
 /// Render resolution for OCR. 100 DPI misread digits in testing; 150 did not.
 const OCR_DPI: u32 = 150;
+
+fn ocr_dpi() -> u32 {
+    std::env::var("MCA_OCR_DPI").ok().and_then(|v| v.parse().ok()).unwrap_or(OCR_DPI) // testing aid
+}
 
 /// Text of one page and how it was obtained.
 #[derive(Debug, Clone, Serialize)]
@@ -108,7 +113,7 @@ fn render_page_data_uri(pdf: &str, page: usize) -> Result<String, String> {
     let p = page.to_string();
     let out = run(
         "pdftocairo",
-        &["-jpeg", "-gray", "-r", &OCR_DPI.to_string(), "-f", &p, "-l", &p, "-singlefile", pdf, &prefix.to_string_lossy()],
+        &["-jpeg", "-gray", "-r", &ocr_dpi().to_string(), "-f", &p, "-l", &p, "-singlefile", pdf, &prefix.to_string_lossy()],
     )?;
     if !out.status.success() {
         return Err(format!("pdftocairo failed: {}", String::from_utf8_lossy(&out.stderr)));
@@ -117,9 +122,56 @@ fn render_page_data_uri(pdf: &str, page: usize) -> Result<String, String> {
     Ok(format!("data:image/jpeg;base64,{}", BASE64.encode(bytes)))
 }
 
+/// GLM-OCR task prompt. "Text Recognition:" is the model's plain-text task.
+const OCR_PROMPT: &str = "Text Recognition:";
+
+/// GLM-OCR table task: returns the page's table as HTML, every cell kept.
+const OCR_TABLE_PROMPT: &str = "Table Recognition:";
+
+/// Read one scanned page. Plain text first; when rows under a transaction table header
+/// come back without amounts (the text task drops cells of wrapped rows), the table task
+/// is run as well and its rows replace the table in the text.
 async fn ocr_page(ep: &Endpoint, pdf: &str, page: usize) -> Result<String, String> {
     let uri = render_page_data_uri(pdf, page)?;
-    let msgs = [Message { role: "user", text: "Text Recognition:", image_data_uri: Some(&uri) }];
+    let prompt = std::env::var("MCA_OCR_PROMPT").unwrap_or_else(|_| OCR_PROMPT.to_string()); // testing aid
+    let text = ocr_prompt(ep, &uri, &prompt).await?;
+    let missing = ledger::rows_missing_amounts(&text);
+    if missing == 0 || prompt != OCR_PROMPT {
+        return Ok(text);
+    }
+    println!("[Engine] page {page}: {missing} table row(s) lost their amounts in plain OCR, reading the table");
+    let html = ocr_prompt(ep, &uri, OCR_TABLE_PROMPT).await?;
+    match super::ocr_table::table_html_to_layout(&html) {
+        Some(table) => Ok(splice_table(&text, &table)),
+        None => Ok(text),
+    }
+}
+
+/// Replace the transaction table in plain OCR `text` (from its header line through the
+/// last date-first line) with the converted `table`.
+fn splice_table(text: &str, table: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let header = lines.iter().position(|l| {
+        let lower = l.to_ascii_lowercase();
+        lower.contains("date") && (lower.contains("balance") || lower.contains("amount")) && (lower.contains("deposit") || lower.contains("credit") || lower.contains("debit") || lower.contains("withdrawal"))
+    });
+    let Some(h) = header else { return format!("{text}\n{table}") };
+    let last_row = lines.iter().rposition(|l| l.split_whitespace().next().and_then(ledger::parse_date_token).is_some()).unwrap_or(h);
+    let mut out = String::new();
+    for l in &lines[..h] {
+        out.push_str(l);
+        out.push('\n');
+    }
+    out.push_str(table);
+    for l in &lines[last_row.max(h) + 1..] {
+        out.push_str(l);
+        out.push('\n');
+    }
+    out
+}
+
+async fn ocr_prompt(ep: &Endpoint, uri: &str, prompt: &str) -> Result<String, String> {
+    let msgs = [Message { role: "user", text: prompt, image_data_uri: Some(uri) }];
     let opts = ChatOptions {
         model: "ocr",
         temperature: 0.0,
@@ -132,14 +184,52 @@ async fn ocr_page(ep: &Endpoint, pdf: &str, page: usize) -> Result<String, Strin
     Ok(r.content)
 }
 
+/// How a page is read: "text", "ocr" or "blank".
+/// Pages with a usable text layer use it, even court-filing scans whose layer came from
+/// someone else's OCR: it costs nothing. The OCR model reads pages whose layer is thin and
+/// that carry an image (a scan), or that have no text at all. Near-blank pages are skipped.
+pub fn page_method(pdf: &str, page: usize, layer: &str, force_ocr: bool) -> &'static str {
+    let words = layer.split_whitespace().count();
+    let thin = words < MIN_TEXT_WORDS;
+    if force_ocr || words == 0 || (thin && has_page_image(pdf, page)) {
+        if !force_ocr && page_ink_ratio(pdf, page).map(|r| r < BLANK_INK_RATIO).unwrap_or(false) { "blank" } else { "ocr" }
+    } else {
+        "text"
+    }
+}
+
 /// How many pages the OCR model reads at once. Matches the OCR preset's slot count.
 const OCR_CONCURRENCY: usize = 4;
+
+/// Error returned when a page needs the OCR model but no engine endpoint was given.
+pub const NEEDS_ENGINE: &str = "scanned pages need the engine";
+
+/// Where OCR page text is kept so a statement is read by the model once. Keyed by the
+/// file's content hash, page, DPI and OCR model, so an edited file or a model change
+/// misses the cache. `MCA_OCR_CACHE=<dir>` overrides the location (corpus work).
+fn ocr_cache_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let dir = match std::env::var("MCA_OCR_CACHE") {
+        Ok(d) => PathBuf::from(d),
+        Err(_) => super::runtime::engine_dir(app).ok()?.join("ocr-cache"),
+    };
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+fn file_hash(pdf: &str) -> Option<String> {
+    let bytes = std::fs::read(pdf).ok()?;
+    Some(format!("{:x}", Sha256::digest(&bytes))[..16].to_string())
+}
+
+fn ocr_cache_path(dir: &Path, hash: &str, page: usize) -> PathBuf {
+    dir.join(format!("{hash}-p{page:03}-{}dpi-{}.txt", ocr_dpi(), super::registry::ocr_model().id))
+}
 
 /// Stage 1 for one file. Decides per page whether the text layer is enough, then reads
 /// the OCR pages concurrently. Emits `analysis-progress` page events on `app`.
 pub async fn extract_pages(
     app: &tauri::AppHandle,
-    ep: &Endpoint,
+    ep: Option<&Endpoint>,
     pdf: &str,
     page_offset: usize,
     total_pages: usize,
@@ -154,17 +244,7 @@ pub async fn extract_pages(
         let current = page_offset + page;
         let started = Instant::now();
         let layer = text_layer(pdf, page)?;
-        let words = layer.split_whitespace().count();
-        // Pages with a usable text layer use it, even court-filing scans whose layer came
-        // from someone else's OCR: it has parsed correctly so far and costs nothing. The OCR
-        // model reads pages whose layer is thin and that carry an image (a scan), or that
-        // have no text at all. Near-blank pages are skipped.
-        let thin = words < MIN_TEXT_WORDS;
-        let method = if force_ocr || words == 0 || (thin && has_page_image(pdf, page)) {
-            if !force_ocr && page_ink_ratio(pdf, page).map(|r| r < BLANK_INK_RATIO).unwrap_or(false) { "blank" } else { "ocr" }
-        } else {
-            "text"
-        };
+        let method = page_method(pdf, page, &layer, force_ocr);
         if method == "ocr" {
             ocr_queue.push(page);
             let _ = app.emit("analysis-progress", json!({
@@ -178,31 +258,7 @@ pub async fn extract_pages(
         pages.push(PageText { file_name: file_name.clone(), page, method, seconds: started.elapsed().as_secs_f32(), text: layer });
     }
 
-    if !ocr_queue.is_empty() {
-        println!("[Engine] {file_name}: {} page(s) to OCR, {OCR_CONCURRENCY} at a time", ocr_queue.len());
-        let ocr_start = Instant::now();
-        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(OCR_CONCURRENCY));
-        let mut tasks = Vec::new();
-        for &page in &ocr_queue {
-            let sem = sem.clone();
-            let ep = ep.clone();
-            let pdf = pdf.to_string();
-            tasks.push(tokio::spawn(async move {
-                let _permit = sem.acquire().await.map_err(|e| e.to_string())?;
-                let started = Instant::now();
-                let text = ocr_page(&ep, &pdf, page).await?;
-                Ok::<(usize, String, f32), String>((page, text, started.elapsed().as_secs_f32()))
-            }));
-        }
-        for task in tasks {
-            let (page, text, seconds) = task.await.map_err(|e| format!("OCR task failed: {e}"))??;
-            let entry = &mut pages[page - 1];
-            entry.text = text;
-            entry.seconds = seconds;
-            emit_page_done(app, &file_name, page, n, page_offset + page, total_pages, "ocr", seconds);
-        }
-        println!("[Engine] {file_name}: OCR of {} page(s) took {:.1}s wall", ocr_queue.len(), ocr_start.elapsed().as_secs_f32());
-    }
+    ocr_into(app, ep, pdf, &mut pages, &ocr_queue, page_offset, total_pages).await?;
     // Testing aid: MCA_DUMP_PAGES=<dir> writes every page text to disk for parser work.
     if let Ok(dir) = std::env::var("MCA_DUMP_PAGES") {
         let _ = std::fs::create_dir_all(&dir);
@@ -211,6 +267,123 @@ pub async fn extract_pages(
         }
     }
     Ok(pages)
+}
+
+/// Read `queue` (1-based page numbers of `pdf`) with the OCR model, `OCR_CONCURRENCY` at a
+/// time, and store the text into `pages`. Cached pages are served from disk.
+async fn ocr_into(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdf: &str, pages: &mut [PageText], queue: &[usize], page_offset: usize, total_pages: usize) -> Result<(), String> {
+    if queue.is_empty() {
+        return Ok(());
+    }
+    let cache = ocr_cache_dir(app).and_then(|dir| file_hash(pdf).map(|h| (dir, h)));
+    // Without a running engine only cached pages can be served.
+    let ep = match ep {
+        Some(ep) => ep.clone(),
+        None => {
+            let all_cached = cache.as_ref().map(|(dir, h)| queue.iter().all(|p| ocr_cache_path(dir, h, *p).exists())).unwrap_or(false);
+            if !all_cached {
+                return Err(NEEDS_ENGINE.to_string());
+            }
+            Endpoint::default()
+        }
+    };
+    let file_name = pages.first().map(|p| p.file_name.clone()).unwrap_or_default();
+    let n = pages.len();
+    let ocr_start = Instant::now();
+    // MCA_OCR_CONCURRENCY lowers the load when the machine is shared (corpus runs).
+    let concurrency = std::env::var("MCA_OCR_CONCURRENCY").ok().and_then(|v| v.parse().ok()).unwrap_or(OCR_CONCURRENCY).clamp(1, OCR_CONCURRENCY);
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(concurrency));
+    println!("[Engine] {file_name}: {} page(s) to OCR, {concurrency} at a time", queue.len());
+    let mut tasks = Vec::new();
+    for &page in queue {
+        let sem = sem.clone();
+        let ep = ep.clone();
+        let pdf = pdf.to_string();
+        let cache_path = cache.as_ref().map(|(dir, h)| ocr_cache_path(dir, h, page));
+        tasks.push(tokio::spawn(async move {
+            let started = Instant::now();
+            if let Some(text) = cache_path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
+                return Ok::<(usize, String, f32), String>((page, text, 0.0));
+            }
+
+            let _permit = sem.acquire().await.map_err(|e| e.to_string())?;
+            let text = ocr_page(&ep, &pdf, page).await?;
+            if let Some(p) = &cache_path {
+                let _ = std::fs::write(p, &text);
+            }
+            Ok::<(usize, String, f32), String>((page, text, started.elapsed().as_secs_f32()))
+        }));
+    }
+    for task in tasks {
+        let (page, text, seconds) = task.await.map_err(|e| format!("OCR task failed: {e}"))??;
+        let entry = &mut pages[page - 1];
+        entry.text = text;
+        entry.seconds = seconds;
+        entry.method = "ocr";
+        emit_page_done(app, &file_name, page, n, page_offset + page, total_pages, "ocr", seconds);
+    }
+    println!("[Engine] {file_name}: OCR of {} page(s) took {:.1}s wall", queue.len(), ocr_start.elapsed().as_secs_f32());
+    Ok(())
+}
+
+/// Stage 1 for a whole job, with verification. Reads every file, parses the ledger and
+/// compares the parsed totals with the totals the bank printed. When they disagree and
+/// some pages came from a text layer sitting on top of a full-page image (a scan carrying
+/// someone else's OCR, common in court filings), those pages are re-read with the OCR
+/// model and the better-matching parse is kept. Digital statements never pay for OCR.
+pub async fn read_pages(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdfs: &[String], total_pages: usize) -> Result<Vec<PageText>, String> {
+    let mut pages: Vec<PageText> = Vec::with_capacity(total_pages);
+    let mut offsets = Vec::new();
+    for pdf in pdfs {
+        offsets.push(pages.len());
+        pages.extend(extract_pages(app, ep, pdf, pages.len(), total_pages).await?);
+    }
+    let Some(gap) = totals_gap(&pages) else { return Ok(pages) };
+    if gap <= 1.0 {
+        return Ok(pages);
+    }
+    let mut retry = pages.clone();
+    let mut queued = 0;
+    for (pdf, &offset) in pdfs.iter().zip(&offsets) {
+        let n = page_count(pdf)?;
+        let slice = &mut retry[offset..offset + n];
+        let queue: Vec<usize> = slice.iter().filter(|p| p.method == "text" && has_page_image(pdf, p.page)).map(|p| p.page).collect();
+        if queue.is_empty() {
+            continue;
+        }
+        queued += queue.len();
+        let _ = app.emit("analysis-progress", json!({
+            "type": "page_start", "current_page": offset, "total_pages": total_pages,
+            "message": format!("Totals do not match the statement summary (off by {gap:.2}); re-reading {} scanned page(s) with OCR", queue.len())
+        }));
+        ocr_into(app, ep, pdf, slice, &queue, offset, total_pages).await?;
+    }
+    if queued == 0 {
+        return Ok(pages);
+    }
+    match totals_gap(&retry) {
+        Some(g2) if g2 < gap => {
+            println!("[Engine] OCR re-read improved the totals gap from {gap:.2} to {g2:.2}; using OCR text");
+            Ok(retry)
+        }
+        _ => {
+            println!("[Engine] OCR re-read did not improve the totals gap ({gap:.2}); keeping the text layer");
+            Ok(pages)
+        }
+    }
+}
+
+/// Sum of |stated - parsed| over the totals the statement prints; None when it prints none.
+fn totals_gap(pages: &[PageText]) -> Option<f64> {
+    let refs: Vec<(usize, &str)> = pages.iter().enumerate().map(|(i, p)| (i + 1, p.text.as_str())).collect();
+    let ledger = ledger::parse(&refs);
+    let s = &ledger.summary;
+    if s.total_credits.is_none() && s.total_debits.is_none() {
+        return None;
+    }
+    let gc = s.total_credits.map(|c| (c - ledger.parsed_credit_total).abs()).unwrap_or(0.0);
+    let gd = s.total_debits.map(|d| (d - ledger.parsed_debit_total).abs()).unwrap_or(0.0);
+    Some(gc + gd)
 }
 
 fn emit_page_done(app: &tauri::AppHandle, file_name: &str, page: usize, n: usize, current: usize, total_pages: usize, method: &str, seconds: f32) {
