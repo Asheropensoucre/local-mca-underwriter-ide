@@ -28,6 +28,8 @@ use tauri::{Emitter, Manager};
 const MIN_TEXT_WORDS: usize = 40;
 /// Images smaller than this on either side are logos and signature marks, not scans.
 const SCAN_IMAGE_MIN_PX: u32 = 300;
+/// Below this compressed size a large image is a watermark or background, not a scan.
+const SCAN_IMAGE_MIN_BYTES: u64 = 60 * 1024;
 /// Render resolution for OCR. 100 DPI misread digits in testing; 150 did not.
 const OCR_DPI: u32 = 150;
 
@@ -82,12 +84,27 @@ fn has_page_image(pdf: &str, page: usize) -> bool {
     let p = page.to_string();
     let Ok(out) = run("pdfimages", &["-list", "-f", &p, "-l", &p, pdf]) else { return false };
     // Columns: page num type width height color comp bpc enc interp object ID x-ppi y-ppi size ratio
+    // A scan is a large image with real content: letterhead watermarks (Legends prints a
+    // 622x860 JPEG of 12 KB on every page) must not send clean text pages to OCR.
     String::from_utf8_lossy(&out.stdout).lines().skip(2).any(|l| {
         let cols: Vec<&str> = l.split_whitespace().collect();
         let w: u32 = cols.get(3).and_then(|v| v.parse().ok()).unwrap_or(0);
         let h: u32 = cols.get(4).and_then(|v| v.parse().ok()).unwrap_or(0);
-        w >= SCAN_IMAGE_MIN_PX && h >= SCAN_IMAGE_MIN_PX
+        let size = cols.get(14).map(|v| parse_size(v)).unwrap_or(0);
+        w >= SCAN_IMAGE_MIN_PX && h >= SCAN_IMAGE_MIN_PX && (size >= SCAN_IMAGE_MIN_BYTES || w * h >= 1_000_000)
     })
+}
+
+/// pdfimages size column: "12.6K", "304K", "1.2M", "5137B".
+fn parse_size(v: &str) -> u64 {
+    let (num, unit) = v.split_at(v.trim_end_matches(|c: char| c.is_ascii_alphabetic()).len());
+    let n: f64 = num.parse().unwrap_or(0.0);
+    match unit {
+        "K" => (n * 1024.0) as u64,
+        "M" => (n * 1024.0 * 1024.0) as u64,
+        "G" => (n * 1024.0 * 1024.0 * 1024.0) as u64,
+        _ => n as u64,
+    }
 }
 
 /// Fraction of dark pixels on a low-resolution render. Cover sheets and blank pages have

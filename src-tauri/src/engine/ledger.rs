@@ -168,6 +168,28 @@ pub fn is_amount_token(tok: &str) -> bool {
 
 const MONTHS: &[&str] = &["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 
+/// pdftotext sometimes breaks an amount at the decimal point ("20. 00", "1,860. 70").
+/// Rejoin it and move the space after the cents so column offsets are kept.
+fn join_split_amounts(line: &str) -> String {
+    let b = line.as_bytes();
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0;
+    while i < b.len() {
+        // digit '.' ' ' digit digit (end or non-digit)
+        if b[i] == b'.' && i >= 1 && b[i - 1].is_ascii_digit() && i + 3 < b.len() + 0 && b.get(i + 1) == Some(&b' ') && b.get(i + 2).map(|c| c.is_ascii_digit()).unwrap_or(false) && b.get(i + 3).map(|c| c.is_ascii_digit()).unwrap_or(false) && !b.get(i + 4).map(|c| c.is_ascii_digit()).unwrap_or(false) {
+            out.push('.');
+            out.push(b[i + 2] as char);
+            out.push(b[i + 3] as char);
+            out.push(' ');
+            i += 4;
+            continue;
+        }
+        out.push(b[i] as char);
+        i += 1;
+    }
+    if line.is_ascii() { out } else { line.to_string() }
+}
+
 /// Mailing barcodes rendered as text in the left margin ("ACEMBHDOODOPKMBLFEBEPIPK  Jun 14
 /// PREAUTHORIZED CREDIT $2,584.81") would hide the date. Blank out a leading run of 12 or
 /// more uppercase letters when a date follows, keeping the width.
@@ -549,7 +571,7 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
     let mut pending_columns: Vec<&'static str> = Vec::new();
     let mut pending_has_checks = false;
     for raw in text.lines() {
-        let normalized = normalize_month_dates(raw);
+        let normalized = join_split_amounts(&normalize_month_dates(raw));
         let stripped = strip_margin_barcode(normalized.trim_end());
         let line: &str = stripped.trim_end();
         let trimmed = line.trim();
@@ -1585,14 +1607,26 @@ fn combine_summaries(parts: &[Summary]) -> Summary {
 fn dedup_across_tables(ledger: &mut Ledger) {
     let mut available: BTreeMap<(String, Kind, i64), Vec<(usize, usize)>> = BTreeMap::new();
     let mut keep = vec![true; ledger.transactions.len()];
-    for (i, t) in ledger.transactions.iter().enumerate() {
+    // Same date and amount in another table is a repeat only when the descriptions agree:
+    // a shared word of four letters or more, or both are check entries. A $20 fee and a
+    // $20 check on the same day are two transactions.
+    let words = |d: &str| -> Vec<String> { d.to_ascii_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| w.len() >= 4).map(str::to_string).collect() };
+    let compatible = |a: &Txn, b: &Txn| -> bool {
+        let (wa, wb) = (words(&a.description), words(&b.description));
+        if wa.is_empty() || wb.is_empty() {
+            return true; // a bare caption or check-image line repeats whatever it matches
+        }
+        wa.iter().any(|w| wb.contains(w))
+    };
+    for i in 0..ledger.transactions.len() {
+        let t = &ledger.transactions[i];
         let key = (t.date.clone(), t.kind, (t.amount * 100.0).round() as i64);
-        let slot = available.entry(key).or_default();
-        if let Some(pos) = slot.iter().position(|(table, _)| *table != t.table) {
-            slot.remove(pos);
+        let candidates = available.entry(key).or_default().clone();
+        if let Some(pos) = candidates.iter().position(|(table, j)| *table != t.table && compatible(&ledger.transactions[*j], t)) {
+            available.get_mut(&(t.date.clone(), t.kind, (t.amount * 100.0).round() as i64)).unwrap().remove(pos);
             keep[i] = false;
         } else {
-            slot.push((t.table, i));
+            available.get_mut(&(t.date.clone(), t.kind, (t.amount * 100.0).round() as i64)).unwrap().push((t.table, i));
         }
     }
     if keep.iter().any(|k| !k) {
@@ -2238,5 +2272,13 @@ ACH Debits                                                   1 transactions for 
         let ids: std::collections::BTreeSet<usize> = l.transactions.iter().map(|t| t.id).collect();
         assert_eq!(ids.len(), l.transactions.len());
         assert!(l.transactions.iter().any(|t| t.page == 1) && l.transactions.iter().any(|t| t.page == 2));
+    }
+
+    #[test]
+    fn split_amounts_are_rejoined_keeping_width() {
+        assert_eq!(join_split_amounts("FEE      20. 00"), "FEE      20.00 ");
+        assert_eq!(join_split_amounts("ACH  1,860. 70"), "ACH  1,860.70 ");
+        assert_eq!(join_split_amounts("Ref. 12 items"), "Ref. 12 items");
+        assert_eq!(join_split_amounts("v1. 234"), "v1. 234");
     }
 }
