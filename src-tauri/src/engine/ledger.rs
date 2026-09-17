@@ -65,6 +65,14 @@ pub struct Summary {
     /// the same page, so a fee line on a later bundled page is not added.
     #[serde(skip)]
     debits_page: Option<usize>,
+    /// Inside the account summary block ("CHECKING SUMMARY" ... "Ending Balance").
+    #[serde(skip)]
+    in_summary_block: bool,
+    /// Negative figures listed in the summary block: Chase prints one line per debit
+    /// category (card withdrawals, electronic withdrawals, checks, fees); their sum is the
+    /// debit total when two or more are present.
+    #[serde(skip)]
+    debit_parts: Vec<f64>,
     /// Distinct "beginning balance" figures seen. More than one means the file bundles
     /// several statements or accounts, which the parser does not separate yet.
     pub beginning_balances_seen: Vec<f64>,
@@ -327,16 +335,22 @@ fn kind_from_words(desc: &str, section: Option<Kind>) -> Kind {
 /// the section / default did (false). Weak kinds are the ones balance arithmetic may flip.
 fn kind_and_confidence(desc: &str, section: Option<Kind>) -> (Kind, bool) {
     let l = desc.to_ascii_lowercase();
-    // Explicit words on the line win over the section, since some banks mix them.
-    const DEBIT_WORDS: &[&str] = &["withdrawal", " debit", "purchase", " fee", "charge", "check ", "payment to", "zelle to", "transfer to", "payment authorized", "pmt to", "bill pay", "wire out", "outgoing wire", "atm "];
-    const CREDIT_WORDS: &[&str] = &["deposit", " credit", "zelle from", "transfer from", "pmt from", "payment from", "wire in", "incoming wire", "refund", "reversal", "cashback", "cash back"];
+    // Inside a credit or debit section the section decides: "ATM Check Deposit" and "Card
+    // Purchase Return" under DEPOSITS are credits, a reversed provisional credit under
+    // WITHDRAWALS is a debit. Words only decide on unsectioned lists (flat OCR pages,
+    // "Transactions by Date").
+    if let Some(k) = section {
+        return (k, true);
+    }
+    const DEBIT_WORDS: &[&str] = &["withdrawal", " debit", "purchase", " fee", "charge", "check ", "payment to", "zelle to", "transfer to", "payment authorized", "pmt to", "bill pay", "wire out", "outgoing wire"];
+    const CREDIT_WORDS: &[&str] = &["deposit", " credit", "zelle from", "transfer from", "pmt from", "payment from", "wire in", "incoming wire", "refund", "cashback", "cash back"];
     if l.starts_with("debit") || DEBIT_WORDS.iter().any(|w| l.contains(w)) {
         return (Kind::Debit, true);
     }
     if l.starts_with("credit") || CREDIT_WORDS.iter().any(|w| l.contains(w)) || l.contains("interest") && section.is_none() {
         return (Kind::Credit, true);
     }
-    (section.unwrap_or(Kind::Debit), section.is_some())
+    (Kind::Debit, false)
 }
 
 const NSF_WORDS: &[&str] = &["nsf", "insufficient", "overdraft", "od fee", "returned", "return item", "item ret", "ret chrg", "ret-r", "non check return", "uncollected"];
@@ -383,8 +397,8 @@ impl Columns {
         // Amounts are right-aligned under their label, so compare against label end offsets.
         let find = |keys: &[&str]| keys.iter().filter_map(|k| lower.find(k).map(|p| p + k.len())).min();
         Columns {
-            credit: find(&["deposits/credits", "deposits/ credits", "credits", "deposits", "additions"]),
-            debit: find(&["withdrawals/debits", "withdrawals/ debits", "debits", "withdrawals", "subtractions", "payments"]),
+            credit: find(&["deposits/credits", "deposits/ credits", "credits", "credit", "deposits", "additions"]),
+            debit: find(&["withdrawals/debits", "withdrawals/ debits", "debits", "debit", "withdrawals", "subtractions", "payments"]),
             balance: find(&["ending daily balance", "daily balance", "running balance", "balance"]),
         }
     }
@@ -579,7 +593,9 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         capture_summary(&lower, trimmed, &mut ledger.summary, page);
 
         let tokens: Vec<&str> = trimmed.split_whitespace().collect();
-        if tokens.len() <= 6 && INFORMATIONAL_HEADERS.iter().any(|h| lower.starts_with(h)) {
+        // (Right after a transaction the same words are a description continuation:
+        // TD prints "CREDIT FUNDING," over "OVERDRAFT PROTECTION FROM".)
+        if tokens.len() <= 6 && last_txn.is_none() && INFORMATIONAL_HEADERS.iter().any(|h| lower.starts_with(h)) {
             st.informational = true;
             columns = None;
             last_txn = None;
@@ -607,6 +623,10 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
             if !has_amount && labels.count() >= 1 && tokens.len() <= 12 {
                 let merged = pending_header.as_ref().map(|p| p.merge(&labels)).unwrap_or(labels.clone());
                 if merged.is_complete(has_date) {
+                    // A table with its own credit and debit columns is mixed: no section applies.
+                    if merged.credit.is_some() && merged.debit.is_some() {
+                        st.section = None;
+                    }
                     st.enter_table(&format!("columns {} {:?}", merged.key(), st.section));
                     columns = Some(merged);
                     pending_header = None;
@@ -923,6 +943,37 @@ fn capture_summary(lower: &str, line: &str, s: &mut Summary, page: usize) {
         }
     }
     let ntok = lower.split_whitespace().count();
+    // Summary block: debit categories are the negative figures between the "summary"
+    // heading and the ending balance.
+    if lower.contains("summary") && ntok <= 5 && last_amount(line).is_none() {
+        // The first block with two or more categories is the account summary; later
+        // "summary" headings (card summaries, fee summaries) do not replace it.
+        if s.debit_parts.len() < 2 {
+            s.in_summary_block = true;
+            s.debit_parts.clear();
+        }
+    } else if s.in_summary_block {
+        let toks: Vec<&str> = line.split_whitespace().collect();
+        if let Some(last) = toks.last() {
+            let prev_minus = toks.len() >= 2 && toks[toks.len() - 2] == "-";
+            if is_amount_token(last) && (last.starts_with('-') || last.starts_with("-$") || prev_minus) && !lower.contains("balance") {
+                if let Some(v) = parse_amount(last) {
+                    s.debit_parts.push(v.abs());
+                }
+            }
+        }
+        if lower.contains("ending balance") || lower.contains("new balance") || lower.contains("closing balance") {
+            s.in_summary_block = false;
+        }
+    }
+    // TD Bank: "Statement Balance as of 01/18 ... 5,480.39" then "... as of 02/17 ... 50.00".
+    if lower.contains("statement balance as of") {
+        if s.beginning_balance.is_none() {
+            s.beginning_balance = last_amount(line);
+        } else if s.ending_balance.is_none() {
+            s.ending_balance = last_amount(line);
+        }
+    }
     if s.ending_balance.is_none() && (lower.contains("ending balance") || lower.contains("current balance") || lower.contains("new balance") || lower.contains("ending ledger balance") || lower.contains("closing balance")) {
         s.ending_balance = last_amount(line);
     }
@@ -1427,6 +1478,11 @@ fn parse_one(pages: &[(usize, &str)]) -> Ledger {
         let unfolded = unfold_two_columns(text);
         parse_page(&unfolded, *page, year, &mut ledger, &mut st);
     }
+    // Two or more debit categories in the summary block add up to the debit total.
+    if ledger.summary.debit_parts.len() >= 2 {
+        ledger.summary.total_debits = Some(ledger.summary.debit_parts.iter().sum());
+        ledger.summary.debits_key = "summary parts (checks and service fees included)";
+    }
     // Checks and fees printed as separate figures are added unless the debit key already
     // covers them ("Checks and other debits", "... debits and service charges").
     if let Some(other) = ledger.summary.total_debits {
@@ -1494,6 +1550,8 @@ fn combine_summaries(parts: &[Summary]) -> Summary {
         fees_total: None,
         debits_key: "",
         debits_page: None,
+        in_summary_block: false,
+        debit_parts: Vec::new(),
         beginning_balances_seen: parts.iter().flat_map(|p| p.beginning_balances_seen.iter().copied()).collect(),
     }
 }
