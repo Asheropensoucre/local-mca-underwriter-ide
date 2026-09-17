@@ -217,19 +217,10 @@ fn watchdog_reason(app: &tauri::AppHandle) -> Option<String> {
     app.state::<EngineProcess>().stopped_reason.lock().ok().and_then(|g| g.clone())
 }
 
-async fn ensure_running(app: &tauri::AppHandle) -> Result<runtime::Endpoint, String> {
+pub async fn ensure_running(app: &tauri::AppHandle) -> Result<runtime::Endpoint, String> {
     let state = app.state::<EngineProcess>();
     if let Some(ep) = state.endpoint().filter(|_| state.is_running()) {
-        // Models are resident; the job's working set must still fit with headroom.
-        memory::check_before_job(state.ocr_parallel())?;
         return Ok(ep);
-    }
-    if let Some(reason) = state.stopped_reason.lock().ok().and_then(|g| g.clone()) {
-        // The watchdog stopped it: only restart when memory has recovered.
-        let plan = memory::plan(&registry::ocr_model(), &registry::underwriter_model(&runtime::load_config(app).underwriter_model).unwrap_or_else(registry::ocr_model));
-        if !plan.fits {
-            return Err(format!("{reason}\n{}", plan.message));
-        }
     }
     let cfg = runtime::load_config(app);
     runtime::start(app, &cfg).await

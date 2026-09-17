@@ -40,12 +40,12 @@ Registry of pinned files: `src-tauri/src/engine/registry.rs`.
 
 ### Living with the rest of the machine
 
-On laptops the GPU has no memory of its own; models and caches come out of system RAM, and a graphics driver that runs out of it can stall the whole desktop. The engine is built to never get there:
+On laptops the GPU has no memory of its own; models and caches come out of system RAM, and a graphics driver that runs out of it can stall the whole desktop. The engine runs at full speed and is built so that can never happen:
 
-- Before starting, it measures the RAM that is actually free and sizes itself to it (`src-tauri/src/engine/memory.rs`): one model resident at a time on machines under 24 GB, 2 OCR pages at a time with a 12k context, 16k for the reasoning model. Fastest mode that leaves headroom wins: full GPU, then GPU for the text models with the image encoder on the CPU, then CPU only. It refuses only when even CPU mode would not fit, with the numbers in the message.
-- The engine process tree runs at low priority with an operating-system memory cap (a systemd scope on Linux), so if it ever outgrows its budget the OS kills the engine, not the desktop.
-- A watchdog checks free memory twice a second and kills the engine the moment it drops under 1.2 GB, then tells you why. Analysis is refused up front when the job's working set would not fit.
-- `--headless-plan` prints the plan the engine would start with right now.
+- At start it measures the RAM that is actually free and takes as much as fits: up to 4 OCR pages at a time on the GPU, one model resident at a time (the pipeline needs the OCR model, then the reasoning model, never both), 8-bit KV cache. Full CPU, no priority tricks. `--headless-plan` prints the plan.
+- Before each OCR page it checks free memory and waits (with a message) when the machine is busy, instead of piling on. A busy machine slows the job; the job never pushes the machine over.
+- The engine process tree runs inside an operating-system memory limit (a systemd scope on Linux: throttled first, killed only as a last resort). A watchdog checks free memory twice a second and stops the engine under 1 GB free. If either fires mid-job, the job does not fail: pages already read are cached, the app waits for memory to come back, restarts the engine and resumes.
+- It refuses to start only when even one OCR page at a time would not fit, with the numbers in the message.
 
 ## Features
 
@@ -110,7 +110,7 @@ OCR page text is cached under `engine/ocr-cache/` (keyed by file hash, page, DPI
 ## Measured on a laptop with an AMD Radeon 680M (integrated) and 14 GB RAM
 
 - Digital page via text layer: 0.1 s.
-- Scanned page via GLM-OCR at 150 DPI: 30 to 50 s, no digit errors observed; 100 DPI misread digits.
+- Scanned pages via GLM-OCR at 150 DPI: a dense 6-page statement in 210 s with 4 pages in flight (35 s per page effective), no digit errors; 100 and 125 DPI lost digits or rows.
 - Classification call (Qwen3.5 4B, thinking off): 40 to 90 s depending on output length.
 - 9-page statement, 1 scanned page: about 2.5 minutes end to end.
 

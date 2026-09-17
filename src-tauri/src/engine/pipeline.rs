@@ -11,6 +11,7 @@
 //! and several statements of the same merchant are analyzed together as one batch.
 
 use super::ledger;
+use super::memory;
 use super::llama::{self, ChatOptions, Message};
 use super::runtime::Endpoint;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -349,6 +350,7 @@ async fn ocr_into(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdf: &str, page
         let ep = ep.clone();
         let pdf = pdf.to_string();
         let raw = RawOcr::for_page(cache.as_ref(), page);
+        let app_for_wait = app.clone();
         tasks.push(tokio::spawn(async move {
             let started = Instant::now();
             if raw.is_complete() {
@@ -356,6 +358,16 @@ async fn ocr_into(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdf: &str, page
                 return Ok::<(usize, String, f32), String>((page, text, 0.0));
             }
             let _permit = sem.acquire().await.map_err(|e| e.to_string())?;
+            // A busy machine slows the job down; the job never pushes the machine over.
+            let waited = memory::wait_for_room(Duration::from_secs(180), |avail| {
+                let _ = app_for_wait.emit("analysis-progress", json!({
+                    "type": "page_start", "current_page": page_offset + page, "total_pages": total_pages,
+                    "message": format!("Waiting for memory before page {page}: {:.1} GB free, {:.1} GB needed", avail as f64 / 1e9, memory::SOFT_FLOOR_BYTES as f64 / 1e9)
+                }));
+            }).await?;
+            if waited.as_secs() >= 1 {
+                println!("[Engine] page {page}: waited {:.0}s for memory", waited.as_secs_f32());
+            }
             let text = ocr_page(&ep, &pdf, page, &raw).await?;
             Ok::<(usize, String, f32), String>((page, text, started.elapsed().as_secs_f32()))
         }));
@@ -380,9 +392,30 @@ async fn ocr_into(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdf: &str, page
 pub async fn read_pages(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdfs: &[String], total_pages: usize) -> Result<Vec<PageText>, String> {
     let mut pages: Vec<PageText> = Vec::with_capacity(total_pages);
     let mut offsets = Vec::new();
+    let mut ep: Option<Endpoint> = ep.cloned();
     for pdf in pdfs {
         offsets.push(pages.len());
-        pages.extend(extract_pages(app, ep, pdf, pages.len(), total_pages).await?);
+        let offset = pages.len();
+        // If the engine was stopped mid-file (memory watchdog), wait for memory to come
+        // back, restart it and read the file again: pages already read come from the cache.
+        let mut attempts = 0;
+        let extracted = loop {
+            match extract_pages(app, ep.as_ref(), pdf, offset, total_pages).await {
+                Ok(p) => break p,
+                Err(e) => {
+                    attempts += 1;
+                    let stopped = app.state::<super::runtime::EngineProcess>().stopped_reason.lock().ok().and_then(|g| g.clone());
+                    match stopped {
+                        Some(reason) if attempts <= 3 && ep.is_some() => {
+                            println!("[Engine] interrupted: {reason}; waiting for memory, then resuming");
+                            ep = Some(resume_engine(app, &reason, total_pages).await?);
+                        }
+                        _ => return Err(e),
+                    }
+                }
+            }
+        };
+        pages.extend(extracted);
     }
     let Some(gap) = totals_gap(&pages) else { return Ok(pages) };
     if gap <= 1.0 {
@@ -402,7 +435,7 @@ pub async fn read_pages(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdfs: &[S
             "type": "page_start", "current_page": offset, "total_pages": total_pages,
             "message": format!("Totals do not match the statement summary (off by {gap:.2}); re-reading {} scanned page(s) with OCR", queue.len())
         }));
-        ocr_into(app, ep, pdf, slice, &queue, offset, total_pages).await?;
+        ocr_into(app, ep.as_ref(), pdf, slice, &queue, offset, total_pages).await?;
     }
     if queued == 0 {
         return Ok(pages);
@@ -417,6 +450,37 @@ pub async fn read_pages(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdfs: &[S
             Ok(pages)
         }
     }
+}
+
+/// After a watchdog stop: wait (up to five minutes) until the engine's plan fits in free
+/// memory again, restart it, and hand back the new endpoint. Progress events keep the
+/// user informed the whole time.
+async fn resume_engine(app: &tauri::AppHandle, reason: &str, total_pages: usize) -> Result<Endpoint, String> {
+    let started = Instant::now();
+    loop {
+        let cfg = super::runtime::load_config(app);
+        let uw = super::registry::underwriter_model(&cfg.underwriter_model).ok_or("unknown reasoning model")?;
+        let plan = memory::plan(&super::registry::ocr_model(), &uw);
+        if plan.fits {
+            break;
+        }
+        if started.elapsed() > Duration::from_secs(300) {
+            return Err(format!("{reason}\nMemory did not come back within five minutes; pages already read are kept, run again when the machine is less busy."));
+        }
+        let _ = app.emit("analysis-progress", json!({
+            "type": "page_start", "current_page": 0, "total_pages": total_pages,
+            "message": format!("Paused: {reason} Waiting for memory ({:.1} GB free)", plan.available_bytes as f64 / 1e9)
+        }));
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    if let Ok(mut g) = app.state::<super::runtime::EngineProcess>().stopped_reason.lock() {
+        *g = None;
+    }
+    let _ = app.emit("analysis-progress", json!({
+        "type": "page_start", "current_page": 0, "total_pages": total_pages,
+        "message": "Memory is back; restarting the engine and resuming"
+    }));
+    super::ensure_running(app).await
 }
 
 /// Sum of |stated - parsed| over the totals the statement prints; None when it prints none.

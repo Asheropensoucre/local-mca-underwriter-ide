@@ -126,7 +126,8 @@ pub fn ocr_model() -> ModelSpec {
         // 4 slots x 6144 tokens: a page image is about 2,700 tokens plus up to 1,500 of text.
         ctx_size: 24576,
         parallel: 4,
-        kv_bytes_per_token: 65_536,
+        // 64 KiB at f16; the engine runs the cache at q8_0.
+        kv_bytes_per_token: 34_816,
     }
 }
 
@@ -151,7 +152,7 @@ pub fn underwriter_models() -> Vec<ModelSpec> {
             // for several months in one job. Measured KV: 256 MiB at 8k (hybrid attention).
             ctx_size: 16384,
             parallel: 1,
-            kv_bytes_per_token: 32_768,
+            kv_bytes_per_token: 17_408,
         },
         ModelSpec {
             role: "underwriter",
@@ -168,7 +169,7 @@ pub fn underwriter_models() -> Vec<ModelSpec> {
             min_ram_gb: 16,
             ctx_size: 16384,
             parallel: 1,
-            kv_bytes_per_token: 49_152,
+            kv_bytes_per_token: 26_112,
         },
     ]
 }

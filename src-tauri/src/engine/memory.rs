@@ -1,61 +1,55 @@
 //! Memory budget for the engine. On laptops the GPU has no memory of its own: model
 //! weights and caches live in system RAM, and when that runs out the graphics driver
 //! starts swapping GPU buffers and the desktop freezes (seen three times on a 14 GB
-//! machine, `ttm_global_swapout` in the kernel log). So the engine sizes itself to the
-//! memory that is actually free right now, refuses to start when there is not enough,
-//! and a watchdog stops it if free memory collapses while it runs.
+//! machine, `ttm_global_swapout` in the kernel log).
+//!
+//! The rule is dynamic, not capped: the engine runs at full speed on the GPU with as many
+//! OCR slots as the free memory allows right now, and when memory gets tight it waits
+//! between pages instead of piling on (see `wait_for_room`). The operating-system cage
+//! and the watchdog are last resorts that never fire in normal operation, and a job that
+//! does get interrupted resumes from the OCR cache instead of failing.
 //!
 //! Buffer sizes measured with llama.cpp b11002 (`-lv 5`):
-//! GLM-OCR: 683 MiB text weights + 484 MiB projector, KV 64 KiB per context token,
-//! about 1 GB of image encoder buffers per page in flight.
-//! Qwen3.5-4B Q4_K_M: 2604 MiB weights, KV 32 KiB per context token (hybrid attention).
+//! GLM-OCR: 683 MiB text weights + 484 MiB projector, KV 64 KiB per context token at
+//! f16 (the engine runs q8_0, about 34 KiB), about 0.6 GB of image encoder buffers per
+//! page in flight. Qwen3.5-4B Q4_K_M: 2604 MiB weights, KV 32 KiB per token at f16
+//! (hybrid attention).
+//!
+//! Measured on the 680M, six dense scanned pages: 4 slots 240 s, 2 slots 290 s, 4 slots
+//! with q8_0 KV 210 s (adopted). 125 DPI would be 136 s but lost rows on two of six
+//! statements, so pages stay at 150 DPI.
 
 use super::registry::ModelSpec;
 use serde::Serialize;
+use std::time::{Duration, Instant};
 
 const GB: f64 = 1e9;
-/// The watchdog stops the engine when available memory falls under this.
-pub const WATCHDOG_FLOOR_BYTES: u64 = 1_200_000_000;
 /// Compute buffers, output buffers, allocator slack per loaded model.
 const COMPUTE_BYTES: u64 = 400_000_000;
-/// Image encoder working set per OCR page in flight (measured: a 2-slot run peaked
-/// 3.2 GB above idle with 1.4 GB of weights and 0.8 GB of KV).
-const IMAGE_BYTES_PER_SLOT: u64 = 600_000_000;
-
-/// Where the work runs. Chosen from free memory so the engine coexists with whatever
-/// else is open instead of fighting it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Mode {
-    /// Weights, caches and the image encoder on the GPU. Fastest; needs the most headroom
-    /// because the image encoder allocates about a gigabyte per page in flight.
-    GpuFull,
-    /// Text models on the GPU, image encoder on the CPU: the GPU allocation stays flat
-    /// while pages are read, so the graphics driver never has to swap under a spike.
-    GpuText,
-    /// Everything on the CPU. Slow (minutes per scanned page) but ordinary pageable
-    /// memory: the operating system can always reclaim it without stalling the desktop.
-    Cpu,
-}
-
-/// Headroom the machine keeps for everything else, per mode. GPU allocations on a
-/// shared-memory GPU are the dangerous kind, so they need more room.
-const HEADROOM_GPU_FULL: u64 = 3_000_000_000;
-const HEADROOM_GPU_TEXT: u64 = 2_000_000_000;
-const HEADROOM_CPU: u64 = 1_500_000_000;
+/// Image encoder working set per OCR page in flight.
+pub const IMAGE_BYTES_PER_SLOT: u64 = 600_000_000;
+/// Room left for everything else when the engine is at its planned peak. The watchdog
+/// below is the real net, so this only has to cover the estimate's error.
+const HEADROOM_BYTES: u64 = 2_000_000_000;
+/// The pipeline does not start another OCR page while less than this is free; it waits.
+pub const SOFT_FLOOR_BYTES: u64 = 2_000_000_000;
+/// Last resort: the watchdog stops the engine when available memory falls under this.
+/// Above zram/swap kicking in, below anything a normal job reaches.
+pub const WATCHDOG_FLOOR_BYTES: u64 = 1_000_000_000;
 
 /// What the engine will run with on this machine right now.
 #[derive(Debug, Clone, Serialize)]
 pub struct MemoryPlan {
     pub total_bytes: u64,
     pub available_bytes: u64,
-    pub mode: Mode,
-    /// CPU threads for the engine: all cores, at low process priority, so a job finishes
-    /// as fast as the machine allows while the desktop still gets the CPU when it asks.
+    /// CPU threads: all cores. The engine gets the machine while it works, like any
+    /// other heavy program; the desktop is protected by memory limits, not by starving it.
     pub threads: u32,
-    /// Hard memory cap for the engine process tree (cgroup on Linux, job object on Windows).
-    pub cap_bytes: u64,
-    /// Models kept resident by the router at once: 1 swaps between OCR and reasoning.
+    /// Soft cgroup limit (throttle by reclaim) and hard limit (kill) for the engine tree.
+    pub high_bytes: u64,
+    pub max_bytes: u64,
+    /// Models kept resident by the router at once: 1 swaps between OCR and reasoning,
+    /// which the pipeline needs only once per job.
     pub models_max: u8,
     pub ocr_ctx: u32,
     pub ocr_parallel: u32,
@@ -76,84 +70,76 @@ pub fn available_bytes() -> (u64, u64) {
     (sys.total_memory(), available)
 }
 
-/// Machines with this much RAM or more may keep both models resident and run the full
-/// OCR presets; below it the GPU shares system memory too tightly for that.
-const ROOMY_TOTAL_BYTES: u64 = 24_000_000_000;
-
 fn resident(model: &ModelSpec, ctx: u32, image_slots: u32) -> u64 {
     model.total_size() + model.kv_bytes_per_token * ctx as u64 + COMPUTE_BYTES + IMAGE_BYTES_PER_SLOT * image_slots as u64
 }
 
-/// Size the engine for the memory available now: the largest preset and the fastest
-/// mode whose peak plus headroom fits. Only when even CPU mode does not fit does the
-/// plan say so; that is a machine with under about 4 GB free, where nothing runs well.
+/// Size the engine for the memory available now: the most OCR slots that fit, both
+/// models resident when the machine is roomy enough to skip the swap. Only when even the
+/// smallest setup does not fit does the plan say so.
 pub fn plan(ocr: &ModelSpec, underwriter: &ModelSpec) -> MemoryPlan {
     let (total, available) = available_bytes();
     let threads = std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(4);
-    // (ocr ctx, ocr parallel, underwriter ctx, models resident), largest first. The full
-    // presets are only offered on roomy machines.
-    let full: [(u32, u32, u32, u8); 2] = [
-        (ocr.ctx_size, ocr.parallel, underwriter.ctx_size, 2),
-        (ocr.ctx_size, ocr.parallel, underwriter.ctx_size, 1),
-    ];
-    let modest: [(u32, u32, u32, u8); 2] = [
-        (12288.min(ocr.ctx_size), 2.min(ocr.parallel), 16384.min(underwriter.ctx_size), 1),
-        (6144.min(ocr.ctx_size), 1, 12288.min(underwriter.ctx_size), 1),
-    ];
-    let candidates: Vec<(u32, u32, u32, u8)> = if total >= ROOMY_TOTAL_BYTES { full.iter().chain(modest.iter()).copied().collect() } else { modest.to_vec() };
-    // Fastest mode first; within a mode the largest preset that fits.
+    let uctx = underwriter.ctx_size;
+    // (ocr slots, models resident), fastest first. Slot context is fixed per page:
+    // a page image is about 2,700 tokens plus up to 1,500 of text.
+    let per_slot_ctx = ocr.ctx_size / ocr.parallel.max(1);
+    let candidates: Vec<(u32, u8)> = vec![(ocr.parallel, 2), (ocr.parallel, 1), (2.min(ocr.parallel), 1), (1, 1)];
     let mut chosen = None;
-    'modes: for (mode, headroom) in [(Mode::GpuFull, HEADROOM_GPU_FULL), (Mode::GpuText, HEADROOM_GPU_TEXT), (Mode::Cpu, HEADROOM_CPU)] {
-        for &(octx, opar, uctx, max) in &candidates {
-            let ocr_bytes = resident(ocr, octx, opar);
-            let uw_bytes = resident(underwriter, uctx, 0);
-            let peak = if max == 2 { ocr_bytes + uw_bytes } else { ocr_bytes.max(uw_bytes) };
-            if peak + headroom <= available {
-                chosen = Some((mode, octx, opar, uctx, max, peak));
-                break 'modes;
-            }
+    for &(slots, max) in &candidates {
+        let octx = per_slot_ctx * slots;
+        let ocr_bytes = resident(ocr, octx, slots);
+        let uw_bytes = resident(underwriter, uctx, 0);
+        let peak = if max == 2 { ocr_bytes + uw_bytes } else { ocr_bytes.max(uw_bytes) };
+        if peak + HEADROOM_BYTES <= available {
+            chosen = Some((slots, octx, max, peak));
+            break;
         }
     }
-    let (mode, octx, opar, uctx, max, peak, fits) = match chosen {
-        Some((m, a, b, c, d, p)) => (m, a, b, c, d, p, true),
+    let (slots, octx, max, peak, fits) = match chosen {
+        Some((s, c, m, p)) => (s, c, m, p, true),
         None => {
-            let (a, b, c, d) = candidates[candidates.len() - 1];
-            let p = resident(ocr, a, b).max(resident(underwriter, c, 0));
-            (Mode::Cpu, a, b, c, d, p, false)
+            let (s, m) = candidates[candidates.len() - 1];
+            let c = per_slot_ctx * s;
+            (s, c, m, resident(ocr, c, s).max(resident(underwriter, uctx, 0)), false)
         }
     };
-    // The cap sits above the estimate so a normal run never trips it, and below the point
-    // where the machine would start swapping.
-    let cap = (peak + 1_000_000_000).min(available.saturating_sub(HEADROOM_CPU / 2)).max(peak);
-    let mode_text = match mode {
-        Mode::GpuFull => "GPU",
-        Mode::GpuText => "GPU for text, image reading on the CPU",
-        Mode::Cpu => "CPU only, slower",
-    };
+    // The soft limit throttles at the estimate; the hard limit sits well above so a
+    // normal run never trips it.
+    let high = peak + 500_000_000;
+    let max_bytes = peak + 1_500_000_000;
     let message = if fits {
         format!(
-            "{:.1} GB free of {:.0} GB: {mode_text}, up to {:.1} GB, {} OCR page{} at a time, {threads} threads",
-            available as f64 / GB, total as f64 / GB, peak as f64 / GB, opar, if opar == 1 { "" } else { "s" }
+            "{:.1} GB free of {:.0} GB: GPU, {} OCR page{} at a time, {} model{} resident, up to {:.1} GB",
+            available as f64 / GB, total as f64 / GB, slots, if slots == 1 { "" } else { "s" }, max, if max == 1 { "" } else { "s" }, peak as f64 / GB
         )
     } else {
         format!(
-            "Only {:.1} GB of {:.0} GB is free. The engine needs about {:.1} GB even on the CPU. Close other programs and try again.",
-            available as f64 / GB, total as f64 / GB, (peak + HEADROOM_CPU) as f64 / GB
+            "Only {:.1} GB of {:.0} GB is free; the engine needs about {:.1} GB. Close other programs and try again.",
+            available as f64 / GB, total as f64 / GB, (peak + HEADROOM_BYTES) as f64 / GB
         )
     };
-    MemoryPlan { total_bytes: total, available_bytes: available, mode, threads, cap_bytes: cap, models_max: max, ocr_ctx: octx, ocr_parallel: opar, underwriter_ctx: uctx, peak_bytes: peak, fits, message }
+    MemoryPlan { total_bytes: total, available_bytes: available, threads, high_bytes: high, max_bytes, models_max: max, ocr_ctx: octx, ocr_parallel: slots, underwriter_ctx: uctx, peak_bytes: peak, fits, message }
 }
 
-/// Before a job on a running engine: the models are already resident, so only the
-/// per-job working set (image buffers, prompt) must still fit with headroom.
-pub fn check_before_job(ocr_parallel: u32) -> Result<(), String> {
-    let (total, available) = available_bytes();
-    let need = IMAGE_BYTES_PER_SLOT * ocr_parallel as u64 + HEADROOM_CPU;
-    if available < need {
-        return Err(format!(
-            "Not enough free memory to analyze safely: {:.1} GB free of {:.0} GB, about {:.1} GB is needed. Close other programs and try again.",
-            available as f64 / GB, total as f64 / GB, need as f64 / GB
-        ));
+/// Wait until at least `SOFT_FLOOR_BYTES` are free, polling every half second, for up
+/// to `max_wait`. Returns how long it waited; Err when the wait ran out. The pipeline
+/// calls this before every OCR page so a busy machine slows the job down instead of
+/// the job pushing the machine over the edge.
+pub async fn wait_for_room(max_wait: Duration, mut on_wait: impl FnMut(u64)) -> Result<Duration, String> {
+    let started = Instant::now();
+    loop {
+        let (_, available) = available_bytes();
+        if available >= SOFT_FLOOR_BYTES {
+            return Ok(started.elapsed());
+        }
+        if started.elapsed() > max_wait {
+            return Err(format!(
+                "Waited {:.0} s for memory: only {:.1} GB free, {:.1} GB is needed to read another page. Close other programs and run again; pages already read are kept.",
+                max_wait.as_secs_f32(), available as f64 / GB, SOFT_FLOOR_BYTES as f64 / GB
+            ));
+        }
+        on_wait(available);
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    Ok(())
 }
