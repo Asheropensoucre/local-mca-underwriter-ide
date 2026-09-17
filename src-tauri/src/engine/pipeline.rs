@@ -227,30 +227,34 @@ impl RawOcr {
 }
 
 /// Run `prompt` on the page image, serving and filling the raw cache at `path`.
-async fn ocr_cached(ep: &Endpoint, uri: &mut Option<String>, pdf: &str, page: usize, prompt: &str, path: Option<&PathBuf>) -> Result<String, String> {
+async fn ocr_cached(ep: &Endpoint, uri: &mut Option<String>, pdf: &str, page: usize, prompt: &str, path: Option<&PathBuf>, progress: &PageProgress, what: &str) -> Result<String, String> {
     if let Some(text) = path.and_then(|p| std::fs::read_to_string(p).ok()) {
         return Ok(text);
     }
     if uri.is_none() {
         *uri = Some(render_page_data_uri(pdf, page)?);
     }
-    let out = ocr_prompt(ep, uri.as_deref().unwrap(), prompt).await?;
+    let out = ocr_prompt(ep, uri.as_deref().unwrap(), prompt, progress, what).await?;
     if let Some(p) = path {
         let _ = std::fs::write(p, &out);
     }
     Ok(out)
 }
 
-async fn ocr_page(ep: &Endpoint, pdf: &str, page: usize, raw: &RawOcr) -> Result<String, String> {
+/// Progress sink for one page: `(what, tokens so far)`; the pipeline turns it into UI events.
+type PageProgress = std::sync::Arc<dyn Fn(&str, usize) + Send + Sync>;
+
+async fn ocr_page(ep: &Endpoint, pdf: &str, page: usize, raw: &RawOcr, progress: &PageProgress) -> Result<String, String> {
     let mut uri: Option<String> = None; // rendered once, only when a task is not cached
     let prompt = std::env::var("MCA_OCR_PROMPT").unwrap_or_else(|_| OCR_PROMPT.to_string()); // testing aid
-    let text = ocr_cached(ep, &mut uri, pdf, page, &prompt, raw.text.as_ref()).await?;
+    let text = ocr_cached(ep, &mut uri, pdf, page, &prompt, raw.text.as_ref(), progress, "reading").await?;
     let missing = ledger::rows_missing_amounts(&text);
     if missing == 0 || prompt != OCR_PROMPT {
         return Ok(text);
     }
     println!("[Engine] page {page}: {missing} table row(s) lost their amounts in plain OCR, reading the table");
-    let html = ocr_cached(ep, &mut uri, pdf, page, OCR_TABLE_PROMPT, raw.table.as_ref()).await?;
+    progress(&format!("{missing} rows lost their amounts, reading the table"), 0);
+    let html = ocr_cached(ep, &mut uri, pdf, page, OCR_TABLE_PROMPT, raw.table.as_ref(), progress, "reading the table").await?;
     match super::ocr_table::table_html_to_layout(&html) {
         Some(table) => Ok(splice_table(&text, &table)),
         None => Ok(text),
@@ -280,7 +284,7 @@ fn splice_table(text: &str, table: &str) -> String {
     out
 }
 
-async fn ocr_prompt(ep: &Endpoint, uri: &str, prompt: &str) -> Result<String, String> {
+async fn ocr_prompt(ep: &Endpoint, uri: &str, prompt: &str, progress: &PageProgress, what: &str) -> Result<String, String> {
     let msgs = [Message { role: "user", text: prompt, image_data_uri: Some(uri) }];
     let opts = ChatOptions {
         model: "ocr",
@@ -290,7 +294,20 @@ async fn ocr_prompt(ep: &Endpoint, uri: &str, prompt: &str) -> Result<String, St
         enable_thinking: false,
         idle_timeout: Duration::from_secs(300),
     };
-    let r = llama::chat(ep, &msgs, &opts, |_, _| {}).await?;
+    // Heartbeat every ~3 s while tokens stream, so a long page never looks stuck.
+    let tokens = std::sync::atomic::AtomicUsize::new(0);
+    let last = std::sync::Mutex::new(Instant::now());
+    progress(what, 0);
+    let r = llama::chat(ep, &msgs, &opts, |_, _| {
+        let n = tokens.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        if let Ok(mut l) = last.lock() {
+            if l.elapsed() >= Duration::from_secs(3) {
+                *l = Instant::now();
+                progress(what, n);
+            }
+        }
+    })
+    .await?;
     Ok(r.content)
 }
 
@@ -419,10 +436,19 @@ async fn ocr_into(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdf: &str, page
         let pdf = pdf.to_string();
         let raw = RawOcr::for_page(cache.as_ref(), page);
         let app_for_wait = app.clone();
+        let (app_p, file_p, started_p) = (app.clone(), file_name.clone(), Instant::now());
+        let progress: PageProgress = std::sync::Arc::new(move |what: &str, tokens: usize| {
+            let secs = started_p.elapsed().as_secs();
+            let detail = if tokens > 0 { format!("{what}, {tokens} tokens, {secs}s") } else { what.to_string() };
+            let _ = app_p.emit("analysis-progress", json!({
+                "type": "page_start", "current_page": page_offset + page, "total_pages": total_pages,
+                "message": format!("{file_p} page {page} of {n}: {detail}")
+            }));
+        });
         tasks.push(tokio::spawn(async move {
             let started = Instant::now();
             if raw.is_complete() {
-                let text = ocr_page(&ep, &pdf, page, &raw).await?;
+                let text = ocr_page(&ep, &pdf, page, &raw, &progress).await?;
                 return Ok::<(usize, String, f32), String>((page, text, 0.0));
             }
             let _permit = sem.acquire().await.map_err(|e| e.to_string())?;
@@ -436,7 +462,7 @@ async fn ocr_into(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdf: &str, page
             if waited.as_secs() >= 1 {
                 println!("[Engine] page {page}: waited {:.0}s for memory", waited.as_secs_f32());
             }
-            let text = ocr_page(&ep, &pdf, page, &raw).await?;
+            let text = ocr_page(&ep, &pdf, page, &raw, &progress).await?;
             Ok::<(usize, String, f32), String>((page, text, started.elapsed().as_secs_f32()))
         }));
     }
