@@ -554,13 +554,13 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
                 for (label, value) in pending_columns.iter().zip(amounts) {
                     match *label {
                         "beginning" => ledger.summary.beginning_balance.get_or_insert(value),
-                        "credits" => ledger.summary.total_credits.get_or_insert(value),
+                        "credits" => ledger.summary.total_credits.get_or_insert(value.abs()),
                         "debits" => {
                             if ledger.summary.total_debits.is_none() {
                                 ledger.summary.debits_key = if pending_has_checks { "checks and other debits" } else { "debits" };
                                 ledger.summary.debits_page = Some(page);
                             }
-                            ledger.summary.total_debits.get_or_insert(value)
+                            ledger.summary.total_debits.get_or_insert(value.abs())
                         }
                         _ => ledger.summary.ending_balance.get_or_insert(value),
                     };
@@ -626,6 +626,15 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         if let Some(k) = section_for(trimmed) {
             st.enter_table(trimmed);
             st.section = Some(k);
+            st.in_daily = false;
+            last_txn = None;
+            continue;
+        }
+        // Long check-table titles ("Summary of checks written (checks listed are also
+        // displayed in the preceding Transaction history)") start a new listing too.
+        if !has_amount && lower.contains("check") && (lower.contains("summary of") || lower.contains("checks paid") || lower.contains("checks cleared") || lower.contains("checks written")) && tokens.len() <= 16 {
+            st.enter_table(trimmed);
+            st.section = Some(Kind::Debit);
             st.in_daily = false;
             last_txn = None;
             continue;
@@ -782,6 +791,19 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
                 let id = ledger.transactions.len();
                 let (date, day) = resolve_date(tokens[d], year_hint);
                 ledger.transactions.push(Txn { id, date, day, kind: st.section.unwrap_or(Kind::Debit), amount, description: label, page, table: st.table });
+            }
+            last_txn = None;
+            continue;
+        }
+
+        // The same table in "number amount date" order: "285 733.58 05/03 290 700.00 05/05".
+        let number_amount_date = date_idx.len() >= 1 && date_idx.len() == amt_idx.len()
+            && amt_idx.iter().zip(&date_idx).all(|(a, d)| a < d && d - a == 1 && *a >= 1 && check_no(tokens[a - 1]).chars().all(|c| c.is_ascii_digit()) && check_no(tokens[a - 1]).len() <= 7 && !check_no(tokens[a - 1]).is_empty());
+        if number_amount_date && (date_idx.len() >= 2 || st.section == Some(Kind::Debit)) {
+            for (&a, &d) in amt_idx.iter().zip(&date_idx) {
+                let id = ledger.transactions.len();
+                let (date, day) = resolve_date(tokens[d], year_hint);
+                ledger.transactions.push(Txn { id, date, day, kind: Kind::Debit, amount: parse_amount(tokens[a]).unwrap_or(0.0).abs(), description: format!("Check {}", check_no(tokens[a - 1])), page, table: st.table });
             }
             last_txn = None;
             continue;

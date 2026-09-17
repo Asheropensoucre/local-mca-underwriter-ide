@@ -12,6 +12,8 @@ separately: those are layouts the parser does not understand yet.
 --ocr       read scanned pages with the OCR model through the engine (starts it; cached
             per page, set MCA_OCR_CACHE=<dir> to keep the cache with the corpus). Without
             it, scanned pages are skipped and the statement is tagged "scan pages skipped".
+--ocr-cached  use cached OCR pages only, never start the engine (pages not in the cache are
+            skipped as with no --ocr).
 --markdown  print a per-bank coverage table instead of the plain lists.
 """
 import json, os, subprocess, sys
@@ -23,7 +25,10 @@ BIN = os.path.join(ROOT, "src-tauri", "target", "debug", "local-mca-underwriter-
 
 def ledger(pdf, ocr):
     cmd = [BIN, "--headless-ledger", pdf] + (["--ocr"] if ocr else [])
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=3600 if ocr else 300)
+    env = dict(os.environ)
+    if ocr == "cached":
+        env["MCA_OCR_CACHED_ONLY"] = "1"
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=3600 if ocr else 300, env=env)
     body = "\n".join(l for l in p.stdout.splitlines() if not l.startswith("["))
     return json.loads(body) if body.strip() else None
 
@@ -33,7 +38,8 @@ def main():
         print(__doc__)
         sys.exit(2)
     folder = sys.argv[1]
-    ocr, verbose, markdown = "--ocr" in sys.argv, "--verbose" in sys.argv, "--markdown" in sys.argv
+    ocr = "cached" if "--ocr-cached" in sys.argv else ("--ocr" in sys.argv)
+    verbose, markdown = "--verbose" in sys.argv, "--markdown" in sys.argv
     rows = []  # dicts: name, bank, status, stated/parsed totals, lines, scan pages
     for name in sorted(os.listdir(folder)):
         if not name.lower().endswith(".pdf"):

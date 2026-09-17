@@ -313,17 +313,29 @@ async fn ocr_into(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdf: &str, page
         return Ok(());
     }
     let cache = ocr_cache_dir(app).and_then(|dir| file_hash(pdf).map(|h| (dir, h)));
-    // Without a running engine only cached pages can be served.
+    // Without a running engine only cached pages can be served. MCA_OCR_CACHED_ONLY=1
+    // (corpus runs on a shared machine) skips the rest instead of starting the engine.
+    let mut queue: Vec<usize> = queue.to_vec();
     let ep = match ep {
         Some(ep) => ep.clone(),
         None => {
-            let all_cached = cache.is_some() && queue.iter().all(|p| RawOcr::for_page(cache.as_ref(), *p).is_complete());
-            if !all_cached {
-                return Err(NEEDS_ENGINE.to_string());
+            let cached = |p: &usize| cache.is_some() && RawOcr::for_page(cache.as_ref(), *p).is_complete();
+            if !queue.iter().all(cached) {
+                if std::env::var("MCA_OCR_CACHED_ONLY").is_err() {
+                    return Err(NEEDS_ENGINE.to_string());
+                }
+                for &p in queue.iter().filter(|p| !cached(p)) {
+                    pages[p - 1].method = "scan";
+                }
+                queue.retain(cached);
+                if queue.is_empty() {
+                    return Ok(());
+                }
             }
             Endpoint::default()
         }
     };
+    let queue = &queue[..];
     let file_name = pages.first().map(|p| p.file_name.clone()).unwrap_or_default();
     let n = pages.len();
     let ocr_start = Instant::now();
