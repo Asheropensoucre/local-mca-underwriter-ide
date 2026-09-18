@@ -380,6 +380,59 @@ fn is_balance_label(lower: &str) -> bool {
     ["beginning balance", "ending balance", "opening balance", "closing balance", "balance forward", "previous balance"].iter().any(|k| lower.contains(k))
 }
 
+/// Some filings carry a doubled text layer: every line drawn twice with a shift, so
+/// pdftotext yields fragments that overlap ("06/04  Online Domestic Wire Transfer" /
+/// "Transfer Via:" / "Via: TD Bank," / ...). When a page shows this pattern on at least
+/// five lines, a fragment that begins with the previous line's last token continues that
+/// line, and a fragment that repeats the previous line's tail is dropped.
+/// Lines that begin with the previous line's last token: the mark of a doubled text layer.
+fn doubled_overlaps(text: &str) -> usize {
+    let lines: Vec<&str> = text.lines().collect();
+    let last_tok = |l: &str| l.split_whitespace().last().map(str::to_string);
+    lines.windows(2).filter(|w| {
+        let (a, b) = (w[0].trim(), w[1].trim());
+        let bt: Vec<&str> = b.split_whitespace().collect();
+        !a.is_empty() && bt.len() >= 2 && last_tok(a).as_deref() == Some(bt[0]) && a.len() > bt[0].len()
+    }).count()
+}
+
+/// A page whose text layer is drawn twice (see `merge_doubled_fragments`): every row
+/// comes out twice, so same-day repeats of one amount on it are one transaction.
+pub fn is_doubled_layer(text: &str) -> bool {
+    doubled_overlaps(text) >= 5
+}
+
+fn merge_doubled_fragments(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let last_tok = |l: &str| l.split_whitespace().last().map(str::to_string);
+    if doubled_overlaps(text) < 5 {
+        return text.to_string();
+    }
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    for line in lines {
+        let t = line.trim();
+        if let Some(prev) = out.last_mut() {
+            let pt = prev.trim_end();
+            let bt: Vec<&str> = t.split_whitespace().collect();
+            if !bt.is_empty() && !pt.is_empty() {
+                // The fragment repeats the previous line's tail (or all of it).
+                if pt.ends_with(t) && t.len() < pt.len() || pt == t {
+                    continue;
+                }
+                // The fragment starts with the previous line's last token: a continuation.
+                if bt.len() >= 2 && last_tok(pt).as_deref() == Some(bt[0]) && pt.len() > bt[0].len() && !is_amount_token(bt[0]) {
+                    let rest = t[bt[0].len()..].trim_start();
+                    prev.push(' ');
+                    prev.push_str(rest);
+                    continue;
+                }
+            }
+        }
+        out.push(line.to_string());
+    }
+    out.join("\n")
+}
+
 /// Remove lone "^" and "*" tokens (footnote marks on check rows), keeping the spacing of
 /// everything else so aligned pages keep their columns.
 fn drop_footnote_marks(line: &str) -> String {
@@ -878,6 +931,7 @@ impl State {
 fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledger, st: &mut State) {
     // Month-name dates and split amounts are normalized line by line first, so stacked
     // "Apr02" / "1,395 .37" cells zip like any other (the per-line pass below is idempotent).
+    let text = &merge_doubled_fragments(text);
     let pre: String = text.lines().map(|l| join_split_amounts(&normalize_month_dates(l))).collect::<Vec<_>>().join("\n");
     let text = &zip_stacked_cells(&pre);
     let mut columns: Option<Columns> = None;
@@ -1156,6 +1210,10 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
             // (Citizens prints the summary's right-hand column through the header: "Date
             // Balance  Date  Balance  Date  Balance   =   170,036.28" is still the header.)
             let header_words = tokens.len() <= 6 && !tokens.iter().any(|t| is_amount_token(t)) || lower.matches("date").count() >= 2 && lower.contains("balance");
+            // (A lone amount is a stray cell of the table, a doubled layer's second copy.)
+            if tokens.len() == 1 && is_amount_token(tokens[0]) {
+                continue;
+            }
             if tokens.first().and_then(|t| parse_date_token(t)).is_none() && !header_words {
                 st.in_daily = false;
             }
@@ -1447,7 +1505,9 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         // OCR of a wrapped row: "03/04 CCD DEBIT, INTUIT ... BILL_PAY VRA CLEANING SE" then
         // "3,680.00" on the next line. Hold the dated line and complete it when a lone
         // amount follows (text lines in between extend the description).
-        if flat && starts_with_date && !tokens.iter().any(|t| is_amount_token(t)) && tokens.len() >= 2 && !summary_row {
+        // (Aligned pages too, when no column table is open: a doubled text layer breaks
+        // "06/04  Online Domestic Wire Transfer Via: ... $25,000.00" over several lines.)
+        if (flat || columns.is_none()) && starts_with_date && !tokens.iter().any(|t| is_amount_token(t)) && tokens.len() >= 2 && !summary_row && !st.in_daily {
             pending_flat = Some((tokens[0].to_string(), tokens[1..].join(" ")));
             last_txn = None;
             continue;
@@ -2353,22 +2413,34 @@ fn parse_statements(pages: &[(usize, &str)]) -> Ledger {
 /// the court's own header line, are dropped so nothing counts twice.
 fn drop_duplicate_pages<'a>(pages: &[(usize, &'a str)]) -> Vec<(usize, &'a str)> {
     let body = |t: &str| -> String {
+        // Court stamps differ between the two copies ("Page 14 of 63", "Statements Pg 16 of 63").
+        let stamp = |l: &str| l.contains(" of ") && (l.contains("Page ") || l.contains("Pg ")) && (l.contains("Case ") || l.contains("Doc") || l.contains("NYSCEF") || l.contains("Statements") || l.contains("Exhibit"));
         t.lines()
-            .filter(|l| !(l.contains("Page ") && l.contains(" of ") && (l.contains("Case ") || l.contains("Doc"))))
+            .filter(|l| !stamp(l))
             .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
             .filter(|l| !l.is_empty())
             .collect::<Vec<_>>()
             .join("\n")
     };
+    // Two copies from different OCR passes differ in noise; the amounts printed on the
+    // page (five or more) are the same, so they are the second signature.
+    let amounts = |t: &str| -> Vec<i64> {
+        let mut v: Vec<i64> = t.split_whitespace().filter(|w| is_amount_token(w)).filter_map(parse_amount).map(|a| (a.abs() * 100.0).round() as i64).collect();
+        v.sort();
+        v
+    };
     let mut seen: Vec<String> = Vec::new();
+    let mut seen_amounts: Vec<Vec<i64>> = Vec::new();
     let mut out = Vec::new();
     for &(page, text) in pages {
         let b = body(text);
+        let a = amounts(text);
         // Only pages with rows can double a total; short pages (letterheads) stay.
-        if b.split_whitespace().count() >= 40 && seen.contains(&b) {
+        if b.split_whitespace().count() >= 40 && (seen.contains(&b) || a.len() >= 5 && seen_amounts.contains(&a)) {
             continue;
         }
         seen.push(b);
+        seen_amounts.push(a);
         out.push((page, text));
     }
     out
@@ -2428,7 +2500,26 @@ fn parse_one(pages: &[(usize, &str)]) -> Ledger {
     let mut st = State::default();
     for (page, text) in pages {
         let unfolded = unfold_two_columns(text);
+        let before = ledger.transactions.len();
         parse_page(&unfolded, *page, year, &mut ledger, &mut st);
+        if is_doubled_layer(text) {
+            // Two layers, two copies of every row: keep the first of each (date, kind, amount).
+            let mut seen: Vec<(String, Kind, i64)> = Vec::new();
+            let mut i = before;
+            while i < ledger.transactions.len() {
+                let t = &ledger.transactions[i];
+                let key = (t.date.clone(), t.kind, (t.amount * 100.0).round() as i64);
+                if seen.contains(&key) {
+                    ledger.transactions.remove(i);
+                } else {
+                    seen.push(key);
+                    i += 1;
+                }
+            }
+            for (i, t) in ledger.transactions.iter_mut().enumerate() {
+                t.id = i;
+            }
+        }
         // A page that printed no section header of its own (a continuation the OCR
         // stripped) has one kind of row; a word-decided straggler against a page of ten or
         // more rows of the other kind ("Barclaycard US Creditcard" under withdrawals,
