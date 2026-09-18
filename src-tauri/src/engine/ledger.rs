@@ -2355,6 +2355,11 @@ fn parse_one(pages: &[(usize, &str)]) -> Ledger {
         ledger.summary.total_debits = Some(ledger.summary.debit_parts_unsigned.iter().sum());
         ledger.summary.debits_key = "summary parts (checks and service fees included)";
     }
+    // One signed and one unsigned debit category (U.S. Bank when the OCR drops a trailing
+    // "-": "Other Withdrawals 7,818.26" and "Checks Paid 2,315.99-") are both debits.
+    if ledger.summary.debit_parts.len() == 1 && !ledger.summary.debit_parts_unsigned.is_empty() && ledger.summary.debits_key == "summary parts (checks and service fees included)" {
+        ledger.summary.total_debits = Some(ledger.summary.debit_parts.iter().sum::<f64>() + ledger.summary.debit_parts_unsigned.iter().sum::<f64>());
+    }
     // Checks and fees printed as separate figures are added unless the debit key already
     // covers them ("Checks and other debits", "... debits and service charges").
     if let Some(other) = ledger.summary.total_debits {
