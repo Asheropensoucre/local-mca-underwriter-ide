@@ -1091,7 +1091,9 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
             }
             // Real content (an amount, or a long line) ends the daily balance block; short
             // header words ("Ledger", "Date Balance Date Balance") do not.
-            let header_words = tokens.len() <= 6 && !tokens.iter().any(|t| is_amount_token(t));
+            // (Citizens prints the summary's right-hand column through the header: "Date
+            // Balance  Date  Balance  Date  Balance   =   170,036.28" is still the header.)
+            let header_words = tokens.len() <= 6 && !tokens.iter().any(|t| is_amount_token(t)) || lower.matches("date").count() >= 2 && lower.contains("balance");
             if tokens.first().and_then(|t| parse_date_token(t)).is_none() && !header_words {
                 st.in_daily = false;
             }
@@ -1551,7 +1553,7 @@ fn capture_summary(lower: &str, line: &str, s: &mut Summary, page: usize) {
     // Credits", Wells "Deposits/Additions", Webster "26 Credit(s) this period", Truist
     // "Deposits, credits and interest", Chase "Deposits and Credits", BofA "Deposits and other
     // credits", Mabrey "Deposits/Credits", Pinnacle "Credits + $.00".
-    const CREDIT_KEYS: &[&str] = &["deposits/other credits", "total credits", "total deposits", "deposits/additions", "deposits and additions", "credit(s) this period", "deposits, credits and interest", "deposits and credits", "deposits and other credits", "deposits/credits"];
+    const CREDIT_KEYS: &[&str] = &["deposits/other credits", "total credits", "total deposits", "deposits/additions", "deposits and additions", "credit(s) this period", "deposits, credits and interest", "deposits and credits", "deposits and other credits", "deposits/credits", "deposits & credits", "deposits & credit"];
     const DEBIT_KEYS: &[&str] = &["checks/other debits", "total debits", "total withdrawals", "withdrawals/subtractions", "withdrawals and subtractions", "debit(s) this period", "other withdrawals, debits and service charges", "withdrawals and debits", "withdrawals and other debits", "checks/debits", "withdrawals/debits"];
     // A total smaller than the categories already captured is a garbled section total
     // ("Total Deposits & Credits  $1 )3,1i 7.18" in a court scan), not the figure.
@@ -1698,7 +1700,15 @@ fn column_labels(lower: &str) -> Vec<&'static str> {
         }
     }
     found.sort();
-    found.into_iter().map(|(_, l)| l).collect()
+    // The same label twice ("Deposits & Credits   Total Deposits & Credits" is a section
+    // title with its total label) names one column, not a two-column summary.
+    let mut labels: Vec<&'static str> = Vec::new();
+    for (_, l) in found {
+        if !labels.contains(&l) {
+            labels.push(l);
+        }
+    }
+    labels
 }
 
 fn first_amount_after(line: &str, keys: &[&str]) -> Option<f64> {
@@ -3609,6 +3619,18 @@ Nov 10 136,758.04 Nov 24 147,043.45 Nov 26 146,849.66
         let k = &l.statements[1];
         assert_eq!((k.beginning_balance, k.ending_balance, k.total_credits, k.total_debits), (Some(0.0), Some(660.0), Some(1725.0), Some(1065.0)), "{:?}", k);
         assert_eq!((k.parsed_credits, k.parsed_debits), (Some(1725.0), Some(1065.0)));
+    }
+
+    #[test]
+    fn citizens_commercial_balance_calculation_amount_before_description_and_daily_table_with_a_summary_column() {
+        let p1 = "Commercial Checking for                                604-5\n\nBalance Calculation\nPrevious Balance                                         144,072.99\n\nChecks                                       -                     .00\n\nDebits                                       -              1,328.62\n\nDeposits & Credit                            +            27,291.91\n\nCurrent Balance                              =           170,036.28\n\nTRANSACTION DETAILS FOR COMMERCIAL CHECKING ACCOUNT ENDING 604-5\n\nDebits **                                                                                                         Previous Balance\n**May include checks that have been processed electronically by the payee/merchant.\n\nDate                 Amount         Description\nOther Debits\n02/16                1,328.62       SERVICE CHARGE\n";
+        let p2 = "Commercial Checking for                    604-5 Continued\n\nDeposits & Credits                                                                       Total Deposits & Credits\n\nDate             Amount      Description                                                 +              27,291.91\n\n02/01             529.77     Worldpay COMB. DEP. 013123 4445082119223\n\n02/02          26,762.14    Worldpay COMB. DEP. 020123 4445082119223\n\nDaily Balance                                                                                     Current Balance\n\nDate               Balance    Date              Balance    Date               Balance    =             170,036.28\n\n02/01           144,602.76    02/10           154,631.39   02/21            167,479.86\n";
+        let l = parse(&[(1, p1), (2, p2)]);
+        let s = &l.summary;
+        assert_eq!((s.beginning_balance, s.ending_balance, s.total_credits, s.total_debits), (Some(144072.99), Some(170036.28), Some(27291.91), Some(1328.62)), "{:?}", s);
+        let rows: Vec<(Kind, f64)> = l.transactions.iter().map(|t| (t.kind, t.amount)).collect();
+        assert_eq!(rows, vec![(Kind::Debit, 1328.62), (Kind::Credit, 529.77), (Kind::Credit, 26762.14)], "{:?}", l.transactions);
+        assert_eq!(l.daily_balances.len(), 3, "{:?}", l.daily_balances);
     }
 
     #[test]
