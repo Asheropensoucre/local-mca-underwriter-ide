@@ -220,11 +220,26 @@ impl RawOcr {
     /// counts as cached when the text is there and either needs no table or has one.
     fn is_complete(&self) -> bool {
         match self.text.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
-            Some(text) => ledger::rows_missing_amounts(&text) == 0 || self.table.as_ref().map(|p| p.exists()).unwrap_or(false),
+            Some(text) => !needs_table_pass(&text) || self.table.as_ref().map(|p| p.exists()).unwrap_or(false),
             None => false,
         }
     }
 }
+
+/// The plain text task is not trusted on its own when rows under a table header lost
+/// their amounts, or when it returned almost nothing: on a Wells Fargo page of 30 credit
+/// rows it once produced only the two "Total ..." lines below the table.
+fn needs_table_pass(text: &str) -> bool {
+    // "- 04/18: CCD DEPOSIT ...: 3,176.12" bullets are a table retold as prose; the rest of
+    // such a page (other sections, headers) is usually gone with it.
+    let bullets = text.lines().filter(|l| {
+        let l = l.trim_start();
+        l.starts_with("- ") && l[2..].split(':').next().map(|d| ledger::parse_date_token(d.trim()).is_some()).unwrap_or(false)
+    }).count();
+    ledger::rows_missing_amounts(text) > 0 || text.split_whitespace().count() < SPARSE_PAGE_WORDS || bullets >= 3
+}
+
+const SPARSE_PAGE_WORDS: usize = 60;
 
 /// Run `prompt` on the page image, serving and filling the raw cache at `path`.
 async fn ocr_cached(ep: &Endpoint, uri: &mut Option<String>, pdf: &str, page: usize, prompt: &str, path: Option<&PathBuf>, progress: &PageProgress, what: &str) -> Result<String, String> {
@@ -250,29 +265,112 @@ async fn ocr_page(ep: &Endpoint, pdf: &str, page: usize, raw: &RawOcr, progress:
     let text = ocr_cached(ep, &mut uri, pdf, page, &prompt, raw.text.as_ref(), progress, "reading").await?;
     // The text task sometimes returns tables as Markdown; turn those into aligned lines.
     let text = super::ocr_table::expand_markdown_tables(&text);
-    let missing = ledger::rows_missing_amounts(&text);
-    if missing == 0 || prompt != OCR_PROMPT {
+    if !needs_table_pass(&text) || prompt != OCR_PROMPT {
         return Ok(text);
     }
-    println!("[Engine] page {page}: {missing} table row(s) lost their amounts in plain OCR, reading the table");
-    progress(&format!("{missing} rows lost their amounts, reading the table"), 0);
+    let missing = ledger::rows_missing_amounts(&text);
+    let why = if missing > 0 { format!("{missing} table row(s) lost their amounts in plain OCR") } else { "plain OCR returned almost nothing".to_string() };
+    println!("[Engine] page {page}: {why}, reading the table");
+    progress(&format!("{why}, reading the table"), 0);
     let html = ocr_cached(ep, &mut uri, pdf, page, OCR_TABLE_PROMPT, raw.table.as_ref(), progress, "reading the table").await?;
     match super::ocr_table::table_html_to_layout(&html) {
-        Some(table) => Ok(splice_table(&text, &table)),
+        // The text task keeps every row but drops some amounts; the table task keeps the
+        // amounts in their columns but may lose the last rows. A table with at least as
+        // many rows as the text replaces the block (its columns decide credit or debit);
+        // a shorter one only lends its amounts to the rows that lost theirs.
+        Some(table) => {
+            let dated = |s: &str| s.lines().filter(|l| l.split_whitespace().next().and_then(ledger::parse_date_token).is_some()).count();
+            let complete = dated(&table) >= dated(&text);
+            if complete && table_adds_rows(&text, &table, missing) {
+                return Ok(splice_table(&text, &table));
+            }
+            let patched = patch_missing_amounts(&text, &table);
+            if ledger::rows_missing_amounts(&patched) > 0 {
+                println!("[Engine] page {page}: {} row(s) still without an amount after the table pass", ledger::rows_missing_amounts(&patched));
+            }
+            Ok(patched)
+        }
         None => Ok(text),
     }
+}
+
+/// Give date-first rows that lost their amount in the text task the amount of the table
+/// row with the same date and description start. On a flat (plain OCR) page the amount is
+/// appended with one space so the page stays flat; on an aligned page the table's own
+/// line replaces the row, so the amount sits under its column.
+fn patch_missing_amounts(text: &str, table: &str) -> String {
+    let flat = ledger::is_flat(text);
+    // (date, description words, amount, whole line) per table row.
+    let rows: Vec<(String, Vec<String>, String, &str)> = table
+        .lines()
+        .filter_map(|l| {
+            let toks: Vec<&str> = l.split_whitespace().collect();
+            let date = toks.first().filter(|t| ledger::parse_date_token(t).is_some())?;
+            let amounts: Vec<&&str> = toks.iter().filter(|t| ledger::is_amount_token(t)).collect();
+            let amount = amounts.first()?;
+            let words = toks[1..].iter().filter(|t| !ledger::is_amount_token(t)).map(|t| t.to_ascii_lowercase()).collect();
+            Some((date.to_string(), words, amount.to_string(), l))
+        })
+        .collect();
+    let mut used = vec![false; rows.len()];
+    let mut out = String::with_capacity(text.len() + 64);
+    for line in text.lines() {
+        let toks: Vec<&str> = line.split_whitespace().collect();
+        let dated = toks.first().map(|t| ledger::parse_date_token(t).is_some()).unwrap_or(false);
+        let has_amount = toks.iter().any(|t| ledger::is_amount_token(t));
+        if dated && !has_amount && toks.len() >= 3 {
+            let words: Vec<String> = toks[1..].iter().map(|t| t.to_ascii_lowercase()).collect();
+            // Same date, and the first three description words agree.
+            let hit = rows.iter().enumerate().find(|(i, (d, w, _, _))| !used[*i] && *d == toks[0] && w.len() >= 3 && words.len() >= 3 && w[..3] == words[..3]);
+            if let Some((i, (_, _, amount, table_line))) = hit {
+                used[i] = true;
+                if flat {
+                    out.push_str(&format!("{line} {amount}\n"));
+                } else {
+                    out.push_str(table_line);
+                    out.push('\n');
+                }
+                continue;
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+/// The table task reads one table off the page, not necessarily the one that lost its
+/// amounts (TD: a complete check table above a wrapped "Electronic Payments" list). The
+/// table is worth splicing when it brings amounts the text does not have: at least as
+/// many as the rows that lost theirs (`missing`), or most of its rows when the text is
+/// nearly empty. A table whose every amount is already in the text would only double them.
+fn table_adds_rows(text: &str, table: &str, missing: usize) -> bool {
+    let amounts = |s: &str| -> Vec<String> {
+        s.split_whitespace().filter(|t| ledger::is_amount_token(t)).map(|t| t.trim_start_matches('$').to_string()).collect()
+    };
+    let have = amounts(text);
+    let rows: Vec<String> = amounts(table);
+    if rows.is_empty() {
+        return false;
+    }
+    let new = rows.iter().filter(|a| !have.contains(a)).count();
+    new >= missing.max(1) || new * 2 > rows.len()
 }
 
 /// Replace the transaction table in plain OCR `text` (from its header line through the
 /// last date-first line) with the converted `table`.
 fn splice_table(text: &str, table: &str) -> String {
     let lines: Vec<&str> = text.lines().collect();
+    let is_date_row = |l: &&str| l.split_whitespace().next().and_then(ledger::parse_date_token).is_some();
     let header = lines.iter().position(|l| {
         let lower = l.to_ascii_lowercase();
-        lower.contains("date") && (lower.contains("balance") || lower.contains("amount")) && (lower.contains("deposit") || lower.contains("credit") || lower.contains("debit") || lower.contains("withdrawal"))
+        let kind_words = lower.contains("deposit") || lower.contains("credit") || lower.contains("debit") || lower.contains("withdrawal");
+        // "Date Description Deposits Withdrawals Balance", or Truist's "DATE DESCRIPTION AMOUNT($)".
+        lower.contains("date") && (lower.contains("balance") || lower.contains("amount")) && (kind_words || lower.split_whitespace().count() <= 8)
     });
-    let Some(h) = header else { return format!("{text}\n{table}") };
-    let last_row = lines.iter().rposition(|l| l.split_whitespace().next().and_then(ledger::parse_date_token).is_some()).unwrap_or(h);
+    // No header: the table replaces the run of dated rows; with no dated rows it is appended.
+    let Some(h) = header.or_else(|| lines.iter().position(is_date_row)) else { return format!("{text}\n{table}") };
+    let last_row = lines.iter().rposition(is_date_row).unwrap_or(h);
     let mut out = String::new();
     for l in &lines[..h] {
         out.push_str(l);
@@ -382,14 +480,19 @@ pub async fn extract_pages(
     }
 
     ocr_into(app, ep, pdf, &mut pages, &ocr_queue, page_offset, total_pages).await?;
-    // Testing aid: MCA_DUMP_PAGES=<dir> writes every page text to disk for parser work.
+    dump_pages(&pages, "");
+    Ok(pages)
+}
+
+/// Testing aid: MCA_DUMP_PAGES=<dir> writes every page text to disk for parser work
+/// (`suffix` tells the OCR re-read apart from the first pass).
+fn dump_pages(pages: &[PageText], suffix: &str) {
     if let Ok(dir) = std::env::var("MCA_DUMP_PAGES") {
         let _ = std::fs::create_dir_all(&dir);
-        for p in &pages {
-            let _ = std::fs::write(format!("{dir}/{}-p{:02}-{}.txt", p.file_name, p.page, p.method), &p.text);
+        for p in pages {
+            let _ = std::fs::write(format!("{dir}/{}-p{:02}-{}{suffix}.txt", p.file_name, p.page, p.method), &p.text);
         }
     }
-    Ok(pages)
 }
 
 /// Read `queue` (1-based page numbers of `pdf`) with the OCR model, `OCR_CONCURRENCY` at a
@@ -536,9 +639,20 @@ pub async fn read_pages(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdfs: &[S
     if queued == 0 {
         return Ok(pages);
     }
+    dump_pages(&retry, "-retry");
     match totals_gap(&retry) {
         Some(g2) if g2 < gap => {
             println!("[Engine] OCR re-read improved the totals gap from {gap:.2} to {g2:.2}; using OCR text");
+            // The OCR model reads the transaction body and may skip the letterhead; the
+            // bank's name from the text layer is kept as a line of its own.
+            let texts = |ps: &[PageText]| ps.iter().map(|p| p.text.clone()).collect::<Vec<_>>();
+            let (ocr_texts, layer_texts) = (texts(&retry), texts(&pages));
+            let named = |ts: &[String]| ledger::detect_bank(&ts.iter().map(String::as_str).collect::<Vec<_>>());
+            if named(&ocr_texts).is_none() {
+                if let (Some(bank), Some(first)) = (named(&layer_texts), retry.first_mut()) {
+                    first.text = format!("{bank}\n{}", first.text);
+                }
+            }
             Ok(retry)
         }
         _ => {
@@ -1054,6 +1168,41 @@ mod tests {
     fn dollar_amounts_are_extracted() {
         assert_eq!(dollar_amounts("costs $9,625.85 and $113k, not $2.5M."), vec![9625.85, 113_000.0, 2_500_000.0]);
         assert!(dollar_amounts("no money here").is_empty());
+    }
+
+    fn truist_text() -> &'static str {
+        "COMMERCIAL INTEREST CHECKING 7174 (continued)\n\nDATE DESCRIPTION AMOUNT($)\n03/02 PAYMENT 1489 EXTRA SPACE 2446 368.20\n03/06 ACH CORP DEBIT NPC PYMT NV ENERGY\n\ncontinued\n"
+    }
+
+    #[test]
+    fn table_pass_is_used_only_when_it_adds_rows() {
+        // TD: the text already lists the checks; the table task read that same check table
+        // instead of the wrapped "Electronic Payments" list below it.
+        let text = "Checks Paid\nDATE SERIAL NO. AMOUNT\n03/10 10991 368.53\n03/18 11020 1,005.11\n\nElectronic Payments\nPOSTING DATE DESCRIPTION AMOUNT\n03/03 DEBIT POS AP, AUT 030125 DDA PURCHASE AP\nRESTAURANT DEPOT ALEXANDRIA * VA 142.29\n";
+        let checks_again = "Date        Description        Debits\n03/10       10991              368.53\n03/18       11020            1,005.11\n";
+        assert!(!table_adds_rows(text, checks_again, 0));
+        let new_rows = "Date        Description                      Debits\n03/03       DEBIT POS AP RESTAURANT DEPOT    142.29\n03/03       CCD DEBIT MARGINEDGE              300.00\n03/03       CCD DEBIT TOAST                    16.24\n";
+        assert!(table_adds_rows(text, new_rows, 0));
+        // Truist: the whole table again, with the two amounts the text task dropped.
+        let whole = "Date        Description        Debits\n03/10       10991              368.53\n03/18       11020            1,005.11\n03/06       NV ENERGY           85.65\n03/06       FRONTIER           126.73\n";
+        assert!(table_adds_rows(text, whole, 2));
+        assert!(!table_adds_rows(text, checks_again, 2));
+        // A wrapped row whose amount ends the next line is not a row that lost its amount.
+        assert_eq!(ledger::rows_missing_amounts(text), 0);
+        // Rows that lost their amount take it from the matching table row; the table's own
+        // losses (its last rows) do not matter then.
+        let patched = patch_missing_amounts(truist_text(), "Date        Description                 Debits\n03/06       ACH CORP DEBIT NPC PYMT NV ENERGY   85.65\n");
+        assert!(patched.contains("NV ENERGY 85.65"), "{patched}");
+        // Aligned text (pdftotext) takes the table's line so the amount sits under its column.
+        let aligned = "Date        Description                                   Credits      Debits\n03/02       PAYMENT 1489 EXTRA SPACE 2446                              368.20\n03/06       ACH CORP DEBIT NPC PYMT NV ENERGY\n03/06       PAYMENT 8528 Extra Space                                    98.20\n";
+        let patched = patch_missing_amounts(aligned, "Date        Description                                   Credits      Debits\n03/06       ACH CORP DEBIT NPC PYMT NV ENERGY                           85.65\n");
+        assert!(patched.contains("NV ENERGY                           85.65"), "{patched}");
+        assert_eq!(ledger::rows_missing_amounts(&patched), 0, "{patched}");
+        // Splicing replaces the dated rows under a single-amount header instead of appending.
+        let spliced = splice_table(truist_text(), "Date        Description                 Debits\n03/02       PAYMENT 1489 EXTRA SPACE     368.20\n03/06       NV ENERGY                     85.65\n");
+        assert_eq!(spliced.matches("368.20").count(), 1, "{spliced}");
+        assert!(spliced.contains("85.65") && spliced.trim_end().ends_with("continued"), "{spliced}");
+        assert!(!needs_table_pass(&format!("{text}{}", "word ".repeat(60))));
     }
 }
 

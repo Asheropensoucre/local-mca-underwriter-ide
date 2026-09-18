@@ -76,11 +76,19 @@ Every statement is checked against itself: the parser sums the transaction lines
 | Wintrust | "Jun 03" dates, mailing barcodes in the margin, "Analysis or Maintenance Fees" counted with debits |
 | Hancock Whitney | two transaction columns side by side (unfolded), "22 CREDITS / 9 DEBITS / SERVICE CHARGES" summary |
 | Mabrey Bank | "2 Deposits/Credits / 31 Checks/Debits" summary, check table, image caption pages skipped |
-| BMO, Capital One | single-page exhibits, summary only |
+| Fifth Third (business) | scanned first page: "Beginning Balance" with the amount on the next line, "N items totaling $X" section headers, dated "06/30 Ending Balance", fee analysis block already inside the withdrawals |
+| Synovus | "06-01" dashed dates, "Transaction Type" column, "Balance Summary" daily table, check table with skipped-number markers |
+| PNC (corporate, scanned filings) | underscored form rules glued to dates (`03/31_____`), cent-only amounts (`.15`), sections resumed after another header on the next page |
+| U.S. Bank (Uni-Statement) | trailing "-" debit markers in the summary ("Other Withdrawals 962.49-"), two-column summary with interest figures to the right, "Check Date Ref Number Amount" check rows, "Balance Summary" daily table |
+| Frost Bank | "BALANCE LAST STATEMENT / BALANCE THIS STATEMENT" over the figures, dashed section rules, "07-29" dates, letterhead without the bank name (P.O. Box 1600 San Antonio) |
+| Valley National | "Deposits & Other Credits" summary, bank named only in the print file path |
+| BMO, Capital One | single-page exhibits, "($15.00)" debits, summary only |
 
-Scanned pages: the OCR model reads plain text first; when rows under a transaction table lose their amounts (wrapped descriptions), the table is read as a table and every amount lands in its column. Statements whose text layer is someone else's poor OCR (court filings) are detected by the totals mismatch and re-read with the OCR model automatically.
+Scanned pages: the OCR model reads plain text first; when rows under a transaction table lose their amounts (wrapped descriptions), or the page comes back nearly empty, the table is read as a table and every amount lands in its column. Statements whose text layer is someone else's poor OCR (court filings) are detected by the totals mismatch and re-read with the OCR model automatically.
 
-Files that bundle several statements (months, or several banks) are split where a new statement starts and each part is parsed on its own; the report lists them. Not handled yet: multi-account credit union statements, statements with no printed totals at all (parsed lines are still shown, but cannot be verified), and layouts not seen in the corpus. Adding a bank means adding its statement to the corpus, fixing the parser and adding a fixture test in `src-tauri/src/engine/ledger.rs`.
+Court-filed copies often carry a poor OCR text layer; the parser repairs what it can before reading: split amounts (`20. 00`, `-1 ,100.00`, `3,051 .38`), split dates (`11 /21 /22`), form rules glued to dates (`03/31_____`), smeared section headers (`!OTHER WITHDRAWALS, FEES & C H A R G E S`), check numbers glued to labels (`24490Check`), stacked cells (two lone dates over two lone amounts), and tables retold as bullets (`- 04/18: ...: 3,176.12`). When the totals still do not match, the page is re-read with the OCR model.
+
+Files that bundle several statements (months, or several banks) are split where a new statement starts (a new beginning balance, a different bank in the letterhead, or a different account number for zero-balance sweep accounts) and each part is parsed on its own; the report lists them. Not handled yet: multi-account credit union statements, statements with no printed totals at all (parsed lines are still shown, but cannot be verified), and layouts not seen in the corpus. Adding a bank means adding its statement to the corpus, fixing the parser and adding a fixture test in `src-tauri/src/engine/ledger.rs`.
 
 ## Prerequisites
 

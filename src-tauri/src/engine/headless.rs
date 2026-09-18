@@ -50,8 +50,16 @@ pub fn parse_args() -> Option<HeadlessArgs> {
     Some(HeadlessArgs { pdfs, instructions, ledger_only, ocr, plan_only })
 }
 
+static ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// True while a headless job owns the process (set before the window's scripts run).
+pub fn active() -> bool {
+    ACTIVE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Called from the Tauri setup hook. Hides the window, runs the job, exits the process.
 pub fn run(app: &tauri::AppHandle, args: HeadlessArgs) {
+    ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.hide();
     }
@@ -100,11 +108,17 @@ async fn run_job(app: &tauri::AppHandle, args: HeadlessArgs) -> Result<String, S
     let t = std::time::Instant::now();
     super::engine_install(app.clone()).await?;
     eprintln!("[headless] install ok ({:.1}s)", t.elapsed().as_secs_f32());
-    let url = super::engine_start(app.clone()).await?;
+    let url = start_engine(app).await?;
     eprintln!("[headless] engine at {url} ({:.1}s)", t.elapsed().as_secs_f32());
     let json = super::engine_analyze(app.clone(), args.pdfs, args.instructions, 0.2, 4096).await?;
     eprintln!("[headless] analyze done ({:.1}s total)", t.elapsed().as_secs_f32());
     Ok(json)
+}
+
+/// The job's own engine start (the `engine_start` command refuses while headless).
+async fn start_engine(app: &tauri::AppHandle) -> Result<String, String> {
+    let cfg = super::runtime::load_config(app);
+    Ok(super::runtime::start(app, &cfg).await?.base_url)
 }
 
 /// Page texts from the PDF text layers only. Pages with no text but a full-page image are
@@ -136,7 +150,7 @@ async fn ocr_pages(app: &tauri::AppHandle, pdfs: &[String]) -> Result<Vec<super:
     match super::pipeline::read_pages(app, None, pdfs, total).await {
         Err(e) if e == super::pipeline::NEEDS_ENGINE => {
             super::engine_install(app.clone()).await?;
-            let url = super::engine_start(app.clone()).await?;
+            let url = start_engine(app).await?;
             eprintln!("[headless] engine at {url}");
             let ep = app.state::<super::runtime::EngineProcess>().endpoint().ok_or("engine not running")?;
             super::pipeline::read_pages(app, Some(&ep), pdfs, total).await.map_err(|e| {

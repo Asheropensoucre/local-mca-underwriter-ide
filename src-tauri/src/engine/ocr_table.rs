@@ -103,6 +103,15 @@ pub fn expand_markdown_tables(text: &str) -> String {
     out
 }
 
+/// Split `text` at the last space before `width` (or at `width` when there is none).
+fn wrap_at(text: &str, width: usize) -> (&str, &str) {
+    if text.len() <= width {
+        return (text, "");
+    }
+    let cut = text[..width].rfind(' ').filter(|&i| i > 0).unwrap_or(width);
+    (&text[..cut], text[cut..].trim_start())
+}
+
 fn rows_to_layout(rows: Vec<Vec<String>>) -> Option<String> {
     let header_idx = rows.iter().position(|r| r.iter().any(|c| c.eq_ignore_ascii_case("date") || c.to_ascii_lowercase().ends_with(" date")) && r.iter().any(|c| amount_label(c).is_some()))?;
     let header = &rows[header_idx];
@@ -160,13 +169,19 @@ fn rows_to_layout(rows: Vec<Vec<String>>) -> Option<String> {
             continue;
         }
         if cells.len() == header.len() && (has_date || desc.to_ascii_lowercase().starts_with("total")) {
-            // Trusted layout: each amount under its own column.
-            let mut line = format!("{:<DATE_W$}{:<desc_w$}", if has_date { date } else { "" }, if has_date { desc.as_str() } else { desc.as_str() });
+            // Trusted layout: each amount under its own column. A description longer than
+            // the column would push its amount under the next label, so the tail wraps onto a
+            // continuation line, as the bank prints it.
+            let (head, tail) = wrap_at(&desc, desc_w - 2);
+            let mut line = format!("{:<DATE_W$}{:<desc_w$}", if has_date { date } else { "" }, head);
             for c in &cells[first_amount_col..first_amount_col + amount_cols] {
                 line.push_str(&format!("{:>AMOUNT_W$}", if is_amount_token(c) { c.as_str() } else { "" }));
             }
             out.push_str(line.trim_end());
             out.push('\n');
+            if !tail.is_empty() {
+                out.push_str(&format!("{:<DATE_W$}{tail}\n", ""));
+            }
         } else {
             // Unknown column: flat line, kind from words and balance arithmetic.
             let amts: Vec<&str> = amounts.iter().map(|a| a.as_str()).collect();
@@ -222,5 +237,21 @@ mod tests {
         assert_eq!(l.transactions[0].kind, crate::engine::ledger::Kind::Credit);
         assert_eq!(l.transactions[1].kind, crate::engine::ledger::Kind::Debit);
         assert_eq!(l.daily_balances.len(), 1);
+    }
+
+    #[test]
+    fn long_descriptions_wrap_instead_of_pushing_amounts_right() {
+        let html = "<table><tr><td>Date</td><td>Check Number</td><td>Description</td><td>Deposits/ Credits</td><td>Withdrawals/ Debits</td><td>Ending daily balance</td></tr>\
+<tr><td>2/10</td><td></td><td>WT S0660413Dcc301 Morgan Stanley A /Org=Msl FBO Julie Beth Kaplan,Tod Subj Srf# S0660413Dcc301 Trn#260210168728 Rfb#</td><td>6,000.00</td><td></td><td></td></tr>\
+<tr><td>2/10</td><td></td><td>Recurring Payment authorized on 02/09 Cci*Constant-Conta 855-2295506 MA S586040308634033 Card 4336</td><td></td><td>201.43</td><td>5,000.00</td></tr></table>";
+        let text = table_html_to_layout(html).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        let credits_end = lines[0].find("Credits").unwrap() + "Credits".len();
+        assert_eq!(lines[1].find("6,000.00").unwrap() + "6,000.00".len(), credits_end, "{text}");
+        assert!(lines[2].trim().starts_with("S0660413Dcc301") || lines[2].trim().starts_with("Trn#"), "{text}");
+        let l = crate::engine::ledger::parse(&[(1, &text)]);
+        assert_eq!(l.transactions.len(), 2, "{text}");
+        assert_eq!(l.transactions[0].kind, crate::engine::ledger::Kind::Credit);
+        assert!(l.transactions[0].description.contains("Rfb#"), "{:?}", l.transactions[0]);
     }
 }

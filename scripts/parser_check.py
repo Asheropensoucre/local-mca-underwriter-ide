@@ -17,6 +17,9 @@ separately: those are layouts the parser does not understand yet.
 --markdown  print a per-bank coverage table instead of the plain lists.
 --snapshot <file>  compare with the previous run saved in <file> (regressions and new passes
             are listed), then overwrite it with this run.
+
+Files listed in not_statements.txt next to the PDF folder are skipped (see the comment in
+main for the format).
 """
 import json, os, re, subprocess, sys
 from collections import defaultdict
@@ -53,9 +56,16 @@ def main():
     ocr = "cached" if "--ocr-cached" in sys.argv else ("--ocr" in sys.argv)
     verbose, markdown = "--verbose" in sys.argv, "--markdown" in sys.argv
     snapshot = sys.argv[sys.argv.index("--snapshot") + 1] if "--snapshot" in sys.argv else None
+    # Files a human marked as not bank statements (operating reports, A/R agings, foreign
+    # consolidated statements) live in not_statements.txt next to the PDF folder: one file
+    # name per line, anything after a space is the reason.
+    exclude_file = os.path.join(os.path.dirname(os.path.abspath(folder.rstrip("/"))), "not_statements.txt")
+    excluded = set()
+    if os.path.exists(exclude_file):
+        excluded = {l.split()[0] for l in open(exclude_file) if l.strip() and not l.startswith("#")}
     rows = []  # dicts: name, bank, status, stated/parsed totals, lines, scan pages
     for name in sorted(os.listdir(folder)):
-        if not name.lower().endswith(".pdf"):
+        if not name.lower().endswith(".pdf") or name in excluded:
             continue
         path = os.path.join(folder, name)
         try:

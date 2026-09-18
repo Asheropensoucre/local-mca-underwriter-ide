@@ -171,6 +171,11 @@ pub async fn engine_install(app: tauri::AppHandle) -> Result<(), String> {
 /// never leaves the Rust side).
 #[tauri::command]
 pub async fn engine_start(app: tauri::AppHandle) -> Result<String, String> {
+    // The hidden window's setup screen auto-starts the engine on load; a headless run
+    // decides for itself whether it needs one (cached corpus runs must never start it).
+    if headless::active() {
+        return Err("headless run: the window does not start the engine".into());
+    }
     let cfg = runtime::load_config(&app);
     let ep = runtime::start(&app, &cfg).await?;
     Ok(ep.base_url)
