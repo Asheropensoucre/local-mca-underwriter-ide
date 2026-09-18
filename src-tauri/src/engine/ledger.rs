@@ -243,16 +243,45 @@ fn zip_stacked_cells(text: &str) -> String {
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
     let mut i = 0;
     while i < lines.len() {
-        let dates = lines[i..].iter().take_while(|l| lone(l, &|t| parse_date_token(t).is_some())).count();
+        // (A stray margin mark of one or two characters before the date does not count.)
+        let lone_date = |l: &str| {
+            let toks: Vec<&str> = l.split_whitespace().collect();
+            match toks.as_slice() {
+                [d] => parse_date_token(d).is_some(),
+                [junk, d] => junk.len() <= 2 && parse_date_token(junk).is_none() && parse_date_token(d).is_some(),
+                _ => false,
+            }
+        };
+        let date_of = |l: &str| l.split_whitespace().last().unwrap_or("").to_string();
+        let dates = lines[i..].iter().take_while(|l| lone_date(l)).count();
         if dates >= 1 {
-            let amounts = lines[i + dates..].iter().take_while(|l| lone(l, &|t| is_amount_token(t))).count();
+            // A lone "Balance" (or "Amount") label may sit between the dates and their amounts
+            // (UMB's "End of Day" table read column by column).
+            let label_between = lines.get(i + dates).map(|l| { let t = l.trim().to_ascii_lowercase(); t == "balance" || t == "amount" }).unwrap_or(false) as usize;
+            let amounts = lines[i + dates + label_between..].iter().take_while(|l| lone(l, &|t| is_amount_token(t))).count();
             if amounts == dates {
                 for k in 0..dates {
-                    let date = lines[i + k];
-                    out.push(format!("{}{:>12}", date.trim_end(), lines[i + dates + k].trim()));
+                    out.push(format!("{:>16}{:>12}", date_of(lines[i + k]), lines[i + dates + label_between + k].trim()));
                 }
-                i += dates * 2;
+                i += dates * 2 + label_between;
                 continue;
+            }
+            // Lone dates over as many description lines over as many lone amounts (a court
+            // scan's text layer pulling the dates of a few rows out of line): one row each.
+            let is_desc = |l: &str| {
+                let toks: Vec<&str> = l.split_whitespace().collect();
+                toks.len() >= 2 && parse_date_token(toks[0]).is_none() && !toks.iter().any(|t| is_amount_token(t))
+            };
+            let descs = lines[i + dates..].iter().take_while(|l| is_desc(l)).count();
+            if descs == dates {
+                let amounts = lines[i + dates + descs..].iter().take_while(|l| lone(l, &|t| is_amount_token(t))).count();
+                if amounts == dates {
+                    for k in 0..dates {
+                        out.push(format!("{:>16} {}{:>12}", date_of(lines[i + k]), lines[i + dates + k].trim(), lines[i + dates + descs + k].trim()));
+                    }
+                    i += dates * 3;
+                    continue;
+                }
             }
         }
         // The same for a summary block read column by column: the labels ("Beginning
@@ -842,7 +871,10 @@ impl State {
 
 /// Parse one page. `year_hint` fills in years for MM/DD dates.
 fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledger, st: &mut State) {
-    let text = &zip_stacked_cells(text);
+    // Month-name dates and split amounts are normalized line by line first, so stacked
+    // "Apr02" / "1,395 .37" cells zip like any other (the per-line pass below is idempotent).
+    let pre: String = text.lines().map(|l| join_split_amounts(&normalize_month_dates(l))).collect::<Vec<_>>().join("\n");
+    let text = &zip_stacked_cells(&pre);
     let mut columns: Option<Columns> = None;
     let flat = is_flat(text);
     let mut pending_header: Option<Columns> = None;
@@ -1013,7 +1045,9 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         // spaceless form still reads.
         let squashed: String = lower.chars().filter(|c| !c.is_whitespace()).collect();
         let smeared_daily = !has_amount && tokens.len() <= 8 && (squashed.contains("dailyendingbalance") || squashed.contains("dailybalance") || squashed.contains("dailyledgerbalance"));
-        if !names_txn_columns && (lower.contains("daily balance") || lower.contains("daily ending balance") || lower.contains("daily ledger balance") || repeated_date_balance_header || balance_summary_heading || smeared_daily) {
+        // (UMB heads its table "End of Day - Current Balance".)
+        let end_of_day = lower.starts_with("end of day") && lower.contains("balance") && !has_amount;
+        if !names_txn_columns && (lower.contains("daily balance") || lower.contains("daily ending balance") || lower.contains("daily ledger balance") || repeated_date_balance_header || balance_summary_heading || smeared_daily || end_of_day) {
             st.enter_table("daily balances");
             st.in_daily = true;
             last_txn = None;
@@ -1189,6 +1223,24 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
                 }
                 if txn.is_some() || running.is_some() {
                     continue;
+                }
+            }
+            // An undated line whose single amount sits in a credit or debit column, right
+            // after a dated row on this page, is the next row with the same date (a court
+            // scan's text layer dropped the date: ",J   PIN THE HOME DEPOT ...   11.94").
+            if aligned && !starts_with_date && spans.len() == 1 && tokens.len() >= 3 {
+                let summary_like = lower.contains("total") || lower.contains("balance") || lower.contains("subtotal");
+                let prev = last_txn.map(|id| ledger.transactions[id].clone()).filter(|t| t.page == page);
+                if let (Some(prev), Some(kind), false) = (prev, c.kind_at(spans[0].0), summary_like) {
+                    if !c.before_columns(spans[0].0) {
+                        let desc_end = line.find(spans[0].1).unwrap_or(line.len());
+                        let desc: String = line[..desc_end].split_whitespace().filter(|t| t.len() > 2 || t.chars().all(|ch| ch.is_ascii_alphanumeric())).collect::<Vec<_>>().join(" ");
+                        let amount = parse_amount(spans[0].1).unwrap_or(0.0).abs();
+                        let id = ledger.transactions.len();
+                        ledger.transactions.push(Txn { id, date: prev.date.clone(), day: prev.day, kind, amount, description: desc, page, table: st.table });
+                        last_txn = Some(id);
+                        continue;
+                    }
                 }
             }
         }
