@@ -155,9 +155,10 @@ pub fn parse_amount(raw: &str) -> Option<f64> {
 }
 
 pub fn is_amount_token(tok: &str) -> bool {
-    // Trailing '+' or '-' are credit/debit markers some community banks print ("12,821.16+").
-    // Parentheses may sit outside or inside the sign: "($15.00)" (Capital One), "$(205,309.04)" (Fifth Third).
-    let t = tok.trim_matches(|c| c == '(' || c == ')').trim_start_matches(|c| c == '$' || c == '-').trim_end_matches(|c| c == '-' || c == '+').trim_matches(|c| c == '(' || c == ')');
+    // Trailing '+' or '-' are credit/debit markers some community banks print ("12,821.16+");
+    // KeyBank leads with them ("+7,170.00"). Parentheses may sit outside or inside the
+    // sign: "($15.00)" (Capital One), "$(205,309.04)" (Fifth Third).
+    let t = tok.trim_matches(|c| c == '(' || c == ')').trim_start_matches(|c| c == '$' || c == '-' || c == '+').trim_end_matches(|c| c == '-' || c == '+').trim_matches(|c| c == '(' || c == ')');
     if t.is_empty() {
         return false;
     }
@@ -248,10 +249,40 @@ fn zip_stacked_cells(text: &str) -> String {
                 continue;
             }
         }
+        // The same for a summary block read column by column: the labels ("Beginning
+        // Balance", "Deposits and Additions", ...) then their amounts, one per line.
+        let label = |l: &str| {
+            let n = l.split_whitespace().count();
+            (1..=5).contains(&n) && !l.chars().any(|c| c.is_ascii_digit()) && !l.trim_end().ends_with(':')
+        };
+        let labels = lines[i..].iter().take_while(|l| label(l)).count();
+        if labels >= 2 {
+            let amounts = lines[i + labels..].iter().take_while(|l| lone(l, &|t| is_amount_token(t))).count();
+            if amounts == labels {
+                for k in 0..labels {
+                    out.push(format!("{}{:>14}", lines[i + k].trim_end(), lines[i + labels + k].trim()));
+                }
+                i += labels * 2;
+                continue;
+            }
+        }
         out.push(lines[i].to_string());
         i += 1;
     }
     out.join("\n")
+}
+
+/// Remove lone "^" and "*" tokens (footnote marks on check rows), keeping the spacing of
+/// everything else so aligned pages keep their columns.
+fn drop_footnote_marks(line: &str) -> String {
+    if !line.contains(" ^") && !line.contains(" *") {
+        return line.to_string();
+    }
+    let chars: Vec<char> = line.chars().collect();
+    chars.iter().enumerate().map(|(i, &c)| {
+        let lone = (c == '^' || c == '*') && (i == 0 || chars[i - 1] == ' ') && (i + 1 == chars.len() || chars[i + 1] == ' ');
+        if lone { ' ' } else { c }
+    }).collect()
 }
 
 /// OCR sometimes retells a table as bullets: "- 04/18: CCD DEPOSIT, TOAST DEP: 3,176.12".
@@ -377,10 +408,12 @@ fn full_month(word: &str) -> bool {
 
 /// (month, day, year) from MM/DD, MM/DD/YY, MM/DD/YYYY.
 pub fn parse_date_token(tok: &str) -> Option<(u32, u32, Option<i32>)> {
-    // Synovus writes dates as "06-01"; the dashed form needs two-digit month and day so
-    // ranges and phone numbers stay out.
+    // Synovus writes dates as "06-01", KeyBank as "10-3" and "9-30-24". The dashed form
+    // needs a two-digit month or day (never "1-2") so ranges and phone numbers stay out.
     let dashed = tok.split('-').collect::<Vec<_>>();
-    let parts: Vec<&str> = if dashed.len() >= 2 && dashed[0].len() == 2 && dashed[1].len() == 2 { dashed } else { tok.split('/').collect() };
+    let short = |p: &str| !p.is_empty() && p.len() <= 2 && p.chars().all(|c| c.is_ascii_digit());
+    let dashed_date = (2..=3).contains(&dashed.len()) && short(dashed[0]) && short(dashed[1]) && (dashed[0].len() == 2 || dashed[1].len() == 2);
+    let parts: Vec<&str> = if dashed_date { dashed } else { tok.split('/').collect() };
     if parts.len() < 2 || parts.len() > 3 {
         return None;
     }
@@ -439,10 +472,10 @@ fn section_for(line: &str) -> Option<Kind> {
     if l.contains("daily balance") || l.contains("balance summary") {
         return None;
     }
-    if l.contains("deposit") || l.contains("credit") {
+    if l.contains("deposit") || l.contains("credit") || l.contains("additions") {
         return Some(Kind::Credit);
     }
-    if l.contains("debit") || l.contains("withdrawal") || l.contains("checks") || l.contains("fees") || l.contains("payments") {
+    if l.contains("debit") || l.contains("withdrawal") || l.contains("checks") || l.contains("fees") || l.contains("payments") || l.contains("subtractions") {
         return Some(Kind::Debit);
     }
     None
@@ -685,8 +718,12 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
     let mut pending_columns: Vec<&'static str> = Vec::new();
     let mut pending_has_checks = false;
     for raw in text.lines() {
-        // Form rules scanned as underscores glue to the date ("03/31_____  217,945.04").
-        let normalized = join_split_amounts(&normalize_month_dates(&unbullet(&raw.replace('_', " "))));
+        // Form rules scanned as underscores glue to the date ("03/31_____  217,945.04");
+        // online activity exports print negatives with an en dash ("–$1,500.00"); Chase
+        // marks checks with lone "^" and "*" footnote symbols ("1447 * ^ 09/17 159.05").
+        let raw = raw.replace('_', " ").replace(['\u{2013}', '\u{2014}', '\u{2212}'], "-");
+        let raw = drop_footnote_marks(&raw);
+        let normalized = join_split_amounts(&normalize_month_dates(&unbullet(&raw)));
         let stripped = strip_margin_barcode(normalized.trim_end());
         let line: &str = stripped.trim_end();
         let trimmed = line.trim();
@@ -1159,6 +1196,13 @@ fn capture_summary(lower: &str, line: &str, s: &mut Summary, page: usize) {
         if s.beginning_balance.is_none() {
             s.beginning_balance = v;
         }
+        // KeyBank has no "summary" heading: the categories ("1 Addition +7,170.00",
+        // "3 Subtractions -7,065.85", "Net fees and charges -5.00") follow the beginning
+        // balance line directly, so that line opens the block.
+        if v.is_some() && lower.trim_start().starts_with("beginning balance") && !s.in_summary_block && s.debit_parts.is_empty() && s.debit_parts_unsigned.is_empty() && s.credit_parts.is_empty() {
+            s.in_summary_block = true;
+            s.summary_lines = 0;
+        }
     }
     let ntok = lower.split_whitespace().count();
     // Summary block: debit categories are the negative figures between the "summary"
@@ -1196,8 +1240,8 @@ fn capture_summary(lower: &str, line: &str, s: &mut Summary, page: usize) {
             let label: String = toks[..a].join(" ").to_ascii_lowercase();
             // PNC prints credit and debit categories side by side ("ACH Credits 92
             // 3,199,536.68   ACH Debits 135 3,412,040.00"): such lines are not categories.
-            let credit_word = |t: &str| t.contains("deposit") || t.contains("credit");
-            let debit_word = |t: &str| t.contains("check") || t.contains("payment") || t.contains("withdrawal") || t.contains("debit") || t.contains("charge") || t.contains("fee") || t.contains("card activity");
+            let credit_word = |t: &str| t.contains("deposit") || t.contains("credit") || t.contains("addition");
+            let debit_word = |t: &str| t.contains("check") || t.contains("payment") || t.contains("withdrawal") || t.contains("debit") || t.contains("charge") || t.contains("fee") || t.contains("card activity") || t.contains("subtraction");
             let two_columns = credit_word(&lower) && debit_word(&lower);
             if a >= 1 && a <= 8 && !two_columns && !label.contains("balance") && !label.contains("interest") && !label.contains("days") {
                 let v = parse_amount(last).map(f64::abs);
@@ -1209,8 +1253,9 @@ fn capture_summary(lower: &str, line: &str, s: &mut Summary, page: usize) {
                 } else if let Some(v) = v {
                     // TD business: unsigned categories told apart by their words
                     // ("Deposits", "Electronic Deposits" vs "Checks Paid", "Electronic Payments");
-                    // First State Bank marks credits with a trailing '+' ("12,821.16+").
-                    let plus = last.ends_with('+');
+                    // First State Bank marks credits with a trailing '+' ("12,821.16+"),
+                    // KeyBank with a leading one ("+7,170.00").
+                    let plus = last.ends_with('+') || last.starts_with('+');
                     let is_credit = plus || credit_word(&label);
                     let is_debit = !plus && debit_word(&label);
                     if is_credit && !is_debit {
@@ -1802,6 +1847,7 @@ fn segment_statements<'a>(pages: &[(usize, &'a str)]) -> Vec<Vec<(usize, &'a str
     let mut segments: Vec<Vec<(usize, &str)>> = Vec::new();
     let mut current: Vec<(usize, &str)> = Vec::new();
     let mut current_beginning: Option<f64> = None;
+    let mut current_ending: Option<f64> = None;
     let mut current_account: Option<String> = None;
     let mut current_bank: Option<String> = None;
     for &(page, text) in pages {
@@ -1831,18 +1877,26 @@ fn segment_statements<'a>(pages: &[(usize, &'a str)]) -> Vec<Vec<(usize, &'a str
         // number on the page with the beginning balance tells the statements apart.
         let account = probe.summary.account_last4.clone();
         let account_changes = begins.is_some() && matches!((&account, &current_account), (Some(a), Some(cur)) if a != cur);
-        let starts_new = bank_changes || account_changes || match (begins, current_beginning) {
+        // A month with no activity ends where it began (KeyBank, $94.29 to $94.29), so the
+        // next statement begins with the same figure: a page that opens with the balance an
+        // earlier page closed at is a new statement too.
+        let continues = matches!((begins, current_ending), (Some(b), Some(end)) if (b - end).abs() < 0.005) && !current.is_empty();
+        let starts_new = bank_changes || account_changes || continues || match (begins, current_beginning) {
             (Some(b), Some(cur)) if (b - cur).abs() >= 0.005 => true,
             _ => false,
         };
         if starts_new && !current.is_empty() {
             segments.push(std::mem::take(&mut current));
             current_beginning = None;
+            current_ending = None;
             current_account = None;
         }
         if begins.is_some() && current_beginning.is_none() {
             current_beginning = begins;
             current_account = account;
+        }
+        if probe.summary.ending_balance.is_some() {
+            current_ending = probe.summary.ending_balance;
         }
         if bank.is_some() && (starts_new || current_bank.is_none()) {
             current_bank = bank;
@@ -2685,7 +2739,7 @@ GOOGLE GSUITE SMOKECRAFT 650 2530000 * CA
         let l = parse(&[(1, text)]);
         let amounts: Vec<f64> = l.transactions.iter().map(|t| t.amount).collect();
         assert_eq!(amounts, vec![300.0, 142.29, 16.24], "{:?}", l.transactions);
-        assert!(l.transactions[1].description.ends_with("RESTAURANT DEPOT ALEXANDRIA * VA"));
+        assert!(l.transactions[1].description.ends_with("RESTAURANT DEPOT ALEXANDRIA VA"), "{}", l.transactions[1].description);
     }
 
     #[test]
@@ -3019,5 +3073,30 @@ Nov 10 136,758.04 Nov 24 147,043.45 Nov 26 146,849.66
         let rows: Vec<(String, f64)> = l.transactions.iter().map(|t| (t.date.clone(), t.amount)).collect();
         assert_eq!(rows, vec![("03/22".into(), 5.01), ("03/22".into(), 531.28), ("03/22".into(), 2231991.05), ("03/23".into(), 100.0)], "{:?}", l.transactions);
         assert!(l.transactions.iter().all(|t| t.kind == Kind::Debit));
+    }
+    #[test]
+    fn summary_labels_read_column_by_column_are_zipped_with_their_amounts() {
+        let text = "CHECKING SUMMARY\n\nBeginning Balance\nDeposits and Additions\nATM & Debit Card Withdrawals\nElectronic Withdrawals\nFees\nEnding Balance\n$8.84\n$6,930.00\n$-28.25\n$-6,538.00\n$-43.00\n$329.59\n\nDEPOSITS AND ADDITIONS\n\nDATE DESCRIPTION AMOUNT\n09/17 Deposit 1989894236 3,000.00\n";
+        let l = parse(&[(1, text)]);
+        let s = &l.summary;
+        assert_eq!((s.beginning_balance, s.ending_balance), (Some(8.84), Some(329.59)));
+        assert_eq!((s.total_credits, s.total_debits), (Some(6930.0), Some(6609.25)), "{:?}", s);
+    }
+
+    #[test]
+    fn keybank_dashed_dates_signed_categories_and_a_quiet_month_before_a_busy_one() {
+        // Two statements of the same account: November ends where it began, so December
+        // opens with the same figure and still has to be its own statement.
+        let nov = "KeyBank                          Business Banking Statement\n                                     November 30, 2024\nKeyBank Basic Business Checking\nDNT PROPERTY INVESTMENTS LLC\n            Beginning balance 10-31-24           $94.29\n            Ending balance 11-30-24              $94.29\n";
+        let dec = "KeyBank                          Business Banking Statement\n                                     December 31, 2024\nKeyBank Basic Business Checking\nDNT PROPERTY INVESTMENTS LLC\n            Beginning balance 11-30-24           $94.29\n            1 Addition                        +7,170.00\n            3 Subtractions                    -7,065.85\n            Ending balance 12-31-24             $198.44\nAdditions\n     Deposits Date   Serial #   Source\n              12-3              Existing Sec 8 Vendor Pmt                 $7,170.00\n                                Total additions                           $7,170.00\nSubtractions\nPaper Checks       * check missing from sequence\n Check   Date     Amount\n 1391    12-27    $5,646.62\n                                Paper Checks Paid                         $5,646.62\n     Withdrawals Date   Serial #   Location\n              12-13             Fiffik Law Groupj2370 Oofftrn*1*Cz10000B4Uvwc\\R    $1,252.62\n              12-17             Peoplesgas     Peoplesgas                     166.61\n                                Total subtractions                        $7,065.85\n";
+        let l = parse(&[(1, nov), (2, dec)]);
+        assert_eq!(l.statements.len(), 2, "{:?}", l.statements);
+        let d = &l.statements[1];
+        assert_eq!((d.beginning_balance, d.ending_balance), (Some(94.29), Some(198.44)));
+        assert_eq!((d.total_credits, d.total_debits), (Some(7170.0), Some(7065.85)));
+        let rows: Vec<(String, Kind, f64)> = l.transactions.iter().map(|t| (t.date.clone(), t.kind, t.amount)).collect();
+        assert_eq!(rows, vec![("2024-12-03".into(), Kind::Credit, 7170.0), ("2024-12-27".into(), Kind::Debit, 5646.62), ("2024-12-13".into(), Kind::Debit, 1252.62), ("2024-12-17".into(), Kind::Debit, 166.61)], "{:?}", l.transactions);
+        assert_eq!(parse_date_token("1-2"), None);
+        assert_eq!(parse_date_token("9-30-24"), Some((9, 30, Some(2024))));
     }
 }

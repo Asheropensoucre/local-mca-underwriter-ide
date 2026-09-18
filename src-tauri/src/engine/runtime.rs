@@ -468,10 +468,12 @@ fn random_key() -> String {
 /// `/health` answers. Model weights load lazily on the first request for each role.
 pub async fn start(app: &tauri::AppHandle, cfg: &EngineConfig) -> Result<Endpoint, String> {
     let state = app.state::<EngineProcess>();
+    println!("[Engine] start requested ({:?})", cfg.backend);
     let _guard = state.start_lock.lock().await;
     if state.is_running() {
         return state.endpoint().ok_or("engine state inconsistent".into());
     }
+    println!("[Engine] start: checking runtime and models");
 
     let bin = server_binary(app, cfg.backend).ok_or("Runtime is not installed")?;
     let ocr = registry::ocr_model();
@@ -486,8 +488,10 @@ pub async fn start(app: &tauri::AppHandle, cfg: &EngineConfig) -> Result<Endpoin
 
     // A previous instance that died without stopping (crash, dev rebuild) may still hold
     // a model in memory: reap it first, then size to the memory that is really free.
+    println!("[Engine] start: reaping stale servers");
     reap_stale_server(app);
-    let plan = memory::plan(&ocr, &underwriter);
+    // A ledger-only run never asks for the reasoning model, so it only has to fit the OCR model.
+    let plan = memory::plan(&ocr, if super::headless::ledger_only() { None } else { Some(&underwriter) });
     println!("[Engine] memory: {}", plan.message);
     if !plan.fits {
         return Err(plan.message);

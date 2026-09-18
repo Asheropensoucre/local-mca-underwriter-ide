@@ -129,7 +129,7 @@ pub fn engine_status(app: tauri::AppHandle) -> Result<EngineStatus, String> {
     let state = app.state::<EngineProcess>();
     let running = state.is_running();
     let chosen = registry::underwriter_model(&config.underwriter_model).unwrap_or_else(|| registry::underwriter_models()[0].clone());
-    let memory = memory::plan(&registry::ocr_model(), &chosen);
+    let memory = memory::plan(&registry::ocr_model(), Some(&chosen));
     let stopped_reason = state.stopped_reason.lock().ok().and_then(|g| g.clone());
     Ok(EngineStatus {
         memory,

@@ -76,11 +76,12 @@ fn resident(model: &ModelSpec, ctx: u32, image_slots: u32) -> u64 {
 
 /// Size the engine for the memory available now: the most OCR slots that fit, both
 /// models resident when the machine is roomy enough to skip the swap. Only when even the
-/// smallest setup does not fit does the plan say so.
-pub fn plan(ocr: &ModelSpec, underwriter: &ModelSpec) -> MemoryPlan {
+/// smallest setup does not fit does the plan say so. `underwriter` is None for jobs that
+/// only read pages (the headless ledger dump): then only the OCR model has to fit.
+pub fn plan(ocr: &ModelSpec, underwriter: Option<&ModelSpec>) -> MemoryPlan {
     let (total, available) = available_bytes();
     let threads = std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(4);
-    let uctx = underwriter.ctx_size;
+    let uctx = underwriter.map(|u| u.ctx_size).unwrap_or(0);
     // (ocr slots, models resident), fastest first. Slot context is fixed per page:
     // a page image is about 2,700 tokens plus up to 1,500 of text.
     let per_slot_ctx = ocr.ctx_size / ocr.parallel.max(1);
@@ -89,7 +90,7 @@ pub fn plan(ocr: &ModelSpec, underwriter: &ModelSpec) -> MemoryPlan {
     for &(slots, max) in &candidates {
         let octx = per_slot_ctx * slots;
         let ocr_bytes = resident(ocr, octx, slots);
-        let uw_bytes = resident(underwriter, uctx, 0);
+        let uw_bytes = underwriter.map(|u| resident(u, uctx, 0)).unwrap_or(0);
         let peak = if max == 2 { ocr_bytes + uw_bytes } else { ocr_bytes.max(uw_bytes) };
         if peak + HEADROOM_BYTES <= available {
             chosen = Some((slots, octx, max, peak));
@@ -101,7 +102,7 @@ pub fn plan(ocr: &ModelSpec, underwriter: &ModelSpec) -> MemoryPlan {
         None => {
             let (s, m) = candidates[candidates.len() - 1];
             let c = per_slot_ctx * s;
-            (s, c, m, resident(ocr, c, s).max(resident(underwriter, uctx, 0)), false)
+            (s, c, m, resident(ocr, c, s).max(underwriter.map(|u| resident(u, uctx, 0)).unwrap_or(0)), false)
         }
     };
     // The soft limit throttles at the estimate; the hard limit sits well above so a

@@ -52,14 +52,23 @@ pub fn parse_args() -> Option<HeadlessArgs> {
 
 static ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+static LEDGER_ONLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// True while a headless job owns the process (set before the window's scripts run).
 pub fn active() -> bool {
     ACTIVE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// True for `--headless-ledger`: the engine only ever reads pages, so the memory plan
+/// needs room for the OCR model alone.
+pub fn ledger_only() -> bool {
+    LEDGER_ONLY.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Called from the Tauri setup hook. Hides the window, runs the job, exits the process.
 pub fn run(app: &tauri::AppHandle, args: HeadlessArgs) {
     ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
+    LEDGER_ONLY.store(args.ledger_only, std::sync::atomic::Ordering::Relaxed);
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.hide();
     }
@@ -93,7 +102,7 @@ async fn run_job(app: &tauri::AppHandle, args: HeadlessArgs) -> Result<String, S
     if args.plan_only {
         let cfg = super::runtime::load_config(app);
         let uw = super::registry::underwriter_model(&cfg.underwriter_model).ok_or("unknown reasoning model")?;
-        let plan = super::memory::plan(&super::registry::ocr_model(), &uw);
+        let plan = super::memory::plan(&super::registry::ocr_model(), Some(&uw));
         return serde_json::to_string_pretty(&plan).map_err(|e| e.to_string());
     }
     if args.pdfs.is_empty() {

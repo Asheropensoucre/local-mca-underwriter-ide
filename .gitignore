@@ -22,3 +22,6 @@ src-tauri/icons/*.gen.*
 # Logs
 *.log
 npm-debug.log*
+
+# Real statements Asher pulled by hand (personal data, never committed)
+/pdf you can test as staments/

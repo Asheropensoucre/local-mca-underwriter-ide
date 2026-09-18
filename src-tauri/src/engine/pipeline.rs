@@ -224,6 +224,24 @@ impl RawOcr {
             None => false,
         }
     }
+
+    /// The plain text is cached, table or not.
+    fn has_text(&self) -> bool {
+        self.text.as_ref().map(|p| p.exists()).unwrap_or(false)
+    }
+
+    /// The table task would have to run and no engine will: the plain text stands in.
+    fn table_missing_and_cached_only(&self) -> bool {
+        cached_only() && !self.table.as_ref().map(|p| p.exists()).unwrap_or(false)
+    }
+}
+
+/// MCA_OCR_CACHED_ONLY=1: corpus runs on a shared machine serve cached pages only and
+/// never start the engine. A page whose text is cached but whose table pass is not is
+/// read from the text alone: a partial page still beats a garbled court text layer, and
+/// the server worker fills the table in later.
+fn cached_only() -> bool {
+    std::env::var("MCA_OCR_CACHED_ONLY").is_ok()
 }
 
 /// The plain text task is not trusted on its own when rows under a table header lost
@@ -265,7 +283,7 @@ async fn ocr_page(ep: &Endpoint, pdf: &str, page: usize, raw: &RawOcr, progress:
     let text = ocr_cached(ep, &mut uri, pdf, page, &prompt, raw.text.as_ref(), progress, "reading").await?;
     // The text task sometimes returns tables as Markdown; turn those into aligned lines.
     let text = super::ocr_table::expand_markdown_tables(&text);
-    if !needs_table_pass(&text) || prompt != OCR_PROMPT {
+    if !needs_table_pass(&text) || prompt != OCR_PROMPT || raw.table_missing_and_cached_only() {
         return Ok(text);
     }
     let missing = ledger::rows_missing_amounts(&text);
@@ -501,9 +519,12 @@ async fn ocr_into(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdf: &str, page
     let ep = match ep {
         Some(ep) => ep.clone(),
         None => {
-            let cached = |p: &usize| cache.is_some() && RawOcr::for_page(cache.as_ref(), *p).is_complete();
+            let cached = |p: &usize| {
+                let raw = RawOcr::for_page(cache.as_ref(), *p);
+                cache.is_some() && if cached_only() { raw.has_text() } else { raw.is_complete() }
+            };
             if !queue.iter().all(cached) {
-                if std::env::var("MCA_OCR_CACHED_ONLY").is_err() {
+                if !cached_only() {
                     return Err(NEEDS_ENGINE.to_string());
                 }
                 for &p in queue.iter().filter(|p| !cached(p)) {
@@ -609,10 +630,15 @@ pub async fn read_pages(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdfs: &[S
         };
         pages.extend(extracted);
     }
-    let Some(gap) = totals_gap(&pages) else { return Ok(pages) };
-    if gap <= 1.0 {
-        return Ok(pages);
-    }
+    // No printed totals at all is a gap too when the text layer is court OCR so poor that
+    // not even the balances survive ("Eeglnnirq Balance"): every image-backed page is
+    // re-read and adopted as soon as it yields a summary.
+    let gap = match totals_gap(&pages) {
+        Some(g) if g <= 1.0 => return Ok(pages),
+        Some(g) => g,
+        None if has_no_balances(&pages) => f64::INFINITY,
+        None => return Ok(pages),
+    };
     let mut retry = pages.clone();
     let mut queued = 0;
     for (pdf, &offset) in pdfs.iter().zip(&offsets) {
@@ -625,7 +651,7 @@ pub async fn read_pages(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdfs: &[S
         queued += queue.len();
         let _ = app.emit("analysis-progress", json!({
             "type": "page_start", "current_page": offset, "total_pages": total_pages,
-            "message": format!("Totals do not match the statement summary (off by {gap:.2}); re-reading {} scanned page(s) with OCR", queue.len())
+            "message": if gap.is_finite() { format!("Totals do not match the statement summary (off by {gap:.2}); re-reading {} scanned page(s) with OCR", queue.len()) } else { format!("No balances found in the text layer; re-reading {} scanned page(s) with OCR", queue.len()) }
         }));
         ocr_into(app, ep.as_ref(), pdf, slice, &queue, offset, total_pages).await?;
     }
@@ -678,7 +704,7 @@ async fn resume_engine(app: &tauri::AppHandle, reason: &str, total_pages: usize)
     loop {
         let cfg = super::runtime::load_config(app);
         let uw = super::registry::underwriter_model(&cfg.underwriter_model).ok_or("unknown reasoning model")?;
-        let plan = memory::plan(&super::registry::ocr_model(), &uw);
+        let plan = memory::plan(&super::registry::ocr_model(), if super::headless::ledger_only() { None } else { Some(&uw) });
         if plan.fits {
             break;
         }
@@ -699,6 +725,14 @@ async fn resume_engine(app: &tauri::AppHandle, reason: &str, total_pages: usize)
         "message": "Memory is back; restarting the engine and resuming"
     }));
     super::ensure_running(app).await
+}
+
+/// Neither a beginning nor an ending balance was read: no statement prints neither, so
+/// the text layer is unusable.
+fn has_no_balances(pages: &[PageText]) -> bool {
+    let refs: Vec<(usize, &str)> = pages.iter().enumerate().map(|(i, p)| (i + 1, p.text.as_str())).collect();
+    let s = ledger::parse(&refs).summary;
+    s.beginning_balance.is_none() && s.ending_balance.is_none()
 }
 
 /// Sum of |stated - parsed| over the totals the statement prints; None when it prints none.
