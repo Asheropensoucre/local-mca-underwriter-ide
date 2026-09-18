@@ -1106,6 +1106,7 @@ fn assemble_report(ledger: &ledger::Ledger, cls: &Value, pages: &[PageText]) -> 
             "stated_total_debits": s.total_debits, "parsed_total_debits": round2(ledger.parsed_debit_total),
             "beginning_balance": s.beginning_balance, "ending_balance": s.ending_balance,
             "bank": s.bank,
+            "document_kind": s.document_kind,
             "statements": ledger.statements.iter().map(|st| json!({
                 "bank": st.bank, "account_last4": st.account_last4, "period_start": st.period_start, "period_end": st.period_end,
                 "beginning_balance": st.beginning_balance, "ending_balance": st.ending_balance,

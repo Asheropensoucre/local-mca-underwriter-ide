@@ -390,6 +390,8 @@
               <div v-if="parsedData?.verification" class="bg-background border border-border rounded-lg p-4 font-mono text-xs">
                 <h4 class="text-xs font-medium text-gray-500 uppercase mb-2 font-sans">Verification</h4>
                 <div class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-gray-400">
+                  <span v-if="parsedData.verification.document_kind" class="text-gray-600">document</span>
+                  <span v-if="parsedData.verification.document_kind">{{ parsedData.verification.document_kind }}, not a bank statement: the figures below are that document's, not an account's</span>
                   <span v-if="parsedData.verification.bank" class="text-gray-600">bank</span>
                   <span v-if="parsedData.verification.bank">{{ parsedData.verification.bank }}<span v-if="parsedData.verification.statements?.length > 1">, {{ parsedData.verification.statements.length }} statements in the files</span></span>
                   <span class="text-gray-600">credits</span>
