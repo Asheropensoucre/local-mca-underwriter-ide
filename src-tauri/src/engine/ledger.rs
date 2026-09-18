@@ -955,7 +955,7 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         // TD prints "CREDIT FUNDING," over "OVERDRAFT PROTECTION FROM".)
         // ("Images" / "Check Images" heads UMB's check image pages, whose captions repeat
         // the checks; it counts even right after a transaction.)
-        let images_heading = tokens.len() <= 2 && (lower == "images" || lower == "check images" || lower == "deposit images");
+        let images_heading = tokens.len() <= 2 && (lower == "images" || lower == "check images" || lower == "deposit images") || lower.starts_with("image number ");
         if images_heading {
             st.images_page = Some(page);
         }
@@ -1446,7 +1446,7 @@ fn capture_summary(lower: &str, line: &str, s: &mut Summary, page: usize) {
         // KeyBank has no "summary" heading: the categories ("1 Addition +7,170.00",
         // "3 Subtractions -7,065.85", "Net fees and charges -5.00") follow the beginning
         // balance line directly, so that line opens the block.
-        if v.is_some() && lower.trim_start().starts_with("beginning balance") && !s.in_summary_block && s.debit_parts.is_empty() && s.debit_parts_unsigned.is_empty() && s.credit_parts.is_empty() {
+        if v.is_some() && (lower.trim_start().starts_with("beginning balance") || lower.trim_start().starts_with("balance forward")) && !s.in_summary_block && s.debit_parts.is_empty() && s.debit_parts_unsigned.is_empty() && s.credit_parts.is_empty() {
             s.in_summary_block = true;
             s.summary_lines = 0;
         }
@@ -1455,14 +1455,12 @@ fn capture_summary(lower: &str, line: &str, s: &mut Summary, page: usize) {
     // Summary block: debit categories are the negative figures between the "summary"
     // heading and the ending balance.
     if lower.contains("summary") && ntok <= 12 && last_amount(line).is_none() && !lower.contains("fee") {
-        // The first block with two or more categories is the account summary; later
-        // "summary" headings (card summaries, fee summaries) do not replace it.
-        if s.debit_parts.len() < 2 && s.debit_parts_unsigned.len() < 2 && s.credit_parts.len() < 2 {
+        // The first block that captured a category is the account summary; later
+        // "summary" headings (card summaries, fee summaries, a credit union's year-to-date
+        // "Summary" on the last page) do not replace it.
+        if s.debit_parts.is_empty() && s.debit_parts_unsigned.is_empty() && s.credit_parts.is_empty() {
             s.in_summary_block = true;
             s.summary_lines = 0;
-            s.debit_parts.clear();
-            s.debit_parts_unsigned.clear();
-            s.credit_parts.clear();
         }
     } else if s.in_summary_block {
         let toks: Vec<&str> = line.split_whitespace().collect();
@@ -2098,8 +2096,9 @@ fn gap_near(line: &str, at: usize) -> Option<usize> {
 pub fn parse(pages: &[(usize, &str)]) -> Ledger {
     let unique = drop_duplicate_pages(pages);
     let split = split_sub_accounts(&unique);
-    let pages: &[(usize, &str)] = &split.iter().map(|(p, t)| (*p, t.as_str())).collect::<Vec<_>>();
-    let segments = segment_statements(pages);
+    let forced: Vec<bool> = split.iter().map(|(_, _, sub)| *sub).collect();
+    let pages: &[(usize, &str)] = &split.iter().map(|(p, t, _)| (*p, t.as_str())).collect::<Vec<_>>();
+    let segments = segment_statements(pages, &forced);
     if segments.len() <= 1 {
         let mut ledger = parse_one(pages);
         derive(&mut ledger);
@@ -2154,7 +2153,7 @@ fn drop_duplicate_pages<'a>(pages: &[(usize, &'a str)]) -> Vec<(usize, &'a str)>
 /// Credit unions print several sub-accounts on one statement, each under a heading like
 /// "KASASA CASH (0008)" with its own summary and rows. Every sub-account becomes a
 /// virtual page of its own (same page number), so it segments into its own statement.
-fn split_sub_accounts(pages: &[(usize, &str)]) -> Vec<(usize, String)> {
+fn split_sub_accounts(pages: &[(usize, &str)]) -> Vec<(usize, String, bool)> {
     let heading = |l: &str| {
         let t = l.trim();
         let name_ok = t.len() >= 8 && t.ends_with(')') && t.chars().filter(|c| c.is_ascii_alphabetic()).count() >= 4 && !t.chars().any(|c| c.is_ascii_lowercase());
@@ -2165,11 +2164,16 @@ fn split_sub_accounts(pages: &[(usize, &str)]) -> Vec<(usize, String)> {
         let lines: Vec<&str> = text.lines().collect();
         // A heading counts when the summary labels follow within two lines. The page is cut
         // at every heading; the letterhead above the first one stays a chunk of its own.
+        // Another credit union prints the heading over three lines: "(ID" / "KASASA CASH
+        // BACK" / "0008)" with "Balance Forward" below.
+        let split_heading = |i: usize| {
+            lines[i].trim() == "(ID" && lines.get(i + 2).map(|l| { let t = l.trim(); t.len() == 5 && t.ends_with(')') && t[..4].chars().all(|c| c.is_ascii_digit()) }).unwrap_or(false)
+        };
         let starts: Vec<usize> = (0..lines.len())
-            .filter(|&i| heading(lines[i]) && lines[i + 1..(i + 3).min(lines.len())].iter().any(|l| l.to_ascii_lowercase().contains("beginning")))
+            .filter(|&i| heading(lines[i]) && lines[i + 1..(i + 3).min(lines.len())].iter().any(|l| l.to_ascii_lowercase().contains("beginning")) || split_heading(i))
             .collect();
         if starts.is_empty() {
-            out.push((page, text.to_string()));
+            out.push((page, text.to_string(), false));
             continue;
         }
         let mut cuts = vec![0];
@@ -2183,7 +2187,9 @@ fn split_sub_accounts(pages: &[(usize, &str)]) -> Vec<(usize, String)> {
             if head.contains("percentage rate") || head.contains("past due") || head.contains("payment amount") {
                 continue;
             }
-            out.push((page, lines[w[0]..w[1]].join("\n")));
+            // A chunk that begins at a heading is a sub-account of its own (true); the
+            // letterhead chunk before the first heading is not.
+            out.push((page, lines[w[0]..w[1]].join("\n"), starts.contains(&w[0])));
         }
     }
     out
@@ -2231,14 +2237,16 @@ fn parse_one(pages: &[(usize, &str)]) -> Ledger {
 /// new statement, except for the first such page, which starts the first one along with
 /// any cover pages before it. Pages of one statement never repeat its beginning balance
 /// with a different value, so a repeated figure (Webster prints it twice) does not split.
-fn segment_statements<'a>(pages: &[(usize, &'a str)]) -> Vec<Vec<(usize, &'a str)>> {
+/// `forced[i]` marks a page that is a sub-account of its own (see `split_sub_accounts`)
+/// and always starts a new statement.
+fn segment_statements<'a>(pages: &[(usize, &'a str)], forced: &[bool]) -> Vec<Vec<(usize, &'a str)>> {
     let mut segments: Vec<Vec<(usize, &str)>> = Vec::new();
     let mut current: Vec<(usize, &str)> = Vec::new();
     let mut current_beginning: Option<f64> = None;
     let mut current_ending: Option<f64> = None;
     let mut current_account: Option<String> = None;
     let mut current_bank: Option<String> = None;
-    for &(page, text) in pages {
+    for (i, &(page, text)) in pages.iter().enumerate() {
         let mut probe = Ledger::default();
         let mut st = State::default();
         parse_page(&unfold_two_columns(text), page, None, &mut probe, &mut st);
@@ -2269,11 +2277,13 @@ fn segment_statements<'a>(pages: &[(usize, &'a str)]) -> Vec<Vec<(usize, &'a str
         // next statement begins with the same figure: a page that opens with the balance an
         // earlier page closed at is a new statement too.
         let continues = matches!((begins, current_ending), (Some(b), Some(end)) if (b - end).abs() < 0.005) && !current.is_empty();
-        let starts_new = bank_changes || account_changes || continues || match (begins, current_beginning) {
+        let starts_new = forced.get(i).copied().unwrap_or(false) || bank_changes || account_changes || continues || match (begins, current_beginning) {
             (Some(b), Some(cur)) if (b - cur).abs() >= 0.005 => true,
             _ => false,
         };
-        if starts_new && !current.is_empty() {
+        // (A current segment that has neither balance yet is a letterhead or cover page;
+        // it joins the statement that starts here instead of standing alone.)
+        if starts_new && !current.is_empty() && (current_beginning.is_some() || current_ending.is_some()) {
             segments.push(std::mem::take(&mut current));
             current_beginning = None;
             current_ending = None;
@@ -3548,6 +3558,17 @@ Nov 10 136,758.04 Nov 24 147,043.45 Nov 26 146,849.66
         assert!((s.total_debits.unwrap() - 3210.45).abs() < 0.005, "{:?}", s);
         assert!((l.parsed_credit_total - 2850.0).abs() < 0.005, "{:?}", l.transactions);
         assert!((l.parsed_debit_total - 3210.45).abs() < 0.005, "{:?}", l.transactions);
+    }
+
+    #[test]
+    fn credit_union_three_line_headings_balance_forward_summaries_and_a_year_to_date_summary_page() {
+        let p1 = "                                    (ID\n   PRIMARY SHARE\n                                    0000)\n\n     Balance Forward                                                     $0.00\n         + 1       Deposit                                              $10.00\n     Ending Balance                                                     $10.00\n    Transaction Detail\n     Date          Description                          Withdrawals             Deposits            Balance\n                   Balance Forward                                                                    $0.00\n     09/06         Deposit Kiosk Transfer                                          $10.00             $10.00\n                   From CTCHGC LLC XXXXXXXXXX Share 0008\n                   Ending Balance                                                                    $10.00\n\n                                    (ID\n   KASASA CASH BACK\n                                    0008)\n\n     Balance Forward                                                     $0.00\n        - 2      Withdrawals                                         $1,065.00\n        + 2      Deposits                                            $1,725.00\n     Ending Balance                                                    $660.00\n    Transaction Detail\n     Date          Description                          Withdrawals             Deposits            Balance\n                   Balance Forward                                                                    $0.00\n     09/06         Deposit Kiosk Transfer                                          $25.00             $25.00\n     09/10         Deposit Kiosk Transfer                                       $1,700.00          $1,725.00\n     09/10         Withdrawal Kiosk Transfer                    -$25.00                            $1,700.00\n     09/11         Withdrawal Kiosk Transfer                 -$1,040.00                               $660.00\n";
+        let p2 = "                   Ending Balance                                                                   $660.00\n   Summary\n   Year to Date Totals\n       Dividends Paid YTD                              $0.00\n       PRIMARY SHARE                                  $10.00\n       KASASA CASH BACK                              $660.00\n";
+        let l = parse(&[(1, p1), (2, p2)]);
+        assert_eq!(l.statements.len(), 2, "{:?}", l.statements);
+        let k = &l.statements[1];
+        assert_eq!((k.beginning_balance, k.ending_balance, k.total_credits, k.total_debits), (Some(0.0), Some(660.0), Some(1725.0), Some(1065.0)), "{:?}", k);
+        assert_eq!((k.parsed_credits, k.parsed_debits), (Some(1725.0), Some(1065.0)));
     }
 
     #[test]
