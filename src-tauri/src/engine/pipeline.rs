@@ -640,26 +640,41 @@ pub async fn read_pages(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdfs: &[S
         return Ok(pages);
     }
     dump_pages(&retry, "-retry");
-    match totals_gap(&retry) {
-        Some(g2) if g2 < gap => {
-            println!("[Engine] OCR re-read improved the totals gap from {gap:.2} to {g2:.2}; using OCR text");
-            // The OCR model reads the transaction body and may skip the letterhead; the
-            // bank's name from the text layer is kept as a line of its own.
-            let texts = |ps: &[PageText]| ps.iter().map(|p| p.text.clone()).collect::<Vec<_>>();
-            let (ocr_texts, layer_texts) = (texts(&retry), texts(&pages));
-            let named = |ts: &[String]| ledger::detect_bank(&ts.iter().map(String::as_str).collect::<Vec<_>>());
-            if named(&ocr_texts).is_none() {
-                if let (Some(bank), Some(first)) = (named(&layer_texts), retry.first_mut()) {
-                    first.text = format!("{bank}\n{}", first.text);
-                }
-            }
-            Ok(retry)
+    // Page by page: an OCR page is kept only when it brings the totals closer. The text
+    // task can lose credit rows on one page while fixing the debit rows of another, so
+    // the two readings are mixed, never swapped wholesale.
+    let mut best = pages.clone();
+    let mut best_gap = gap;
+    for i in 0..retry.len() {
+        if retry[i].method != "ocr" || pages[i].method == "ocr" {
+            continue;
         }
-        _ => {
-            println!("[Engine] OCR re-read did not improve the totals gap ({gap:.2}); keeping the text layer");
-            Ok(pages)
+        let mut candidate = best.clone();
+        candidate[i] = retry[i].clone();
+        if let Some(g) = totals_gap(&candidate) {
+            if g < best_gap {
+                best = candidate;
+                best_gap = g;
+            }
         }
     }
+    let adopted = best.iter().zip(&pages).filter(|(b, p)| b.method != p.method).count();
+    if adopted == 0 {
+        println!("[Engine] OCR re-read did not improve the totals gap ({gap:.2}); keeping the text layer");
+        return Ok(pages);
+    }
+    println!("[Engine] OCR re-read improved the totals gap from {gap:.2} to {best_gap:.2} using {adopted} OCR page(s)");
+    // The OCR model reads the transaction body and may skip the letterhead; the bank's
+    // name from the text layer is kept as a line of its own.
+    let texts = |ps: &[PageText]| ps.iter().map(|p| p.text.clone()).collect::<Vec<_>>();
+    let (ocr_texts, layer_texts) = (texts(&best), texts(&pages));
+    let named = |ts: &[String]| ledger::detect_bank(&ts.iter().map(String::as_str).collect::<Vec<_>>());
+    if named(&ocr_texts).is_none() {
+        if let (Some(bank), Some(first)) = (named(&layer_texts), best.first_mut()) {
+            first.text = format!("{bank}\n{}", first.text);
+        }
+    }
+    Ok(best)
 }
 
 /// After a watchdog stop: wait (up to five minutes) until the engine's plan fits in free
