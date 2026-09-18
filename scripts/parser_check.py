@@ -64,6 +64,7 @@ def main():
     if os.path.exists(exclude_file):
         excluded = {l.split()[0] for l in open(exclude_file) if l.strip() and not l.startswith("#")}
     rows = []  # dicts: name, bank, status, stated/parsed totals, lines, scan pages
+    not_statements = []  # (name, kind) the parser itself recognized as not a bank statement
     for name in sorted(os.listdir(folder)):
         if not name.lower().endswith(".pdf") or name in excluded:
             continue
@@ -75,6 +76,9 @@ def main():
             continue
         if not d or len(d["transactions"]) < 4 and d["summary"].get("total_credits") is None and d["summary"].get("total_debits") is None:
             continue  # a page or two of wire confirmations, not a statement (or fully scanned)
+        if d["summary"].get("document_kind"):
+            not_statements.append((name, d["summary"]["document_kind"]))
+            continue  # the parser recognized a bookkeeping export, not a bank statement
         s, p = d["summary"], d["parsed"]
         scans = d.get("pages", {}).get("scan", 0)
         stated_c, stated_d = s.get("total_credits"), s.get("total_debits")
@@ -135,6 +139,8 @@ def main():
     errors = [r for r in rows if r["status"] == "error"]
     lend = [r for r in rows if r.get("lenders")]
     print(f"passed {len(passed)}, failed {len(failed)}, no summary found {len(no_summary)}, errors {len(errors)}; with lender activity {len(lend)}")
+    if not_statements:
+        print(f"recognized as not bank statements and skipped: {len(not_statements)} ({', '.join(sorted(set(k for _, k in not_statements)))})")
     if lend and verbose:
         print("\nLENDER ACTIVITY:")
         for r in lend:

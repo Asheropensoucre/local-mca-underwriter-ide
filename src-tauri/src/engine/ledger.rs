@@ -51,6 +51,10 @@ pub struct Summary {
     pub account_last4: Option<String>,
     /// Bank named on the statement, from a fixed keyword list (see `detect_bank`).
     pub bank: Option<String>,
+    /// Set when the document is not a bank statement but parses like one: a bookkeeping
+    /// "reconciliation report" (QuickBooks) lists cleared checks and deposits under the
+    /// bank's name. The report must say so instead of scoring it.
+    pub document_kind: Option<String>,
     /// Banks that split debits into "Checks" and "Other withdrawals" (Truist) print two
     /// figures; this holds the checks part until both are known.
     #[serde(skip)]
@@ -2144,6 +2148,22 @@ fn gap_near(line: &str, at: usize) -> Option<usize> {
 /// that bundles several statements (months, or accounts) is split where a new statement
 /// starts and each part is parsed on its own; the parts are then combined.
 pub fn parse(pages: &[(usize, &str)]) -> Ledger {
+    let mut ledger = parse_statements(pages);
+    ledger.summary.document_kind = document_kind(pages);
+    ledger
+}
+
+/// "RECONCILIATION REPORT" with "Reconciled on" on the first pages is a bookkeeping
+/// export, not a bank statement.
+fn document_kind(pages: &[(usize, &str)]) -> Option<String> {
+    let head: String = pages.iter().take(2).map(|(_, t)| t.to_ascii_lowercase()).collect::<Vec<_>>().join("\n");
+    if head.contains("reconciliation report") && (head.contains("reconciled on") || head.contains("cleared transactions")) {
+        return Some("reconciliation report".into());
+    }
+    None
+}
+
+fn parse_statements(pages: &[(usize, &str)]) -> Ledger {
     let unique = drop_duplicate_pages(pages);
     let split = split_sub_accounts(&unique);
     let forced: Vec<bool> = split.iter().map(|(_, _, sub)| *sub).collect();
@@ -2377,6 +2397,7 @@ fn combine_summaries(parts: &[Summary]) -> Summary {
         period_end: parts.iter().rev().find_map(|p| p.period_end.clone()),
         account_last4: parts.iter().find_map(|p| p.account_last4.clone()),
         bank: None,
+        document_kind: None,
         checks_total: None,
         fees_total: None,
         debits_key: "",
