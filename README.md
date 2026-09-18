@@ -58,7 +58,7 @@ On laptops the GPU has no memory of its own; models and caches come out of syste
 
 ## Statement layouts the parser understands
 
-Every statement is checked against itself: the parser sums the transaction lines and compares them with the totals the bank printed. The verification block in the report shows both numbers, so a layout the parser does not fully understand is visible, never silent. Layouts verified to the cent so far (`scripts/parser_check.py` over public court-filing exhibits and the test statements):
+Every statement is checked against itself: the parser sums the transaction lines and compares them with the totals the bank printed. The verification block in the report shows both numbers, so a layout the parser does not fully understand is visible, never silent. Layouts verified to the cent so far (`scripts/parser_check.py` over public court-filing exhibits and the test statements; 133 statements to the cent as of September 18, 2026):
 
 | Bank | Layout features |
 |---|---|
