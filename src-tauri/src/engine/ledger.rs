@@ -732,6 +732,11 @@ struct State {
     dashed_dates: bool,
     /// Page headed "Images": check and deposit pictures with captions, nothing to parse.
     images_page: Option<usize>,
+    /// The table header put the amount before the description ("Effective date  Posted
+    /// date  Amount  Transaction detail", Wells; "Date  Amount  Description", Citizens):
+    /// on a flat line the first amount after the date is the transaction's, whatever
+    /// dollar figures the description quotes ("NSF Return Item Fee ... $23,530.00").
+    amount_first: bool,
     /// Decided-by-word row counts on the current page under an inherited section.
     words_page: Option<usize>,
     words_credit: usize,
@@ -992,6 +997,12 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         capture_summary(&lower, trimmed, &mut ledger.summary, page);
 
         let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+        // A table header names the column order (see `State::amount_first`).
+        if !tokens.iter().any(|t| is_amount_token(t)) && tokens.len() <= 10 && lower.contains("date") && lower.contains("amount") && (lower.contains("description") || lower.contains("detail")) {
+            let a = lower.find("amount").unwrap_or(usize::MAX);
+            let d = lower.find("description").or_else(|| lower.find("detail")).unwrap_or(usize::MAX);
+            st.amount_first = a < d;
+        }
         // "COMMERCIAL INTEREST CHECKING (continued)" at the top of a page confirms the
         // section carried over from the page before: its rows follow it as if the header
         // were printed here (see `row_kind`).
@@ -1258,8 +1269,11 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         let amt_idx: Vec<usize> = tokens.iter().enumerate().filter(|(_, t)| is_amount_token(t)).map(|(i, _)| i).collect();
         // Between each date and its amount there is at most a check number and a gap marker;
         // prose there ("Fee period 11/01 - 11/30 ... $5.00") means this is not a check table.
-        let check_table_shape = date_idx.iter().zip(&amt_idx).all(|(d, a)| d < a && a - d <= 3);
-        if date_idx.len() >= 2 && date_idx.len() == amt_idx.len() && check_table_shape {
+        // Prose between the pairs ("NSF Return Item Fee for a Transaction Received on 12/29
+        // $23,530.00") means one row quoting another transaction, not a check table.
+        let check_table_shape = date_idx.iter().zip(&amt_idx).all(|(d, a)| d < a && a - d <= 3)
+            && date_idx.windows(2).zip(&amt_idx).all(|(w, a)| w[1] <= a + 3);
+        if date_idx.len() >= 2 && date_idx.len() == amt_idx.len() && check_table_shape && !st.amount_first {
             let mut prev_end = 0usize;
             let mut seen_on_line: Vec<(String, f64)> = Vec::new();
             for (&d, &a) in date_idx.iter().zip(&amt_idx) {
@@ -1376,7 +1390,7 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
                 }
             }
         }
-        if starts_with_date && !ends_with_amount && tokens.len() >= 3 && amount_positions.len() == 1 && !summary_row {
+        if starts_with_date && !ends_with_amount && tokens.len() >= 3 && (amount_positions.len() == 1 || st.amount_first && amount_positions.first() == Some(&1)) && !summary_row {
             let a = amount_positions[0];
             let rest: Vec<&str> = tokens[1..].iter().enumerate().filter(|(i, t)| *i + 1 != a && !(t.len() >= 9 && t.chars().all(|c| c.is_ascii_digit()))).map(|(_, t)| *t).collect();
             let desc = if rest.len() == 1 && rest[0].len() <= 7 && rest[0].chars().all(|c| c.is_ascii_digit()) { format!("Check {}", rest[0]) } else { rest.join(" ") };
@@ -1387,13 +1401,17 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
             continue;
         }
         if starts_with_date && ends_with_amount && tokens.len() >= 2 {
-            let amount = parse_amount(tokens[tokens.len() - 1]).unwrap_or(0.0).abs();
+            // Amount-first tables ("12/30 35.00 NSF Return Item Fee for a Transaction Received
+            // on 12/29 $23,530.00"): the amount is the one right after the date and the
+            // trailing figure belongs to the description.
+            let amount_first_row = st.amount_first && tokens.len() >= 4 && is_amount_token(tokens[1]) && !is_amount_token(tokens[2]);
+            let amount = parse_amount(if amount_first_row { tokens[1] } else { tokens[tokens.len() - 1] }).unwrap_or(0.0).abs();
             // Statement summary rows also start with a date ("11/01/2025 Beginning Balance"); skip them.
             if summary_row {
                 last_txn = None;
                 continue;
             }
-            let desc: String = tokens[1..tokens.len() - 1].join(" ");
+            let desc: String = if amount_first_row { tokens[2..].join(" ") } else { tokens[1..tokens.len() - 1].join(" ") };
             // "03/14 1008 212.26": a single check-table pair is a paid check.
             let bare_check = tokens.len() == 3 && !check_no(tokens[1]).is_empty() && check_no(tokens[1]).len() <= 7 && check_no(tokens[1]).chars().all(|c| c.is_ascii_digit());
             // A leading '+' on the amount is a credit whatever the section. KeyBank prints a
@@ -2034,8 +2052,12 @@ pub fn unfold_two_columns(text: &str) -> String {
         // A header naming date/amount/description twice or more. Each further column
         // starts at the next occurrence of whichever word repeats ("Description  Date
         // Amount  Description"; First State prints "Date Type Amount" three times).
-        let repeated = ["date", "description", "amount"].into_iter().find(|w| lower.matches(w).count() >= 2);
-        let is_header = toks.len() <= 12 && !toks.iter().any(|t| is_amount_token(t)) && repeated.is_some() && lower.contains("date") && (lower.contains("amount") || lower.contains("serial")) && !lower.contains("balance");
+        // Two of the column words must repeat: "Effective date  Posted date  Amount
+        // Transaction detail" repeats "date" alone and is one wide table.
+        // "date" alone repeating is not enough (two date columns); another repeated word is.
+        let repeated: Vec<&str> = ["date", "description", "amount", "check", "serial"].into_iter().filter(|w| lower.matches(w).count() >= 2).collect();
+        let column_groups = repeated.len() >= 2 || repeated.len() == 1 && repeated[0] != "date";
+        let is_header = toks.len() <= 12 && !toks.iter().any(|t| is_amount_token(t)) && column_groups && lower.contains("date") && (lower.contains("amount") || lower.contains("serial")) && !lower.contains("balance");
         if is_header {
             flush(&mut out, &mut cols);
             // The further columns start at the second, third, ... "Date"; when only one
@@ -2401,6 +2423,21 @@ fn parse_one(pages: &[(usize, &str)]) -> Ledger {
     for (page, text) in pages {
         let unfolded = unfold_two_columns(text);
         parse_page(&unfolded, *page, year, &mut ledger, &mut st);
+        // A page that printed no section header of its own (a continuation the OCR
+        // stripped) has one kind of row; a word-decided straggler against a page of ten or
+        // more rows of the other kind ("Barclaycard US Creditcard" under withdrawals,
+        // "Deposited Item Retn Unpaid") follows the page.
+        if st.section.is_some() && st.section_page != Some(*page) {
+            let rows: Vec<usize> = ledger.transactions.iter().enumerate().filter(|(_, t)| t.page == *page).map(|(i, _)| i).collect();
+            let credits = rows.iter().filter(|&&i| ledger.transactions[i].kind == Kind::Credit).count();
+            let debits = rows.len() - credits;
+            let (minority, majority) = if credits < debits { (credits, Kind::Debit) } else { (debits, Kind::Credit) };
+            if rows.len() >= 10 && minority >= 1 && minority * 10 <= rows.len() {
+                for &i in &rows {
+                    ledger.transactions[i].kind = majority;
+                }
+            }
+        }
     }
     // Two or more debit categories in the summary block add up to the debit total; a single
     // signed one ("Checks Paid 2,675.62-", U.S. Bank) is the total when nothing else names it.
@@ -3783,6 +3820,17 @@ Nov 10 136,758.04 Nov 24 147,043.45 Nov 26 146,849.66
         let rows: Vec<(Kind, f64)> = l.transactions.iter().map(|t| (t.kind, t.amount)).collect();
         assert_eq!(rows, vec![(Kind::Debit, 1328.62), (Kind::Credit, 529.77), (Kind::Credit, 26762.14)], "{:?}", l.transactions);
         assert_eq!(l.daily_balances.len(), 3, "{:?}", l.daily_balances);
+    }
+
+    #[test]
+    fn amount_first_tables_keep_the_amount_after_the_date_when_the_description_quotes_another() {
+        // Wells OCR page: "Effective date  Posted date  Amount  Transaction detail"; NSF fee
+        // rows quote the returned item's amount and date inside the description.
+        let text = "Electronic debits/bank debits (continued)\n\nEffective date Posted date Amount Transaction detail\n12/30 35.00 NSF Return Item Fee for a Transaction Received on 12/29 $23,530.00 Check # 41064\n12/31 35.00 NSF Return Item Fee for a Transaction Received on 12/30 $4,199.00 Yes Capital Grp Mag Auto I 211230\n12/31 2,138.47 Business to Business ACH Debit - Wynwood Capital Direct Pay 122921 21122916\n";
+        let l = parse(&[(1, text)]);
+        let rows: Vec<(String, Kind, f64)> = l.transactions.iter().map(|t| (t.date.clone(), t.kind, t.amount)).collect();
+        assert_eq!(rows, vec![("12/30".into(), Kind::Debit, 35.0), ("12/31".into(), Kind::Debit, 35.0), ("12/31".into(), Kind::Debit, 2138.47)], "{:?}", l.transactions);
+        assert!(l.transactions[1].description.contains("Yes Capital"));
     }
 
     #[test]
