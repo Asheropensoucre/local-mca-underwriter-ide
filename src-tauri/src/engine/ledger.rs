@@ -313,11 +313,15 @@ fn drop_second_date(line: &str) -> String {
 /// short token in front of the date ("0   Mar 20 DEPOSIT ... 2,100.00", "c':,  Mar 25 ...").
 /// A token of up to four characters that is not a check number (three or more digits)
 /// right before a date is blanked, width kept.
-fn strip_margin_junk(line: &str) -> String {
+/// Under a deposits section a check number cannot start a row, so there a longer digit
+/// run before the date ("100000    07/05    5.72", a mailing code) is junk as well.
+fn strip_margin_junk(line: &str, credit_section: bool) -> String {
     let mut it = line.split_whitespace();
     let (Some(first), Some(second), Some(_)) = (it.next(), it.next(), it.next()) else { return line.to_string() };
     let all_digits = first.chars().all(|c| c.is_ascii_digit());
-    let junk = first.len() <= 4 && (!all_digits || first.len() <= 2) && parse_date_token(first).is_none() && parse_date_token(second).is_some() && !is_amount_token(first);
+    let short_junk = first.len() <= 4 && (!all_digits || first.len() <= 2);
+    let code_in_credits = credit_section && all_digits && first.len() >= 5;
+    let junk = (short_junk || code_in_credits) && parse_date_token(first).is_none() && parse_date_token(second).is_some() && !is_amount_token(first);
     if !junk {
         return line.to_string();
     }
@@ -667,6 +671,15 @@ impl Columns {
         has_date && self.count() >= 2 && (self.credit.is_some() || self.debit.is_some())
     }
 
+    /// An amount that ends well left of the first amount column is part of the description
+    /// ("Overdraft Fee for a Transaction Posted on 09/16 $100.00      35.00": the fee is 35.00).
+    fn before_columns(&self, end: usize) -> bool {
+        match [self.credit, self.debit].into_iter().flatten().min() {
+            Some(first) => end + 4 < first,
+            None => false,
+        }
+    }
+
     /// Kind of an amount printed ending at character `end`, by nearest column label.
     fn kind_at(&self, end: usize) -> Option<Kind> {
         let dist = |c: Option<usize>| c.map(|x| (x as i64 - end as i64).abs()).unwrap_or(i64::MAX);
@@ -883,7 +896,7 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         let raw = raw.replace('_', " ").replace(['\u{2013}', '\u{2014}', '\u{2212}'], "-").replace('|', " ");
         let raw = drop_footnote_marks(&raw);
         // Month names first, so a bullet "- Oct 02: ..." reads as "- 10/02: ..." for unbullet.
-        let normalized = drop_second_date(&strip_margin_junk(&join_split_amounts(&unbullet(&normalize_month_dates(&raw)))));
+        let normalized = drop_second_date(&strip_margin_junk(&join_split_amounts(&unbullet(&normalize_month_dates(&raw))), st.section == Some(Kind::Credit)));
         // KeyBank writes "6-3" once its dashed dates are established ("Beginning balance
         // 5-31-24", "6-10"): a one-digit-by-one-digit dash at the start of a line is a date
         // then, never a range. Padded to "06-03" so the token rules apply.
@@ -1123,7 +1136,7 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
                 let mut txn: Option<(f64, Kind, bool, usize)> = None; // amount, kind, strong, desc end
                 let mut running: Option<f64> = None;
                 if aligned {
-                    for (end, tok) in &spans {
+                    for (end, tok) in spans.iter().filter(|(end, _)| !c.before_columns(*end)) {
                         match c.kind_at(*end) {
                             None => running = parse_amount(tok),
                             Some(k) => {
@@ -1504,12 +1517,16 @@ fn capture_summary(lower: &str, line: &str, s: &mut Summary, page: usize) {
             let label: String = toks[..a].join(" ").to_ascii_lowercase();
             // PNC prints credit and debit categories side by side ("ACH Credits 92
             // 3,199,536.68   ACH Debits 135 3,412,040.00"): such lines are not categories.
-            let credit_word = |t: &str| t.contains("deposit") || t.contains("credit") || t.contains("addition");
+            let credit_word = |t: &str| t.contains("deposit") || t.contains("credit") || has_phrase(t, "addition") || has_phrase(t, "additions");
             // ("Commercial Checking 7558 26,937.82" in a consolidated summary is an account
             // line, not a checks category.)
             let debit_word = |t: &str| t.replace("checking", "").contains("check") || t.contains("payment") || t.contains("withdrawal") || t.contains("debit") || t.contains("charge") || t.contains("fee") || t.contains("card activity") || t.contains("subtraction");
             let two_columns = credit_word(&lower) && debit_word(&lower);
-            if a >= 1 && a <= 8 && !two_columns && !label.contains("balance") && !label.contains("interest") && !label.contains("days") {
+            // Wells' "Summary of accounts" lists each account with its number and ending
+            // balance ("Additional Navigate Business Checking  8  2393749219  15,130.18",
+            // "Total deposit accounts $21,023.08"): account lines, not categories.
+            let account_line = toks.iter().any(|t| t.len() >= 8 && t.chars().all(|c| c.is_ascii_digit())) || label.contains("account");
+            if a >= 1 && a <= 8 && !two_columns && !account_line && !label.contains("balance") && !label.contains("interest") && !label.contains("days") {
                 let v = parse_amount(last).map(f64::abs);
                 if last.starts_with('-') || last.starts_with("-$") || last.ends_with('-') || prev_minus {
                     // Chase: signed categories ("- 483,000.00"); U.S. Bank: trailing "962.49-".
