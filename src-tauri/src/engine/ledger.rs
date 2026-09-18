@@ -203,7 +203,9 @@ fn join_split_amounts(line: &str) -> String {
         // "3,051 .38": the space before the decimal point.
         let before_point = b[i - 1].is_ascii_digit() && b.get(i + 1) == Some(&b'.') && digit(i + 2) && digit(i + 3) && !digit(i + 4);
         let group = b[i - 1].is_ascii_digit() && matches!(b.get(i + 1), Some(b',') | Some(b'/')) && digit(i + 2);
-        decimal || before_point || group
+        // "1, 000.00": the space after the thousands comma, three digits following.
+        let after_comma = i >= 2 && b[i - 1] == b',' && b[i - 2].is_ascii_digit() && digit(i + 1) && digit(i + 2) && digit(i + 3) && !digit(i + 4);
+        decimal || before_point || group || after_comma
     };
     let mut out = String::with_capacity(line.len());
     let mut owed = 0; // spaces removed from inside a number, re-added after it (keeps the width)
@@ -301,6 +303,39 @@ fn drop_second_date(line: &str) -> String {
     let start = line.find(first).unwrap() + first.len();
     let at = start + line[start..].find(second).unwrap();
     format!("{}{}{}", &line[..at], " ".repeat(second.len()), &line[at + second.len()..])
+}
+
+/// Court scans carry stray marks down the left margin that the text layer turns into a
+/// short token in front of the date ("0   Mar 20 DEPOSIT ... 2,100.00", "c':,  Mar 25 ...").
+/// A token of up to four characters that is not a check number (three or more digits)
+/// right before a date is blanked, width kept.
+fn strip_margin_junk(line: &str) -> String {
+    let mut it = line.split_whitespace();
+    let (Some(first), Some(second), Some(_)) = (it.next(), it.next(), it.next()) else { return line.to_string() };
+    let all_digits = first.chars().all(|c| c.is_ascii_digit());
+    let junk = first.len() <= 4 && (!all_digits || first.len() <= 2) && parse_date_token(first).is_none() && parse_date_token(second).is_some() && !is_amount_token(first);
+    if !junk {
+        return line.to_string();
+    }
+    let at = line.find(first).unwrap();
+    format!("{}{}{}", &line[..at], " ".repeat(first.len()), &line[at + first.len()..])
+}
+
+/// "6-3 ..." at the start of a line becomes "06-03 ...", same width kept by eating spaces.
+fn pad_short_dashed_date(line: &str) -> String {
+    let indent = line.len() - line.trim_start().len();
+    let rest = &line[indent..];
+    let Some(tok) = rest.split_whitespace().next() else { return line.to_string() };
+    let Some((m, d)) = tok.split_once('-') else { return line.to_string() };
+    let short = |p: &str| !p.is_empty() && p.len() <= 2 && p.chars().all(|c| c.is_ascii_digit());
+    if !(short(m) && short(d) && (m.len() == 1 || d.len() == 1)) || rest.len() == tok.len() {
+        return line.to_string();
+    }
+    let padded = format!("{:0>2}-{:0>2}", m, d);
+    let after = &rest[tok.len()..];
+    let extra = padded.len() - tok.len();
+    let trimmed_after = after.strip_prefix(&" ".repeat(extra)).unwrap_or(after);
+    format!("{}{}{}", &line[..indent], padded, trimmed_after)
 }
 
 /// A summary label that some banks print as a dated row of the activity table.
@@ -454,7 +489,8 @@ pub fn parse_date_token(tok: &str) -> Option<(u32, u32, Option<i32>)> {
     // needs a two-digit month or day (never "1-2") so ranges and phone numbers stay out.
     let dashed = tok.split('-').collect::<Vec<_>>();
     let short = |p: &str| !p.is_empty() && p.len() <= 2 && p.chars().all(|c| c.is_ascii_digit());
-    let dashed_date = (2..=3).contains(&dashed.len()) && short(dashed[0]) && short(dashed[1]) && (dashed[0].len() == 2 || dashed[1].len() == 2);
+    // ("8-8-24" with a year is a date too; the year is checked below.)
+    let dashed_date = (2..=3).contains(&dashed.len()) && short(dashed[0]) && short(dashed[1]) && (dashed[0].len() == 2 || dashed[1].len() == 2 || dashed.len() == 3);
     let parts: Vec<&str> = if dashed_date { dashed } else { tok.split('/').collect() };
     if parts.len() < 2 || parts.len() > 3 {
         return None;
@@ -646,6 +682,10 @@ struct State {
     /// Page the section header was read on. On later pages the section is inherited and
     /// a row's own words outrank it (see `row_kind`).
     section_page: Option<usize>,
+    /// A dashed date ("5-31-24", "6-10") was read: short "6-3" dates are dates too.
+    dashed_dates: bool,
+    /// Page headed "Images": check and deposit pictures with captions, nothing to parse.
+    images_page: Option<usize>,
     /// Decided-by-word row counts on the current page under an inherited section.
     words_page: Option<usize>,
     words_credit: usize,
@@ -839,7 +879,11 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         let raw = raw.replace('_', " ").replace(['\u{2013}', '\u{2014}', '\u{2212}'], "-").replace('|', " ");
         let raw = drop_footnote_marks(&raw);
         // Month names first, so a bullet "- Oct 02: ..." reads as "- 10/02: ..." for unbullet.
-        let normalized = drop_second_date(&join_split_amounts(&unbullet(&normalize_month_dates(&raw))));
+        let normalized = drop_second_date(&strip_margin_junk(&join_split_amounts(&unbullet(&normalize_month_dates(&raw)))));
+        // KeyBank writes "6-3" once its dashed dates are established ("Beginning balance
+        // 5-31-24", "6-10"): a one-digit-by-one-digit dash at the start of a line is a date
+        // then, never a range. Padded to "06-03" so the token rules apply.
+        let normalized = if st.dashed_dates { pad_short_dashed_date(&normalized) } else { normalized };
         let stripped = strip_margin_barcode(normalized.trim_end());
         let line: &str = stripped.trim_end();
         let trimmed = line.trim();
@@ -847,6 +891,9 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
             continue;
         }
         let lower = trimmed.to_ascii_lowercase();
+        if !st.dashed_dates && trimmed.split_whitespace().any(|t| t.contains('-') && t.len() >= 5 && parse_date_token(t).is_some()) {
+            st.dashed_dates = true;
+        }
 
         // A lone "Beginning Balance" label only takes a line that is nothing but the
         // amount; anything else is parsed as usual.
@@ -906,10 +953,21 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         }
         // (Right after a transaction the same words are a description continuation:
         // TD prints "CREDIT FUNDING," over "OVERDRAFT PROTECTION FROM".)
-        if tokens.len() <= 6 && last_txn.is_none() && INFORMATIONAL_HEADERS.iter().any(|h| lower.starts_with(h)) {
+        // ("Images" / "Check Images" heads UMB's check image pages, whose captions repeat
+        // the checks; it counts even right after a transaction.)
+        let images_heading = tokens.len() <= 2 && (lower == "images" || lower == "check images" || lower == "deposit images");
+        if images_heading {
+            st.images_page = Some(page);
+        }
+        if images_heading || tokens.len() <= 6 && last_txn.is_none() && INFORMATIONAL_HEADERS.iter().any(|h| lower.starts_with(h)) {
             st.informational = true;
             columns = None;
             last_txn = None;
+            continue;
+        }
+        // The rest of an image page is captions and stamp text ("CHECKING DEPOSIT" on the
+        // image itself would otherwise open a deposits section).
+        if st.images_page == Some(page) {
             continue;
         }
         // Daily balance tables: a "Daily Balance" heading, or a header repeating "Date ...
@@ -970,7 +1028,7 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         }
         // Long check-table titles ("Summary of checks written (checks listed are also
         // displayed in the preceding Transaction history)") start a new listing too.
-        if !has_amount && lower.contains("check") && (lower.starts_with("checks paid") || (lower.contains("summary of") || lower.contains("checks paid") || lower.contains("checks cleared") || lower.contains("checks written")) && tokens.len() <= 16) {
+        if !has_amount && lower.contains("check") && (lower.starts_with("checks paid") || (lower.contains("summary of") || lower.contains("checks paid") || lower.contains("checks cleared") || lower.contains("checks written") || lower.contains("checks posted")) && tokens.len() <= 16) {
             st.enter_table(trimmed);
             st.section = Some(Kind::Debit);
             st.section_page = Some(page);
@@ -1171,6 +1229,11 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         let mut no_star: Vec<&str> = tokens.iter().copied().filter(|t| *t != "*").collect();
         if no_star.len() >= 4 && no_star[2].len() >= 9 && no_star[2].chars().all(|c| c.is_ascii_digit()) && is_amount_token(no_star[3]) && !check_no(no_star[0]).is_empty() && check_no(no_star[0]).chars().all(|c| c.is_ascii_digit()) && parse_date_token(no_star[1]).is_some() {
             no_star = vec![no_star[0], no_star[1], no_star[3]];
+        }
+        // UMB: "129  Mar 04  1,500.00  00081094018", the reference after the amount (one
+        // or two digit groups); a further amount would make it a two-column line, left alone.
+        if no_star.len() >= 4 && no_star.len() <= 5 && is_amount_token(no_star[2]) && no_star[3..].iter().all(|t| t.chars().all(|c| c.is_ascii_digit())) && no_star[3..].iter().map(|t| t.len()).sum::<usize>() >= 9 && !check_no(no_star[0]).is_empty() && check_no(no_star[0]).chars().all(|c| c.is_ascii_digit()) && parse_date_token(no_star[1]).is_some() {
+            no_star = vec![no_star[0], no_star[1], no_star[2]];
         }
         if no_star.len() == 3 && !check_no(no_star[0]).is_empty() && check_no(no_star[0]).chars().all(|c| c.is_ascii_digit()) && parse_date_token(no_star[1]).is_some() && is_amount_token(no_star[2]) {
             let id = ledger.transactions.len();
@@ -1837,6 +1900,7 @@ pub fn unfold_two_columns(text: &str) -> String {
     // Header starts with "Date": every column begins with a date token, which is a
     // safer cut than the whitespace gap when the columns nearly touch.
     let mut date_first = false;
+    let mut check_first = false;
     let flush = |out: &mut String, cols: &mut Vec<Vec<String>>| {
         for l in cols.iter_mut().flat_map(|c| c.drain(..)) {
             out.push_str(&l);
@@ -1856,8 +1920,15 @@ pub fn unfold_two_columns(text: &str) -> String {
             // The further columns start at the second, third, ... "Date"; when only one
             // "Date" is printed (left header partly missing) it is that one, as long as a
             // label precedes it.
+            // Each column group starts with the header's first word when that word repeats
+            // ("Check  Date  Amount  Check  Date  Amount": the groups start at "Check", the
+            // data at the check number); otherwise at the repeated "Date".
+            let first_word = toks[0].to_ascii_lowercase();
+            let firsts: Vec<usize> = lower.match_indices(first_word.as_str()).map(|(p, _)| p).collect();
             let dates: Vec<usize> = lower.match_indices("date").map(|(p, _)| p).collect();
-            splits = if dates.len() >= 2 {
+            splits = if first_word != "date" && firsts.len() >= 2 && firsts.len() == dates.len() {
+                firsts[1..].to_vec()
+            } else if dates.len() >= 2 {
                 dates[1..].to_vec()
             } else if !lower[..dates[0]].trim().is_empty() {
                 vec![dates[0]]
@@ -1866,6 +1937,7 @@ pub fn unfold_two_columns(text: &str) -> String {
             };
             cols = vec![Vec::new(); splits.len() + 1];
             date_first = lower.trim_start().starts_with("date");
+            check_first = lower.trim_start().starts_with("check");
             out.push_str(line);
             out.push('\n');
             continue;
@@ -1914,9 +1986,10 @@ pub fn unfold_two_columns(text: &str) -> String {
             }
             // Columns start with a date, so when the gap is a single space ("445.07
             // 09/12/23") the date token nearest the header position is the cut.
-            let cut = if date_first {
-                // No date near the column start: the row has no more columns.
-                match date_near(rest, at - consumed) {
+            let cut = if date_first || check_first {
+                // No date (or check number) near the column start: the row has no more columns.
+                let pred: &dyn Fn(&str) -> bool = if date_first { &|t: &str| parse_date_token(t).is_some() } else { &|t: &str| (3..=7).contains(&t.len()) && t.chars().all(|c| c.is_ascii_digit()) };
+                match token_near(rest, at - consumed, pred) {
                     Some(c) => Some(c),
                     None => break,
                 }
@@ -1955,15 +2028,19 @@ pub fn unfold_two_columns(text: &str) -> String {
     out
 }
 
-/// Start offset of a date token that begins within 14 characters before `at` or 4 after
-/// it, for column data separated by a single space.
 fn date_near(line: &str, at: usize) -> Option<usize> {
+    token_near(line, at, &|t| parse_date_token(t).is_some())
+}
+
+/// Start offset of a token satisfying `pred` that begins within 14 characters before `at`
+/// or 4 after it, for column data separated by a single space.
+fn token_near(line: &str, at: usize, pred: &dyn Fn(&str) -> bool) -> Option<usize> {
     let lo = at.saturating_sub(14);
     let hi = at + 4;
     let mut best: Option<(usize, usize)> = None;
     let mut pos = 0;
     for tok in line.split(' ') {
-        if !tok.is_empty() && pos >= lo && pos <= hi && parse_date_token(tok).is_some() {
+        if !tok.is_empty() && pos >= lo && pos <= hi && pred(tok) {
             let d = pos.abs_diff(at);
             if best.map(|(bd, _)| d < bd).unwrap_or(true) {
                 best = Some((d, pos));
@@ -2019,7 +2096,8 @@ fn gap_near(line: &str, at: usize) -> Option<usize> {
 /// that bundles several statements (months, or accounts) is split where a new statement
 /// starts and each part is parsed on its own; the parts are then combined.
 pub fn parse(pages: &[(usize, &str)]) -> Ledger {
-    let split = split_sub_accounts(pages);
+    let unique = drop_duplicate_pages(pages);
+    let split = split_sub_accounts(&unique);
     let pages: &[(usize, &str)] = &split.iter().map(|(p, t)| (*p, t.as_str())).collect::<Vec<_>>();
     let segments = segment_statements(pages);
     if segments.len() <= 1 {
@@ -2045,6 +2123,32 @@ pub fn parse(pages: &[(usize, &str)]) -> Ledger {
     combined.summary.bank = detect_bank(&pages.iter().map(|(_, t)| *t).collect::<Vec<_>>());
     derive(&mut combined);
     combined
+}
+
+/// A filing sometimes carries the same statement page twice (KeyBank petty cash account,
+/// pages 5 and 7 of one exhibit). Pages whose text repeats an earlier page's, apart from
+/// the court's own header line, are dropped so nothing counts twice.
+fn drop_duplicate_pages<'a>(pages: &[(usize, &'a str)]) -> Vec<(usize, &'a str)> {
+    let body = |t: &str| -> String {
+        t.lines()
+            .filter(|l| !(l.contains("Page ") && l.contains(" of ") && (l.contains("Case ") || l.contains("Doc"))))
+            .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let mut seen: Vec<String> = Vec::new();
+    let mut out = Vec::new();
+    for &(page, text) in pages {
+        let b = body(text);
+        // Only pages with rows can double a total; short pages (letterheads) stay.
+        if b.split_whitespace().count() >= 40 && seen.contains(&b) {
+            continue;
+        }
+        seen.push(b);
+        out.push((page, text));
+    }
+    out
 }
 
 /// Credit unions print several sub-accounts on one statement, each under a heading like
@@ -2265,12 +2369,17 @@ fn dedup_across_tables(ledger: &mut Ledger) {
         }
         out
     };
+    // Check numbers (three to seven digits) shared by both descriptions pair them too:
+    // "CHEC K# 131" in a smeared text layer against "Check 131" from the check table.
+    let numbers = |d: &str| -> Vec<String> {
+        d.split(|c: char| !c.is_ascii_digit()).filter(|n| (3..=7).contains(&n.len())).map(str::to_string).collect()
+    };
     let compatible = |a: &Txn, b: &Txn| -> bool {
         let (wa, wb) = (words(&a.description), words(&b.description));
         if wa.is_empty() || wb.is_empty() {
             return true; // a bare caption or check-image line repeats whatever it matches
         }
-        wa.iter().any(|w| wb.contains(w))
+        wa.iter().any(|w| wb.contains(w)) || numbers(&a.description).iter().any(|n| numbers(&b.description).contains(n))
     };
     for i in 0..ledger.transactions.len() {
         let t = &ledger.transactions[i];
@@ -3427,6 +3536,21 @@ Nov 10 136,758.04 Nov 24 147,043.45 Nov 26 146,849.66
     }
 
     #[test]
+    fn umb_court_scan_margin_junk_check_image_pages_and_posted_checks() {
+        // UMB (court-filed scan): stray margin marks in front of dates, "CHEC K# 131" in the
+        // list against a two-column "Checks Posted" table with references, and an "Images"
+        // page whose captions repeat the checks.
+        let p1 = "          Account Summary\n          Beginning Balance as of 03/01/2024     $12,943.16    Total Days in Statement Period      31\n          + Deposits and Credits (2)             $2 ,850.00\n          - Withdrawals and Debits (3)           $3,151.07\n          - Service Charges and Fees                  $59.38\n          Ending Balance as of 03/31 /2024        $12,582.71\n         Date    Description                                                   Deposits         Withdrawals\n         Mar 04 VENMO         CASHOUT DAN BROWN                                  1,000.00\n         Mar 04 ANALYSIS SERVICE CHARGE(S)                                                              59.38\n         Mar 04 CHECK# 129                                                                           1,500.00\n         Mar 15 CHEC K# 131                                                                            456.11\n0        Mar 20 DEPOSIT                REF 33269043                            1,850.00\nc':,     Mar 25 SUPPORTPDFFILLER.CO 855-750166 MA 03/22 0486                                         1,194.96\n              Checks Posted                                   * Indicates a Skip in Check Number(s)\n               Check No.      Date              Amount Ref No.             Check No.     Date               Amount Ref No.\n                129           Mar04             1,500 .00   00081094018    131           Mar 15                456.11    00035232488\n";
+        let p2 = "              Images\n                IUNIES                          CHECKING DEPOSIT\n               03/0 5/2 024                                         #0            $750.00\n               03/01/2024                                      # 130               $694.96\n";
+        let l = parse(&[(1, p1), (2, p2)]);
+        let s = &l.summary;
+        assert_eq!(s.total_credits, Some(2850.0), "{:?}", s);
+        assert!((s.total_debits.unwrap() - 3210.45).abs() < 0.005, "{:?}", s);
+        assert!((l.parsed_credit_total - 2850.0).abs() < 0.005, "{:?}", l.transactions);
+        assert!((l.parsed_debit_total - 3210.45).abs() < 0.005, "{:?}", l.transactions);
+    }
+
+    #[test]
     fn keybank_dashed_dates_signed_categories_and_a_quiet_month_before_a_busy_one() {
         // Two statements of the same account: November ends where it began, so December
         // opens with the same figure and still has to be its own statement.
@@ -3441,5 +3565,18 @@ Nov 10 136,758.04 Nov 24 147,043.45 Nov 26 146,849.66
         assert_eq!(rows, vec![("2024-12-03".into(), Kind::Credit, 7170.0), ("2024-12-27".into(), Kind::Debit, 5646.62), ("2024-12-13".into(), Kind::Debit, 1252.62), ("2024-12-17".into(), Kind::Debit, 166.61)], "{:?}", l.transactions);
         assert_eq!(parse_date_token("1-2"), None);
         assert_eq!(parse_date_token("9-30-24"), Some((9, 30, Some(2024))));
+        assert_eq!(parse_date_token("8-8-24"), Some((8, 8, Some(2024))));
+    }
+
+    #[test]
+    fn keybank_commercial_short_dashed_dates_and_two_column_check_table() {
+        // "6-3" is only a date once the statement has shown dashed dates; the check table
+        // repeats "Check Date Amount" twice on a line.
+        let text = "Commercial Transaction                5934\n            Beginning balance 5-31-24                         $96,234.72\n            3 Additions                                     +9,756.85\n            3 Subtractions                                    -351.50\n            Net fees and charges                               -97.96\n            Ending balance 6-30-24                         $105,541.11\nAdditions\n              Deposits Date       Serial #      Source\n                       6-3                      Hrtland Pmt Sys Txns/Fees 650000012528306                    $9,539.97\n                       6-3                      Osu Health Systeach Pmt 1259                                    154.35\n                       6-10                     Script Care, Ltdach Paymentrn*1*0000579417*1760                  62.53\nSubtractions\nPaper Checks                * check missing from sequence\n Check         Date               Amount        Check        Date         Amount\n 30091         6-18                 $40.25      30092       6-24            311.25\n                                                            Paper Checks Paid                  $351.50\nFees and\ncharges       Date                                    Quantity   Unit Charge\n              8-8-24         Jul Analysis Service Chg   1              97.96    -$97.96\n";
+        let l = parse(&[(1, text)]);
+        let s = &l.summary;
+        assert_eq!((s.total_credits, s.total_debits), (Some(9756.85), Some(449.46)), "{:?}", s);
+        let rows: Vec<(String, Kind, f64)> = l.transactions.iter().map(|t| (t.date.clone(), t.kind, t.amount)).collect();
+        assert_eq!(rows, vec![("2024-06-03".into(), Kind::Credit, 9539.97), ("2024-06-03".into(), Kind::Credit, 154.35), ("2024-06-10".into(), Kind::Credit, 62.53), ("2024-06-18".into(), Kind::Debit, 40.25), ("2024-06-24".into(), Kind::Debit, 311.25), ("2024-08-08".into(), Kind::Debit, 97.96)], "{:?}", l.transactions);
     }
 }
