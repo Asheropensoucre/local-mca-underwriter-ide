@@ -2198,12 +2198,10 @@ pub fn parse(pages: &[(usize, &str)]) -> Ledger {
             !in_report
         })
         .collect();
-    if statements.is_empty() || statements.len() < pages.len() / 2 && document_kind(pages).is_some() {
-        let mut ledger = parse_statements(pages);
-        ledger.summary.document_kind = document_kind(pages);
-        return ledger;
-    }
-    parse_statements(&statements)
+    let kind = document_kind(pages);
+    let mut ledger = if statements.is_empty() || statements.len() < pages.len() / 2 && kind.is_some() { parse_statements(pages) } else { parse_statements(&statements) };
+    ledger.summary.document_kind = kind;
+    ledger
 }
 
 /// Words a bank prints on a statement page and a bookkeeping report does not.
@@ -2223,6 +2221,10 @@ fn document_kind(pages: &[(usize, &str)]) -> Option<String> {
     let head: String = pages.iter().take(2).map(|(_, t)| t.to_ascii_lowercase()).collect::<Vec<_>>().join("\n");
     if head.contains("reconciliation report") && (head.contains("reconciled on") || head.contains("cleared transactions")) {
         return Some("reconciliation report".into());
+    }
+    // A Chapter 7 trustee's Form 2 ledger of the estate account.
+    if head.contains("receipts and disbursements record") || head.contains("form 2 - estate cash") {
+        return Some("trustee form 2 ledger".into());
     }
     None
 }
