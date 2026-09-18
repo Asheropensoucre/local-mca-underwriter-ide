@@ -1507,15 +1507,18 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         // amount follows (text lines in between extend the description).
         // (Aligned pages too, when no column table is open: a doubled text layer breaks
         // "06/04  Online Domestic Wire Transfer Via: ... $25,000.00" over several lines.)
-        if (flat || columns.is_none()) && starts_with_date && !tokens.iter().any(|t| is_amount_token(t)) && tokens.len() >= 2 && !summary_row && !st.in_daily {
+        // On an aligned page only inside a transaction section, and never a statement
+        // period line ("02/01/2025 through 02/28/2025").
+        let aligned_ok = !flat && columns.is_none() && st.section.is_some() && st.section_page == Some(page) && !lower.contains("through") && !lower.contains(" to ");
+        if (flat || aligned_ok) && starts_with_date && !tokens.iter().any(|t| is_amount_token(t)) && tokens.len() >= 2 && !summary_row && !st.in_daily {
             pending_flat = Some((tokens[0].to_string(), tokens[1..].join(" ")));
             last_txn = None;
             continue;
         }
         if let Some((date_tok, desc)) = pending_flat.take() {
             // A lone amount, or the rest of the description ending with the amount
-            // (TD: "RESTAURANT DEPOT ALEXANDRIA * VA 142.29").
-            let ends_with_amount = !starts_with_date && tokens.len() <= 12 && tokens.last().map(|t| is_amount_token(t)).unwrap_or(false) && tokens[..tokens.len() - 1].iter().all(|t| !is_amount_token(t));
+            // (TD: "RESTAURANT DEPOT ALEXANDRIA * VA 142.29"). A balance label ends the wait.
+            let ends_with_amount = !starts_with_date && tokens.len() <= 12 && tokens.last().map(|t| is_amount_token(t)).unwrap_or(false) && tokens[..tokens.len() - 1].iter().all(|t| !is_amount_token(t)) && !lower.contains("balance");
             if ends_with_amount {
                 let amount = parse_amount(tokens[tokens.len() - 1]).unwrap_or(0.0).abs();
                 let desc = if tokens.len() == 1 { desc } else { format!("{desc} {}", tokens[..tokens.len() - 1].join(" ")) };
