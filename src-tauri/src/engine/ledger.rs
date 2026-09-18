@@ -943,6 +943,12 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         capture_summary(&lower, trimmed, &mut ledger.summary, page);
 
         let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+        // "COMMERCIAL INTEREST CHECKING (continued)" at the top of a page confirms the
+        // section carried over from the page before: its rows follow it as if the header
+        // were printed here (see `row_kind`).
+        if st.section.is_some() && lower.contains("continued") && tokens.len() <= 12 && !tokens.iter().any(|t| is_amount_token(t)) {
+            st.section_page = Some(page);
+        }
         // Dated balance rows inside an activity table ("11/01/2025 Beginning Balance
         // $323.01", "11/30/2025 Ending Balance $323.02") are summary lines, not
         // transactions; the summary already took their figures.
@@ -1935,7 +1941,7 @@ pub fn unfold_two_columns(text: &str) -> String {
             };
             cols = vec![Vec::new(); splits.len() + 1];
             date_first = lower.trim_start().starts_with("date");
-            check_first = lower.trim_start().starts_with("check");
+            check_first = lower.trim_start().starts_with("check") || lower.trim_start().starts_with("number");
             out.push_str(line);
             out.push('\n');
             continue;
@@ -1951,9 +1957,7 @@ pub fn unfold_two_columns(text: &str) -> String {
         }
         // A new section title ("• Checks", "Daily Balance", "Withdrawals and Debits") ends the block.
         let has_date_or_amount = toks.iter().any(|t| is_amount_token(t) || parse_date_token(t).is_some());
-        // Inside a block every data line carries a date or an amount, so any other text
-        // (the next table's title, a footnote) ends it too.
-        let section_title = !has_date_or_amount && !toks.is_empty();
+        let section_title = !has_date_or_amount && !toks.is_empty() && (line.trim_start().starts_with('•') || line.trim_start().starts_with('*') || section_for(line).is_some() || lower.contains("balance") || lower.contains("summary"));
         if !splits.is_empty() && section_title {
             flush(&mut out, &mut cols);
             splits.clear();
@@ -1964,6 +1968,14 @@ pub fn unfold_two_columns(text: &str) -> String {
         if splits.is_empty() {
             out.push_str(line);
             out.push('\n');
+            continue;
+        }
+        // Text with no date or amount inside a block is a description continuation (or a
+        // stray title): it belongs whole to the column it is indented under, never cut.
+        if !has_date_or_amount && !toks.is_empty() {
+            let indent = line.len() - line.trim_start().len();
+            let col = splits.iter().filter(|&&at| indent + 8 >= at).count();
+            cols[col].push(line.trim_end().to_string());
             continue;
         }
         if line.len() + 8 <= splits[0] {
