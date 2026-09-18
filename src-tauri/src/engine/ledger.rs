@@ -2278,6 +2278,10 @@ fn document_kind(pages: &[(usize, &str)]) -> Option<String> {
     if head.contains("receipts and disbursements record") || head.contains("form 2 - estate cash") {
         return Some("trustee form 2 ledger".into());
     }
+    // Credit card statements have no deposits; their totals are purchases and payments.
+    if head.contains("credit card statement") || (head.contains("minimum payment due") && head.contains("credit limit")) {
+        return Some("credit card statement".into());
+    }
     None
 }
 
