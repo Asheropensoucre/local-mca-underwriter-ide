@@ -2278,6 +2278,10 @@ fn document_kind(pages: &[(usize, &str)]) -> Option<String> {
     if head.contains("receipts and disbursements record") || head.contains("form 2 - estate cash") {
         return Some("trustee form 2 ledger".into());
     }
+    // PayPal merchant activity statements (Gross / Fee / Net columns) are not bank accounts.
+    if head.contains("paypal id:") || head.contains("merchant account id:") {
+        return Some("PayPal merchant statement".into());
+    }
     // Credit card statements have no deposits; their totals are purchases and payments.
     if head.contains("credit card statement") || (head.contains("minimum payment due") && head.contains("credit limit")) {
         return Some("credit card statement".into());
