@@ -1549,11 +1549,17 @@ fn last_amount(line: &str) -> Option<f64> {
     line.split_whitespace().rev().find(|t| is_amount_token(t)).and_then(parse_amount)
 }
 
+/// Court OCR splits words ("Beginni ng Balance"): a key matches when the line without
+/// spaces contains the key without spaces.
+fn has_key(lower: &str, key: &str) -> bool {
+    lower.contains(key) || lower.replace(' ', "").contains(&key.replace(' ', ""))
+}
+
 fn capture_summary(lower: &str, line: &str, s: &mut Summary, page: usize) {
-    if lower.contains("beginning balance") || lower.contains("previous balance") || lower.contains("opening ledger balance") || lower.contains("opening balance") || lower.starts_with("balance forward") || lower.contains("balance last statement") {
+    if has_key(lower, "beginning balance") || lower.contains("previous balance") || lower.contains("opening ledger balance") || lower.contains("opening balance") || lower.starts_with("balance forward") || lower.contains("balance last statement") {
         // Sunrise puts the values on the next line; Legends on the same line; Frost says
         // "BALANCE LAST STATEMENT".
-        let v = first_amount_after(line, &["beginning balance", "previous balance", "opening ledger balance", "opening balance", "balance forward", "balance last statement"]);
+        let v = first_amount_after(line, &["beginning balance", "previous balance", "opening ledger balance", "opening balance", "balance forward", "balance last statement"]).or_else(|| if lower.contains("beginning balance") { None } else { last_amount(line) });
         if let Some(v) = v {
             if !s.beginning_balances_seen.iter().any(|b| (b - v).abs() < 0.005) {
                 s.beginning_balances_seen.push(v);
@@ -1649,7 +1655,7 @@ fn capture_summary(lower: &str, line: &str, s: &mut Summary, page: usize) {
         }
     }
     const ENDING_KEYS: &[&str] = &["ending balance", "current balance", "new balance", "ending ledger balance", "closing balance", "balance this statement"];
-    if s.ending_balance.is_none() && ENDING_KEYS.iter().any(|k| lower.contains(k)) {
+    if s.ending_balance.is_none() && ENDING_KEYS.iter().any(|k| has_key(lower, k)) {
         // The value follows the label; two-column summaries put unrelated figures after
         // it ("Ending Balance $323.02 Interest Paid Year-to-Date $0.11"). Sunrise puts the
         // value on the line alone, which the last amount still covers.
@@ -2498,7 +2504,7 @@ fn segment_statements<'a>(pages: &[(usize, &'a str)], forced: &[bool]) -> Vec<Ve
         let lower = text.to_ascii_lowercase();
         // "Balance Summary" alone is the daily balance table, which sits on the last page
         // of a statement (Synovus), so it does not mark a first page.
-        let summary_words = lower.contains("beginning balance") || lower.contains("previous balance") || lower.contains("account summary") || lower.contains("opening balance") || lower.contains("balance last statement");
+        let summary_words = has_key(&lower, "beginning balance") || lower.contains("previous balance") || lower.contains("account summary") || lower.contains("opening balance") || lower.contains("balance last statement");
         let bank_changes = summary_words && match (&bank, &current_bank) {
             (Some(b), Some(cur)) if b != cur => {
                 let new_n = votes.iter().find(|(name, _)| *name == b).map(|(_, n)| *n).unwrap_or(0);
