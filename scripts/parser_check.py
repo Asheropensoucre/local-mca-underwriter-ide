@@ -20,6 +20,7 @@ separately: those are layouts the parser does not understand yet.
 
 --exclude <file>  list of files that are not bank statements, skipped (default: not_statements.txt
             next to the PDF folder; one file name per line, the reason after a space).
+--jobs N    files parsed at a time (default 3).
 """
 import json, os, re, subprocess, sys
 from collections import defaultdict
@@ -65,14 +66,21 @@ def main():
         excluded = {l.split()[0] for l in open(exclude_file) if l.strip() and not l.startswith("#")}
     rows = []  # dicts: name, bank, status, stated/parsed totals, lines, scan pages
     not_statements = []  # (name, kind) the parser itself recognized as not a bank statement
-    for name in sorted(os.listdir(folder)):
-        if not name.lower().endswith(".pdf") or name in excluded:
-            continue
-        path = os.path.join(folder, name)
+    names = [n for n in sorted(os.listdir(folder)) if n.lower().endswith(".pdf") and n not in excluded]
+    # Files are parsed a few at a time (--jobs N, default 3): the parser is one process per
+    # file, so this stays light on a shared machine while cutting a 2,700 file run to a third.
+    jobs = int(sys.argv[sys.argv.index("--jobs") + 1]) if "--jobs" in sys.argv else 3
+    from concurrent.futures import ThreadPoolExecutor
+    def run(name):
         try:
-            d = ledger(path, ocr)
+            return name, ledger(os.path.join(folder, name), ocr), None
         except Exception as e:
-            rows.append({"name": name, "bank": "?", "status": "error", "note": str(e)[:80]})
+            return name, None, str(e)[:80]
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        results = list(pool.map(run, names))
+    for name, d, err in results:
+        if err is not None:
+            rows.append({"name": name, "bank": "?", "status": "error", "note": err})
             continue
         if not d or len(d["transactions"]) < 4 and d["summary"].get("total_credits") is None and d["summary"].get("total_debits") is None:
             continue  # a page or two of wire confirmations, not a statement (or fully scanned)
