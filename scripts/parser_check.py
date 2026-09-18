@@ -18,8 +18,8 @@ separately: those are layouts the parser does not understand yet.
 --snapshot <file>  compare with the previous run saved in <file> (regressions and new passes
             are listed), then overwrite it with this run.
 
-Files listed in not_statements.txt next to the PDF folder are skipped (see the comment in
-main for the format).
+--exclude <file>  list of files that are not bank statements, skipped (default: not_statements.txt
+            next to the PDF folder; one file name per line, the reason after a space).
 """
 import json, os, re, subprocess, sys
 from collections import defaultdict
@@ -59,7 +59,7 @@ def main():
     # Files a human marked as not bank statements (operating reports, A/R agings, foreign
     # consolidated statements) live in not_statements.txt next to the PDF folder: one file
     # name per line, anything after a space is the reason.
-    exclude_file = os.path.join(os.path.dirname(os.path.abspath(folder.rstrip("/"))), "not_statements.txt")
+    exclude_file = sys.argv[sys.argv.index("--exclude") + 1] if "--exclude" in sys.argv else os.path.join(os.path.dirname(os.path.abspath(folder.rstrip("/"))), "not_statements.txt")
     excluded = set()
     if os.path.exists(exclude_file):
         excluded = {l.split()[0] for l in open(exclude_file) if l.strip() and not l.startswith("#")}
