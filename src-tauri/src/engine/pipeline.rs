@@ -279,9 +279,16 @@ async fn ocr_page(ep: &Endpoint, pdf: &str, page: usize, raw: &RawOcr, progress:
         // many rows as the text replaces the block (its columns decide credit or debit);
         // a shorter one only lends its amounts to the rows that lost theirs.
         Some(table) => {
-            let dated = |s: &str| s.lines().filter(|l| l.split_whitespace().next().and_then(ledger::parse_date_token).is_some()).count();
-            let complete = dated(&table) >= dated(&text);
-            if complete && table_adds_rows(&text, &table, missing) {
+            // A table is complete when it reaches the text's last dated row; one that stops
+            // earlier lost the bottom of the page (Truist). Row counts alone mislead: the
+            // text task sometimes adds a line of its own.
+            let last_row = |s: &str| -> Option<String> {
+                s.lines().rev().find(|l| l.split_whitespace().next().and_then(ledger::parse_date_token).is_some()).map(|l| l.split_whitespace().take(4).collect::<Vec<_>>().join(" ").to_ascii_lowercase())
+            };
+            // (A table of some other block, TD's check table above the wrapped payments,
+            // ends elsewhere and so never replaces the text.)
+            let complete = last_row(&table).is_some() && last_row(&table) == last_row(&text);
+            if complete {
                 return Ok(splice_table(&text, &table));
             }
             let patched = patch_missing_amounts(&text, &table);
@@ -320,8 +327,12 @@ fn patch_missing_amounts(text: &str, table: &str) -> String {
         let has_amount = toks.iter().any(|t| ledger::is_amount_token(t));
         if dated && !has_amount && toks.len() >= 3 {
             let words: Vec<String> = toks[1..].iter().map(|t| t.to_ascii_lowercase()).collect();
-            // Same date, and the first three description words agree.
-            let hit = rows.iter().enumerate().find(|(i, (d, w, _, _))| !used[*i] && *d == toks[0] && w.len() >= 3 && words.len() >= 3 && w[..3] == words[..3]);
+            // Same date, and the first six description words agree (three when the row is
+            // that short): "Purchase authorized on" alone would match every card row.
+            let hit = rows.iter().enumerate().find(|(i, (d, w, _, _))| {
+                let k = w.len().min(words.len()).min(6);
+                !used[*i] && *d == toks[0] && k >= 3 && w[..k] == words[..k]
+            });
             if let Some((i, (_, _, amount, table_line))) = hit {
                 used[i] = true;
                 if flat {
@@ -337,24 +348,6 @@ fn patch_missing_amounts(text: &str, table: &str) -> String {
         out.push('\n');
     }
     out
-}
-
-/// The table task reads one table off the page, not necessarily the one that lost its
-/// amounts (TD: a complete check table above a wrapped "Electronic Payments" list). The
-/// table is worth splicing when it brings amounts the text does not have: at least as
-/// many as the rows that lost theirs (`missing`), or most of its rows when the text is
-/// nearly empty. A table whose every amount is already in the text would only double them.
-fn table_adds_rows(text: &str, table: &str, missing: usize) -> bool {
-    let amounts = |s: &str| -> Vec<String> {
-        s.split_whitespace().filter(|t| ledger::is_amount_token(t)).map(|t| t.trim_start_matches('$').to_string()).collect()
-    };
-    let have = amounts(text);
-    let rows: Vec<String> = amounts(table);
-    if rows.is_empty() {
-        return false;
-    }
-    let new = rows.iter().filter(|a| !have.contains(a)).count();
-    new >= missing.max(1) || new * 2 > rows.len()
 }
 
 /// Replace the transaction table in plain OCR `text` (from its header line through the
@@ -1190,18 +1183,10 @@ mod tests {
     }
 
     #[test]
-    fn table_pass_is_used_only_when_it_adds_rows() {
+    fn table_pass_patches_or_replaces_the_text() {
         // TD: the text already lists the checks; the table task read that same check table
         // instead of the wrapped "Electronic Payments" list below it.
         let text = "Checks Paid\nDATE SERIAL NO. AMOUNT\n03/10 10991 368.53\n03/18 11020 1,005.11\n\nElectronic Payments\nPOSTING DATE DESCRIPTION AMOUNT\n03/03 DEBIT POS AP, AUT 030125 DDA PURCHASE AP\nRESTAURANT DEPOT ALEXANDRIA * VA 142.29\n";
-        let checks_again = "Date        Description        Debits\n03/10       10991              368.53\n03/18       11020            1,005.11\n";
-        assert!(!table_adds_rows(text, checks_again, 0));
-        let new_rows = "Date        Description                      Debits\n03/03       DEBIT POS AP RESTAURANT DEPOT    142.29\n03/03       CCD DEBIT MARGINEDGE              300.00\n03/03       CCD DEBIT TOAST                    16.24\n";
-        assert!(table_adds_rows(text, new_rows, 0));
-        // Truist: the whole table again, with the two amounts the text task dropped.
-        let whole = "Date        Description        Debits\n03/10       10991              368.53\n03/18       11020            1,005.11\n03/06       NV ENERGY           85.65\n03/06       FRONTIER           126.73\n";
-        assert!(table_adds_rows(text, whole, 2));
-        assert!(!table_adds_rows(text, checks_again, 2));
         // A wrapped row whose amount ends the next line is not a row that lost its amount.
         assert_eq!(ledger::rows_missing_amounts(text), 0);
         // Rows that lost their amount take it from the matching table row; the table's own
