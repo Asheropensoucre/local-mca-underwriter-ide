@@ -1344,8 +1344,25 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
             let desc: String = tokens[1..tokens.len() - 1].join(" ");
             // "03/14 1008 212.26": a single check-table pair is a paid check.
             let bare_check = tokens.len() == 3 && !check_no(tokens[1]).is_empty() && check_no(tokens[1]).len() <= 7 && check_no(tokens[1]).chars().all(|c| c.is_ascii_digit());
+            // A leading '+' on the amount is a credit whatever the section. KeyBank prints a
+            // waived fee as "+3.00" under Fees and charges right after the fee it cancels;
+            // the bank nets the two ("Net fees and charges"), so both rows go.
+            let plus = tokens[tokens.len() - 1].starts_with('+');
+            if plus && st.section == Some(Kind::Debit) {
+                let (date, _) = resolve_date(tokens[0], year_hint);
+                if let Some(pos) = ledger.transactions.iter().rposition(|t| t.table == st.table && t.kind == Kind::Debit && (t.amount - amount).abs() < 0.005 && t.date == date) {
+                    ledger.transactions.remove(pos);
+                    for (i, t) in ledger.transactions.iter_mut().enumerate() {
+                        t.id = i;
+                    }
+                    last_txn = None;
+                    continue;
+                }
+            }
             let (desc, kind) = if bare_check {
                 (format!("Check {}", check_no(tokens[1])), Kind::Debit)
+            } else if plus {
+                (desc, Kind::Credit)
             } else {
                 let kind = st.row_kind(page, &desc).0;
                 (desc, kind)
