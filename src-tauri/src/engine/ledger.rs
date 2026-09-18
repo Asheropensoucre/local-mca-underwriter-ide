@@ -1486,7 +1486,7 @@ fn capture_summary(lower: &str, line: &str, s: &mut Summary, page: usize) {
     let ntok = lower.split_whitespace().count();
     // Summary block: debit categories are the negative figures between the "summary"
     // heading and the ending balance.
-    if lower.contains("summary") && ntok <= 12 && last_amount(line).is_none() && !lower.contains("fee") {
+    if lower.contains("summary") && ntok <= 12 && last_amount(line).is_none() && !lower.contains("fee") && !lower.contains("service charge") && !lower.contains("interest") {
         // The first block that captured a category is the account summary; later
         // "summary" headings (card summaries, fee summaries, a credit union's year-to-date
         // "Summary" on the last page) do not replace it.
@@ -2165,9 +2165,39 @@ fn gap_near(line: &str, at: usize) -> Option<usize> {
 /// that bundles several statements (months, or accounts) is split where a new statement
 /// starts and each part is parsed on its own; the parts are then combined.
 pub fn parse(pages: &[(usize, &str)]) -> Ledger {
-    let mut ledger = parse_statements(pages);
-    ledger.summary.document_kind = document_kind(pages);
-    ledger
+    // Bookkeeping reconciliation reports filed between the statements ("Statements &
+    // Recs") restate the same month in the bank's words; their pages are left out. A
+    // document made only of them is reported as such.
+    let mut in_report = false;
+    let statements: Vec<(usize, &str)> = pages
+        .iter()
+        .copied()
+        .filter(|(_, t)| {
+            if is_reconciliation_page(t) {
+                in_report = true;
+            } else if in_report && statement_words(t) {
+                in_report = false; // a statement page again (its letterhead or summary)
+            }
+            !in_report
+        })
+        .collect();
+    if statements.is_empty() || statements.len() < pages.len() / 2 && document_kind(pages).is_some() {
+        let mut ledger = parse_statements(pages);
+        ledger.summary.document_kind = document_kind(pages);
+        return ledger;
+    }
+    parse_statements(&statements)
+}
+
+/// Words a bank prints on a statement page and a bookkeeping report does not.
+fn statement_words(text: &str) -> bool {
+    let l = text.to_ascii_lowercase();
+    ["beginning balance", "previous balance", "balance forward", "statement period", "account summary", "ending balance on", "daily balance", "member fdic"].iter().any(|w| l.contains(w))
+}
+
+/// A page headed "Reconciliation Report" (QuickBooks, Sage: "Cash Account Reconciliation Report").
+fn is_reconciliation_page(text: &str) -> bool {
+    text.lines().take(14).any(|l| l.to_ascii_lowercase().contains("reconciliation report"))
 }
 
 /// "RECONCILIATION REPORT" with "Reconciled on" on the first pages is a bookkeeping
