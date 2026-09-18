@@ -976,6 +976,13 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         if st.images_page == Some(page) {
             continue;
         }
+        // Chase commercial: "02/19  List Posted Items  Quantity 10  $17,924.58" under
+        // Withdrawals and Debits restates the checks paid below it (its own "Total*" is
+        // $0.00 and excludes it); the checks are the transactions.
+        if lower.contains("list posted items") {
+            last_txn = None;
+            continue;
+        }
         // Daily balance tables: a "Daily Balance" heading, or a header repeating "Date ...
         // balance" for several columns ("Date  Ledger balance  Date  Ledger balance").
         let has_amount = tokens.iter().any(|t| is_amount_token(t));
@@ -1492,7 +1499,9 @@ fn capture_summary(lower: &str, line: &str, s: &mut Summary, page: usize) {
             // PNC prints credit and debit categories side by side ("ACH Credits 92
             // 3,199,536.68   ACH Debits 135 3,412,040.00"): such lines are not categories.
             let credit_word = |t: &str| t.contains("deposit") || t.contains("credit") || t.contains("addition");
-            let debit_word = |t: &str| t.contains("check") || t.contains("payment") || t.contains("withdrawal") || t.contains("debit") || t.contains("charge") || t.contains("fee") || t.contains("card activity") || t.contains("subtraction");
+            // ("Commercial Checking 7558 26,937.82" in a consolidated summary is an account
+            // line, not a checks category.)
+            let debit_word = |t: &str| t.replace("checking", "").contains("check") || t.contains("payment") || t.contains("withdrawal") || t.contains("debit") || t.contains("charge") || t.contains("fee") || t.contains("card activity") || t.contains("subtraction");
             let two_columns = credit_word(&lower) && debit_word(&lower);
             if a >= 1 && a <= 8 && !two_columns && !label.contains("balance") && !label.contains("interest") && !label.contains("days") {
                 let v = parse_amount(last).map(f64::abs);
@@ -1544,22 +1553,30 @@ fn capture_summary(lower: &str, line: &str, s: &mut Summary, page: usize) {
     // credits", Mabrey "Deposits/Credits", Pinnacle "Credits + $.00".
     const CREDIT_KEYS: &[&str] = &["deposits/other credits", "total credits", "total deposits", "deposits/additions", "deposits and additions", "credit(s) this period", "deposits, credits and interest", "deposits and credits", "deposits and other credits", "deposits/credits"];
     const DEBIT_KEYS: &[&str] = &["checks/other debits", "total debits", "total withdrawals", "withdrawals/subtractions", "withdrawals and subtractions", "debit(s) this period", "other withdrawals, debits and service charges", "withdrawals and debits", "withdrawals and other debits", "checks/debits", "withdrawals/debits"];
+    // A total smaller than the categories already captured is a garbled section total
+    // ("Total Deposits & Credits  $1 )3,1i 7.18" in a court scan), not the figure.
+    let plausible = |v: Option<f64>, parts: &[f64]| v.filter(|v| parts.is_empty() || *v + 0.01 >= parts.iter().sum::<f64>());
     if s.total_credits.is_none() && !lower.contains("---") {
         if CREDIT_KEYS.iter().any(|k| lower.contains(k)) {
-            s.total_credits = first_amount_after(line, CREDIT_KEYS).map(f64::abs);
+            s.total_credits = plausible(first_amount_after(line, CREDIT_KEYS).map(f64::abs), &s.credit_parts);
         } else if lower.starts_with("credits") && ntok <= 5 {
-            s.total_credits = first_amount_after(line, &["credits"]).map(f64::abs);
+            s.total_credits = plausible(first_amount_after(line, &["credits"]).map(f64::abs), &s.credit_parts);
         }
     }
     if s.total_debits.is_none() && !lower.contains("---") {
+        let parts: Vec<f64> = if s.debit_parts.len() >= s.debit_parts_unsigned.len() { s.debit_parts.clone() } else { s.debit_parts_unsigned.clone() };
         if let Some(k) = DEBIT_KEYS.iter().find(|k| lower.contains(*k)) {
-            s.total_debits = first_amount_after(line, DEBIT_KEYS).map(f64::abs);
-            s.debits_key = k;
-            s.debits_page = Some(page);
+            s.total_debits = plausible(first_amount_after(line, DEBIT_KEYS).map(f64::abs), &parts);
+            if s.total_debits.is_some() {
+                s.debits_key = k;
+                s.debits_page = Some(page);
+            }
         } else if lower.starts_with("debits") && ntok <= 5 {
-            s.total_debits = first_amount_after(line, &["debits"]).map(f64::abs);
-            s.debits_key = "debits";
-            s.debits_page = Some(page);
+            s.total_debits = plausible(first_amount_after(line, &["debits"]).map(f64::abs), &parts);
+            if s.total_debits.is_some() {
+                s.debits_key = "debits";
+                s.debits_page = Some(page);
+            }
         }
     }
     // Pinnacle-style summary cells anywhere on the line: "Credits + $.00", "Debits - $94,340.67".
@@ -1957,7 +1974,8 @@ pub fn unfold_two_columns(text: &str) -> String {
         }
         // A new section title ("• Checks", "Daily Balance", "Withdrawals and Debits") ends the block.
         let has_date_or_amount = toks.iter().any(|t| is_amount_token(t) || parse_date_token(t).is_some());
-        let section_title = !has_date_or_amount && !toks.is_empty() && (line.trim_start().starts_with('•') || line.trim_start().starts_with('*') || section_for(line).is_some() || lower.contains("balance") || lower.contains("summary"));
+        // (A sentence of nine words or more is a footer paragraph, not a continuation.)
+        let section_title = !has_date_or_amount && !toks.is_empty() && (line.trim_start().starts_with('•') || line.trim_start().starts_with('*') || section_for(line).is_some() || lower.contains("balance") || lower.contains("summary") || toks.len() >= 9);
         if !splits.is_empty() && section_title {
             flush(&mut out, &mut cols);
             splits.clear();
@@ -1968,6 +1986,11 @@ pub fn unfold_two_columns(text: &str) -> String {
         if splits.is_empty() {
             out.push_str(line);
             out.push('\n');
+            continue;
+        }
+        // The court's filing stamp runs through the columns ("Case: 22-10381  Doc# 69-6
+        // Filed: 10/24/22"); inside a block it is dropped rather than cut into the columns.
+        if !splits.is_empty() && is_court_stamp(&lower) {
             continue;
         }
         // Text with no date or amount inside a block is a description continuation (or a
@@ -2036,6 +2059,11 @@ pub fn unfold_two_columns(text: &str) -> String {
     }
     flush(&mut out, &mut cols);
     out
+}
+
+/// A court filing stamp: "Case 24-11188-TMH  Doc 226-2  Filed 07/22/24  Page 2 of 10".
+fn is_court_stamp(lower: &str) -> bool {
+    (lower.contains("case") || lower.contains("pageid")) && (lower.contains("doc") || lower.contains("filed") || lower.contains("entered") || lower.contains(" page "))
 }
 
 fn date_near(line: &str, at: usize) -> Option<usize> {
