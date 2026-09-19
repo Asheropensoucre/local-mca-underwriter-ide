@@ -309,6 +309,11 @@ async fn ocr_page(ep: &Endpoint, pdf: &str, page: usize, raw: &RawOcr, progress:
             if complete {
                 return Ok(splice_table(&text, &table));
             }
+            // The text task kept only the lines below the table ("Total credits: ..."): the
+            // table is the page's body, the text its tail.
+            if last_row(&text).is_none() && last_row(&table).is_some() {
+                return Ok(format!("{table}\n{text}"));
+            }
             let patched = patch_missing_amounts(&text, &table);
             if ledger::rows_missing_amounts(&patched) > 0 {
                 println!("[Engine] page {page}: {} row(s) still without an amount after the table pass", ledger::rows_missing_amounts(&patched));
@@ -739,6 +744,14 @@ fn has_no_balances(pages: &[PageText]) -> bool {
 fn totals_gap(pages: &[PageText]) -> Option<f64> {
     let refs: Vec<(usize, &str)> = pages.iter().enumerate().map(|(i, p)| (i + 1, p.text.as_str())).collect();
     let ledger = ledger::parse(&refs);
+    // A bundle is judged statement by statement: parts that print no totals (an online
+    // activity printout filed behind the statement) neither count nor block the others.
+    if ledger.statements.len() > 1 {
+        let parts: Vec<f64> = ledger.statements.iter().filter(|st| st.total_credits.is_some() || st.total_debits.is_some()).map(|st| {
+            st.total_credits.map(|c| (c - st.parsed_credits.unwrap_or(0.0)).abs()).unwrap_or(0.0) + st.total_debits.map(|d| (d - st.parsed_debits.unwrap_or(0.0)).abs()).unwrap_or(0.0)
+        }).collect();
+        return if parts.is_empty() { None } else { Some(parts.iter().sum()) };
+    }
     let s = &ledger.summary;
     if s.total_credits.is_none() && s.total_debits.is_none() {
         return None;

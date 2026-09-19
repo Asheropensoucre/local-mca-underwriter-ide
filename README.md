@@ -58,7 +58,7 @@ On laptops the GPU has no memory of its own; models and caches come out of syste
 
 ## Statement layouts the parser understands
 
-Every statement is checked against itself: the parser sums the transaction lines and compares them with the totals the bank printed. The verification block in the report shows both numbers, so a layout the parser does not fully understand is visible, never silent. Layouts verified to the cent so far (`scripts/parser_check.py` over public court-filing exhibits and the test statements; 237 statements to the cent as of September 18, 2026, over about 4,000 court-filing PDFs):
+Every statement is checked against itself: the parser sums the transaction lines and compares them with the totals the bank printed. The verification block in the report shows both numbers, so a layout the parser does not fully understand is visible, never silent. Layouts verified to the cent so far (`scripts/parser_check.py` over public court-filing exhibits and the test statements; 252 statements to the cent as of September 19, 2026 midday, over about 4,200 court-filing PDFs, 56 of them with funder activity):
 
 | Bank | Layout features |
 |---|---|
@@ -87,6 +87,13 @@ Every statement is checked against itself: the parser sums the transaction lines
 | First State Bank | "ALL CREDIT ACTIVITY" and check tables three entries to a line (`Date Type Amount` three times), the columns one space apart |
 | Capitol Credit Union | several sub-accounts on one statement ("KASASA CASH (0008)"), each with its own summary; transaction and effective dates side by side; descriptions printed above their dated row; loan sub-accounts left out |
 | Court scans read as Markdown by the OCR model | pipe summary tables (`Beginning Balance \| Deposits \| ... \| Ending Balance`), bulleted rows with month-name dates and amount-plus-balance columns, `**bold**` headings, summary labels read column by column |
+| TD Bank (business, court copies) | check tables with dozens of same-day checks for the same amount (told apart by serial), serials lifted onto their own line by the OCR layer, "Checks Paid (continued)" pages, image caption pages with no heading, "Payrnents" misreads in the summary |
+| Citizens (Clearly Better Business Checking) | "Balance Calculation" summary, check table with the legend or the checks total printed beside a row, doubled text layers, the same statement filed twice in two layouts (the second copy dropped), "Non Check Return" credits, "Images for Account" pages |
+| Yampa Valley Bank (Colorado) | "N Debit(s) This Period" already including the service charge (decided by the balance equation), "#0000" slip captions, two months of a swept account that both begin at -$10.00 split by their statement date |
+| Bank of America account-detail exports (Ocrolus style) | newest-first rows with a running balance, "Withdrawals (-)" summary, `$1185228.22` amounts without thousands separators |
+| Achieva Credit Union | "BUSINESS ESSENTIAL CHECKING 0750" sub-accounts, "Total Credits for this account" totals that leave out reversal pairs (a fee and its "-- Reversed" credit), "Checks Cleared At A Glance" |
+| Navy Federal Credit Union | debit sign a space after the amount (`20.00 -`), rows wrapped over two lines, a "Summary of your deposit accounts" table with one row per account, "Items Paid" recap table, letterhead with "Credit Union" that is not a section |
+| Small-bank text layers (Webster-style "Account Activity") | column rows split over two or three lines (date alone, then description, then the cells), amounts the text layer garbled (`M,000.00`) recovered from the running balance and marked as such |
 
 Scanned pages: the OCR model reads plain text first; when rows under a transaction table lose their amounts (wrapped descriptions), or the page comes back nearly empty, the table is read as a table and every amount lands in its column. Statements whose text layer is someone else's poor OCR (court filings) are detected by the totals mismatch, or by a text layer with neither a beginning nor an ending balance, and re-read with the OCR model automatically; re-read pages are adopted one at a time, only when they bring the totals closer.
 
