@@ -638,10 +638,10 @@ pub async fn read_pages(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdfs: &[S
     // No printed totals at all is a gap too when the text layer is court OCR so poor that
     // not even the balances survive ("Eeglnnirq Balance"): every image-backed page is
     // re-read and adopted as soon as it yields a summary.
-    let gap = match totals_gap(&pages) {
-        Some(g) if g <= 1.0 => return Ok(pages),
-        Some(g) => g,
-        None if has_no_balances(&pages) => f64::INFINITY,
+    let (gap, verified, passing) = match totals_gap(&pages) {
+        Some((g, _, _)) if g <= 1.0 => return Ok(pages),
+        Some((g, n, p)) => (g, n, p),
+        None if has_no_balances(&pages) => (f64::INFINITY, 0, 0),
         None => return Ok(pages),
     };
     let mut retry = pages.clone();
@@ -667,18 +667,45 @@ pub async fn read_pages(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdfs: &[S
     // Page by page: an OCR page is kept only when it brings the totals closer. The text
     // task can lose credit rows on one page while fixing the debit rows of another, so
     // the two readings are mixed, never swapped wholesale.
+    // (A page whose OCR loses a statement's summary would make that statement drop out of
+    // the gap and look like an improvement, and one that breaks a statement already to the
+    // cent could still lower the sum: a candidate may never verify fewer statements nor
+    // pass fewer.)
     let mut best = pages.clone();
     let mut best_gap = gap;
+    let mut best_verified = verified;
+    let mut best_passing = passing;
     for i in 0..retry.len() {
         if retry[i].method != "ocr" || pages[i].method == "ocr" {
             continue;
         }
         let mut candidate = best.clone();
         candidate[i] = retry[i].clone();
-        if let Some(g) = totals_gap(&candidate) {
-            if g < best_gap {
+        if let Some((g, n, p)) = totals_gap(&candidate) {
+            if g < best_gap && n >= best_verified && p >= best_passing {
                 best = candidate;
                 best_gap = g;
+                best_verified = n;
+                best_passing = p;
+            }
+        }
+    }
+    // Second look: a page adopted early, while a later statement's summary was still
+    // unread, may have helped the wrong total (dropping rows of a statement that was over
+    // because the pages behind it had not been split off yet). Each adopted page is put
+    // back to its text layer once; the reversal stays when the gap gets smaller.
+    for i in 0..retry.len() {
+        if best[i].method != "ocr" || pages[i].method == "ocr" {
+            continue;
+        }
+        let mut candidate = best.clone();
+        candidate[i] = pages[i].clone();
+        if let Some((g, n, p)) = totals_gap(&candidate) {
+            if g < best_gap && n >= best_verified && p >= best_passing {
+                best = candidate;
+                best_gap = g;
+                best_verified = n;
+                best_passing = p;
             }
         }
     }
@@ -741,7 +768,9 @@ fn has_no_balances(pages: &[PageText]) -> bool {
 }
 
 /// Sum of |stated - parsed| over the totals the statement prints; None when it prints none.
-fn totals_gap(pages: &[PageText]) -> Option<f64> {
+/// Sum of |stated - parsed| over the totals the statement prints, how many statements
+/// printed totals, and how many of those are met to the cent; None when none printed any.
+fn totals_gap(pages: &[PageText]) -> Option<(f64, usize, usize)> {
     let refs: Vec<(usize, &str)> = pages.iter().enumerate().map(|(i, p)| (i + 1, p.text.as_str())).collect();
     let ledger = ledger::parse(&refs);
     // A bundle is judged statement by statement: parts that print no totals (an online
@@ -750,7 +779,7 @@ fn totals_gap(pages: &[PageText]) -> Option<f64> {
         let parts: Vec<f64> = ledger.statements.iter().filter(|st| st.total_credits.is_some() || st.total_debits.is_some()).map(|st| {
             st.total_credits.map(|c| (c - st.parsed_credits.unwrap_or(0.0)).abs()).unwrap_or(0.0) + st.total_debits.map(|d| (d - st.parsed_debits.unwrap_or(0.0)).abs()).unwrap_or(0.0)
         }).collect();
-        return if parts.is_empty() { None } else { Some(parts.iter().sum()) };
+        return if parts.is_empty() { None } else { Some((parts.iter().sum(), parts.len(), parts.iter().filter(|g| **g <= 1.0).count())) };
     }
     let s = &ledger.summary;
     if s.total_credits.is_none() && s.total_debits.is_none() {
@@ -758,7 +787,7 @@ fn totals_gap(pages: &[PageText]) -> Option<f64> {
     }
     let gc = s.total_credits.map(|c| (c - ledger.parsed_credit_total).abs()).unwrap_or(0.0);
     let gd = s.total_debits.map(|d| (d - ledger.parsed_debit_total).abs()).unwrap_or(0.0);
-    Some(gc + gd)
+    Some((gc + gd, 1, (gc + gd <= 1.0) as usize))
 }
 
 fn emit_page_done(app: &tauri::AppHandle, file_name: &str, page: usize, n: usize, current: usize, total_pages: usize, method: &str, seconds: f32) {
