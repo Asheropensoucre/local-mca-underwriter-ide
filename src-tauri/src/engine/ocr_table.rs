@@ -72,6 +72,37 @@ fn markdown_rows(block: &[&str]) -> Vec<Vec<String>> {
         .collect()
 }
 
+/// Replace every `<table>...</table>` in plain OCR `text` with aligned layout lines; text
+/// outside the tables is kept as is. The plain task answers with HTML when the image it
+/// is given is a table on its own (a band cut from a page), so a banded reading is mostly
+/// tables. A table without a header row, or one the layout rules do not fit, is written
+/// as its rows' cells separated by spaces.
+pub fn expand_html_tables(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("<table") {
+        out.push_str(&rest[..start]);
+        let Some(end_rel) = rest[start..].find("</table>") else { out.push_str(&rest[start..]); rest = ""; break };
+        let block = &rest[start..start + end_rel + "</table>".len()];
+        let table_rows = split_side_by_side(rows(block));
+        match rows_to_layout(table_rows.clone()) {
+            Some(layout) => out.push_str(&layout),
+            None => {
+                for row in table_rows {
+                    let line = row.join(" ");
+                    if !line.trim().is_empty() {
+                        out.push_str(line.trim());
+                        out.push('\n');
+                    }
+                }
+            }
+        }
+        rest = &rest[start + end_rel + "</table>".len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Replace every Markdown pipe table in plain OCR `text` with aligned layout lines the
 /// ledger parser reads; text outside the tables is kept as is.
 pub fn expand_markdown_tables(text: &str) -> String {
@@ -108,21 +139,36 @@ pub fn expand_markdown_tables(text: &str) -> String {
 /// SERIAL NO., AMOUNT twice) becomes one table twice as long: the left half of every row,
 /// then the right halves, empty halves dropped. Any other table is returned as it came.
 fn split_side_by_side(rows: Vec<Vec<String>>) -> Vec<Vec<String>> {
-    let Some(header) = rows.iter().find(|r| r.iter().any(|c| c.eq_ignore_ascii_case("date"))) else { return rows };
-    let n = header.len();
+    let header = rows.iter().find(|r| r.iter().any(|c| c.eq_ignore_ascii_case("date")));
+    // Without a header row (GLM-OCR's HTML for a band holding only the table body), the
+    // data rows say it themselves: an even number of cells with a date at the start of
+    // each half in most rows.
+    let n = match header {
+        Some(h) => h.len(),
+        None => rows.first().map(|r| r.len()).unwrap_or(0),
+    };
     if n < 4 || n % 2 != 0 {
         return rows;
     }
     let half = n / 2;
-    let same = header[..half].iter().zip(&header[half..]).all(|(a, b)| a.eq_ignore_ascii_case(b));
+    let same = match header {
+        Some(h) => h[..half].iter().zip(&h[half..]).all(|(a, b)| a.eq_ignore_ascii_case(b)),
+        None => {
+            let dated = rows.iter().filter(|r| r.len() == n && parse_date_token(&r[0]).is_some() && (parse_date_token(&r[half]).is_some() || r[half..].iter().all(|c| c.is_empty()))).count();
+            dated >= 2 && dated * 2 >= rows.len()
+        }
+    };
     if !same {
         return rows;
     }
-    let header_idx = rows.iter().position(|r| r == header).unwrap_or(0);
-    let mut out: Vec<Vec<String>> = rows[..header_idx].to_vec();
-    out.push(header[..half].to_vec());
+    let header_idx = header.and_then(|h| rows.iter().position(|r| r == h));
+    let mut out: Vec<Vec<String>> = rows[..header_idx.unwrap_or(0)].to_vec();
+    if let Some(h) = header {
+        out.push(h[..half].to_vec());
+    }
+    let header_idx = header_idx.map(|i| i + 1).unwrap_or(0);
     let (mut left, mut right) = (Vec::new(), Vec::new());
-    for row in &rows[header_idx + 1..] {
+    for row in &rows[header_idx..] {
         if row.len() != n {
             left.push(row.clone()); // a subtotal or a short row: kept in order
             continue;
@@ -261,6 +307,21 @@ mod tests {
         assert_eq!(credits.len(), 2, "{:?}", ledger.transactions);
         assert_eq!(ledger.transactions.len(), 5);
         assert!((ledger.parsed_debit_total - 350.70).abs() < 0.001, "{}", ledger.parsed_debit_total);
+    }
+
+    #[test]
+    fn html_tables_in_a_banded_reading_are_expanded() {
+        // A band holding TD's two-column check table: no header row, "Subtotal:" in the last row.
+        let html = "<table border=\"1\"><tr><td>04/05</td><td>2250</td><td>300.00</td><td>04/15</td><td>10783</td><td>966.47</td></tr><tr><td>04/15</td><td>10782</td><td>1,340.29</td><td></td><td></td><td></td></tr><tr><td></td><td></td><td></td><td></td><td>Subtotal:</td><td>15,547.77</td></tr></table>";
+        let text = expand_html_tables(html);
+        let rows: Vec<Vec<&str>> = text.lines().map(|l| l.split_whitespace().collect()).collect();
+        assert_eq!(rows, vec![vec!["04/05", "2250", "300.00"], vec!["04/15", "10782", "1,340.29"], vec!["04/15", "10783", "966.47"], vec!["Subtotal:", "15,547.77"]], "{text}");
+        // A Wells debits band: heading row, header row as <td>, rows with an empty first cell.
+        let html = "Debits\n<table border=\"1\"><tr><td colspan=\"4\">Debits\nElectronic debits/bank debits</td></tr><tr><td>Effective date</td><td>Posted date</td><td>Amount</td><td>Transaction detail</td></tr><tr><td></td><td>05/03</td><td>14750.00</td><td>Online Transfer to Civitas Health Services xxxxx8749\nRef #lb0Bdwzdbr on 05/03/21</td></tr><tr><td></td><td>05/04</td><td>8600.00</td><td>Online Transfer to Civitas Health Services xxxxx8749</td></tr></table>";
+        let text = expand_html_tables(html);
+        let dated: Vec<&str> = text.lines().filter(|l| l.split_whitespace().next().and_then(parse_date_token).is_some()).collect();
+        assert_eq!(dated.len(), 2, "{text}");
+        assert!(dated[0].contains("14750.00") || dated[0].contains("14,750.00"), "{text}");
     }
 
     #[test]

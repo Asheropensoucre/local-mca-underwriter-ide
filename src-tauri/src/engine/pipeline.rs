@@ -175,6 +175,49 @@ fn page_ink_ratio(pdf: &str, page: usize) -> Result<f64, String> {
     Ok(dark as f64 / img.pixels().count().max(1) as f64)
 }
 
+/// Horizontal bands of a page image (pixel rows `start..end`), split where a run of blank
+/// rows at least `min_gap` tall separates them. The OCR model is a region recognizer: it
+/// reads a block on its own far better than a whole page (it stops after the first table
+/// of a page, and loses the second column of a wide table squeezed into the page's token
+/// budget). Statements put white space between sections and never inside a table beyond
+/// a row's height, so a gap of a quarter inch or more is a section boundary. Bands shorter
+/// than `min_band` (a lone heading) are joined to the band below them.
+pub fn page_bands(img: &image::GrayImage, min_gap: u32, min_band: u32) -> Vec<(u32, u32)> {
+    let (w, h) = img.dimensions();
+    let ink_threshold = (w / 200).max(1); // a few dark pixels are noise, not text
+    let dark_row = |y: u32| (0..w).filter(|&x| img.get_pixel(x, y).0[0] < 128).count() as u32 > ink_threshold;
+    let mut bands: Vec<(u32, u32)> = Vec::new();
+    let mut start: Option<u32> = None;
+    let mut blank_run = 0u32;
+    for y in 0..h {
+        if dark_row(y) {
+            if start.is_none() {
+                start = Some(y);
+            }
+            blank_run = 0;
+        } else if let Some(s) = start {
+            blank_run += 1;
+            if blank_run >= min_gap {
+                bands.push((s, y + 1 - blank_run));
+                start = None;
+                blank_run = 0;
+            }
+        }
+    }
+    if let Some(s) = start {
+        bands.push((s, h));
+    }
+    // A short band is a heading for what follows: join it to the next band.
+    let mut joined: Vec<(u32, u32)> = Vec::new();
+    for (s, e) in bands {
+        match joined.last_mut() {
+            Some(last) if last.1 - last.0 < min_band => last.1 = e,
+            _ => joined.push((s, e)),
+        }
+    }
+    joined
+}
+
 /// Render one page to a grayscale JPEG and return it as a data URI.
 fn render_page_data_uri(pdf: &str, page: usize) -> Result<String, String> {
     render_page_at(pdf, page, ocr_dpi())
@@ -200,6 +243,35 @@ fn render_page_at(pdf: &str, page: usize, dpi: u32) -> Result<String, String> {
     Ok(format!("data:image/jpeg;base64,{}", BASE64.encode(bytes)))
 }
 
+/// Render one page at `dpi` and cut it into its bands (see `page_bands`), each returned
+/// as a JPEG data URI with a little white margin. One band means the page has no gap to
+/// cut at; the caller then reads it whole.
+fn render_page_bands(pdf: &str, page: usize, dpi: u32) -> Result<Vec<String>, String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let prefix = dir.path().join("page");
+    let p = page.to_string();
+    let out = run("pdftocairo", &["-png", "-gray", "-r", &dpi.to_string(), "-f", &p, "-l", &p, "-singlefile", pdf, &prefix.to_string_lossy()])?;
+    if !out.status.success() {
+        return Err(format!("pdftocairo failed: {}", String::from_utf8_lossy(&out.stderr)));
+    }
+    let img = image::open(prefix.with_extension("png")).map_err(|e| e.to_string())?.into_luma8();
+    let (w, h) = img.dimensions();
+    let min_gap = dpi / 4; // a quarter inch of white
+    let min_band = dpi * 2 / 5;
+    let bands = page_bands(&img, min_gap, min_band);
+    let margin = dpi / 12;
+    let mut uris = Vec::with_capacity(bands.len());
+    for (s, e) in bands {
+        let top = s.saturating_sub(margin);
+        let bottom = (e + margin).min(h);
+        let crop = image::imageops::crop_imm(&img, 0, top, w, bottom - top).to_image();
+        let mut bytes: Vec<u8> = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 90).encode_image(&crop).map_err(|e| e.to_string())?;
+        uris.push(format!("data:image/jpeg;base64,{}", BASE64.encode(bytes)));
+    }
+    Ok(uris)
+}
+
 /// GLM-OCR task prompt. "Text Recognition:" is the model's plain-text task.
 const OCR_PROMPT: &str = "Text Recognition:";
 
@@ -214,7 +286,8 @@ const OCR_TABLE_PROMPT: &str = "Table Recognition:";
 struct RawOcr {
     text: Option<PathBuf>,
     table: Option<PathBuf>,
-    /// Plain task at `OCR_HIRES_DPI`, only for pages whose listings came back short.
+    /// Banded reading at `OCR_HIRES_DPI` (see `ocr_page`), only for pages whose first
+    /// reading came back short or nearly empty.
     hires: Option<PathBuf>,
 }
 
@@ -222,7 +295,7 @@ impl RawOcr {
     fn for_page(cache: Option<&(PathBuf, String)>, page: usize) -> RawOcr {
         let model = super::registry::ocr_model().id;
         let base = cache.map(|(dir, h)| dir.join(format!("{h}-p{page:03}-{}dpi-{model}", ocr_dpi())));
-        let hires = cache.map(|(dir, h)| dir.join(format!("{h}-p{page:03}-{OCR_HIRES_DPI}dpi-{model}.txt")));
+        let hires = cache.map(|(dir, h)| dir.join(format!("{h}-p{page:03}-{OCR_HIRES_DPI}dpi-{model}.bands.txt")));
         RawOcr {
             text: base.as_ref().map(|b| b.with_extension("txt")),
             table: base.as_ref().map(|b| b.with_extension("table.html")),
@@ -237,7 +310,7 @@ impl RawOcr {
         match self.text.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
             Some(text) => {
                 let table_ok = !needs_table_pass(&text) || self.table.as_ref().map(|p| p.exists()).unwrap_or(false);
-                let hires_ok = ledger::rows_short_of_totals(&text) == 0 || self.hires.as_ref().map(|p| p.exists()).unwrap_or(false);
+                let hires_ok = ledger::rows_short_of_totals(&text) == 0 && text.split_whitespace().count() >= SPARSE_PAGE_WORDS || self.hires.as_ref().map(|p| p.exists()).unwrap_or(false);
                 table_ok && hires_ok
             }
             None => false,
@@ -297,45 +370,60 @@ async fn ocr_cached(ep: &Endpoint, uri: &mut Option<String>, pdf: &str, page: us
 type PageProgress = std::sync::Arc<dyn Fn(&str, usize) + Send + Sync>;
 
 async fn ocr_page(ep: &Endpoint, pdf: &str, page: usize, raw: &RawOcr, progress: &PageProgress) -> Result<String, String> {
-    let text = ocr_page_passes(ep, pdf, page, raw, progress).await?;
-    // A listing that adds up to less than its printed subtotal means the model dropped
-    // rows it could see; the page is read again at a higher resolution and that reading
-    // stands when it comes closer to the printed figures. Never both: rows are not merged
-    // across readings.
+    let (text, raw_words) = ocr_page_passes(ep, pdf, page, raw, progress).await?;
+    // Two signs the model dropped rows it could see: a listing that adds up to less than
+    // its printed subtotal (the right column of TD's two-column check table), and a plain
+    // reading that came back nearly empty (a Wells page where it stops after the first
+    // table's total). GLM-OCR is a region recognizer, so the page is then read the way its
+    // own SDK reads it: cut into bands at the white gaps between sections, each band on its
+    // own at 200 dpi, the results joined in order. The banded reading stands when it is
+    // short in fewer listings, or when it carries more dated rows than a sparse first
+    // reading. Rows are never merged across readings.
     let short = ledger::rows_short_of_totals(&text);
-    if short == 0 || (cached_only() && !raw.hires.as_ref().map(|p| p.exists()).unwrap_or(false)) {
+    let sparse = raw_words < SPARSE_PAGE_WORDS;
+    if short == 0 && !sparse || (cached_only() && !raw.hires.as_ref().map(|p| p.exists()).unwrap_or(false)) {
         return Ok(text);
     }
-    println!("[Engine] page {page}: {short} listing(s) short of the printed subtotal, reading again at {OCR_HIRES_DPI} dpi");
-    progress(&format!("{short} listing(s) short of the printed subtotal, reading again at {OCR_HIRES_DPI} dpi"), 0);
-    let hires = match raw.hires.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
+    let why = if short > 0 { format!("{short} listing(s) short of the printed subtotal") } else { "plain reading nearly empty".to_string() };
+    println!("[Engine] page {page}: {why}, reading the page in bands at {OCR_HIRES_DPI} dpi");
+    progress(&format!("{why}, reading the page in bands at {OCR_HIRES_DPI} dpi"), 0);
+    let banded = match raw.hires.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
         Some(cached) => cached,
         None => {
-            let uri = render_page_at(pdf, page, OCR_HIRES_DPI)?;
-            let out = ocr_prompt(ep, &uri, OCR_PROMPT, progress, "reading at high resolution").await?;
+            let uris = render_page_bands(pdf, page, OCR_HIRES_DPI)?;
+            let mut parts = Vec::with_capacity(uris.len());
+            for (i, uri) in uris.iter().enumerate() {
+                let out = ocr_prompt(ep, uri, OCR_PROMPT, progress, &format!("reading band {} of {}", i + 1, uris.len())).await?;
+                parts.push(out.trim().to_string());
+            }
+            let out = parts.join("\n\n");
             if let Some(p) = raw.hires.as_ref() {
                 let _ = std::fs::write(p, &out);
             }
             out
         }
     };
-    let hires = super::ocr_table::expand_markdown_tables(&hires);
-    if ledger::rows_short_of_totals(&hires) < short && hires.split_whitespace().count() * 2 >= text.split_whitespace().count() {
-        return Ok(hires);
+    let banded = super::ocr_table::expand_markdown_tables(&super::ocr_table::expand_html_tables(&banded));
+    let dated = |t: &str| t.lines().filter(|l| l.split_whitespace().next().and_then(ledger::parse_date_token).is_some()).count();
+    let better = ledger::rows_short_of_totals(&banded) < short || sparse && dated(&banded) > dated(&text);
+    if better && banded.split_whitespace().count() * 2 >= text.split_whitespace().count() {
+        return Ok(banded);
     }
-    println!("[Engine] page {page}: the high-resolution reading did not come closer; keeping the first");
+    println!("[Engine] page {page}: the banded reading did not come closer; keeping the first");
     Ok(text)
 }
 
-/// Plain text task, then the table task when the text lost amounts (see below).
-async fn ocr_page_passes(ep: &Endpoint, pdf: &str, page: usize, raw: &RawOcr, progress: &PageProgress) -> Result<String, String> {
+/// Plain text task, then the table task when the text lost amounts (see below). Returns
+/// the page text and the word count of the plain task's own output.
+async fn ocr_page_passes(ep: &Endpoint, pdf: &str, page: usize, raw: &RawOcr, progress: &PageProgress) -> Result<(String, usize), String> {
     let mut uri: Option<String> = None; // rendered once, only when a task is not cached
     let prompt = std::env::var("MCA_OCR_PROMPT").unwrap_or_else(|_| OCR_PROMPT.to_string()); // testing aid
     let text = ocr_cached(ep, &mut uri, pdf, page, &prompt, raw.text.as_ref(), progress, "reading").await?;
+    let raw_words = text.split_whitespace().count();
     // The text task sometimes returns tables as Markdown; turn those into aligned lines.
     let text = super::ocr_table::expand_markdown_tables(&text);
     if !needs_table_pass(&text) || prompt != OCR_PROMPT || raw.table_missing_and_cached_only() {
-        return Ok(text);
+        return Ok((text, raw_words));
     }
     let missing = ledger::rows_missing_amounts(&text);
     let why = if missing > 0 { format!("{missing} table row(s) lost their amounts in plain OCR") } else { "plain OCR returned almost nothing".to_string() };
@@ -358,20 +446,20 @@ async fn ocr_page_passes(ep: &Endpoint, pdf: &str, page: usize, raw: &RawOcr, pr
             // ends elsewhere and so never replaces the text.)
             let complete = last_row(&table).is_some() && last_row(&table) == last_row(&text);
             if complete {
-                return Ok(splice_table(&text, &table));
+                return Ok((splice_table(&text, &table), raw_words));
             }
             // The text task kept only the lines below the table ("Total credits: ..."): the
             // table is the page's body, the text its tail.
             if last_row(&text).is_none() && last_row(&table).is_some() {
-                return Ok(format!("{table}\n{text}"));
+                return Ok((format!("{table}\n{text}"), raw_words));
             }
             let patched = patch_missing_amounts(&text, &table);
             if ledger::rows_missing_amounts(&patched) > 0 {
                 println!("[Engine] page {page}: {} row(s) still without an amount after the table pass", ledger::rows_missing_amounts(&patched));
             }
-            Ok(patched)
+            Ok((patched, raw_words))
         }
-        None => Ok(text),
+        None => Ok((text, raw_words)),
     }
 }
 
@@ -1360,6 +1448,31 @@ fn dollar_amounts(text: &str) -> Vec<f64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn page_bands_split_at_white_gaps_and_join_headings() {
+        // 200 wide, 300 tall: a heading (rows 10..20), a gap of 8, a table (28..120), a gap
+        // of 60, a second table (180..260); row spacing inside a table (gaps of 4) never splits.
+        let mut img = image::GrayImage::from_pixel(200, 300, image::Luma([255u8]));
+        let ink = |img: &mut image::GrayImage, y0: u32, y1: u32| for y in y0..y1 { for x in 20..180 { img.put_pixel(x, y, image::Luma([0u8])); } };
+        ink(&mut img, 10, 20);
+        for y in (28..120).step_by(12) { ink(&mut img, y, y + 8); }
+        for y in (180..260).step_by(12) { ink(&mut img, y, y + 8); }
+        assert_eq!(super::page_bands(&img, 30, 40), vec![(10, 120), (180, 260)]);
+    }
+
+    /// `MCA_BANDS_PNG=/tmp/page.png cargo test bands_of_a_page -- --ignored --nocapture`
+    /// prints the bands of a rendered page (150 dpi grayscale PNG) for a look.
+    #[test]
+    #[ignore]
+    fn bands_of_a_page() {
+        let path = std::env::var("MCA_BANDS_PNG").unwrap();
+        let img = image::open(&path).unwrap().into_luma8();
+        let (w, h) = img.dimensions();
+        for (s, e) in super::page_bands(&img, 36, 60) {
+            println!("band {s:>5}..{e:<5} ({} rows) of {w}x{h}", e - s);
+        }
+    }
+
     use super::*;
 
     #[test]
