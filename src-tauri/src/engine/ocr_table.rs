@@ -84,11 +84,12 @@ pub fn expand_markdown_tables(text: &str) -> String {
             while i < lines.len() && lines[i].trim_start().starts_with('|') {
                 i += 1;
             }
-            match rows_to_layout(markdown_rows(&lines[start..i])) {
+            let rows = split_side_by_side(markdown_rows(&lines[start..i]));
+            match rows_to_layout(rows.clone()) {
                 Some(layout) => out.push_str(&layout),
                 None => {
                     // Not a transaction table: keep the cells as words.
-                    for row in markdown_rows(&lines[start..i]) {
+                    for row in rows {
                         out.push_str(&row.join(" "));
                         out.push('\n');
                     }
@@ -100,6 +101,41 @@ pub fn expand_markdown_tables(text: &str) -> String {
         out.push('\n');
         i += 1;
     }
+    out
+}
+
+/// A table printed as two identical column sets side by side (TD's "Checks Paid": DATE,
+/// SERIAL NO., AMOUNT twice) becomes one table twice as long: the left half of every row,
+/// then the right halves, empty halves dropped. Any other table is returned as it came.
+fn split_side_by_side(rows: Vec<Vec<String>>) -> Vec<Vec<String>> {
+    let Some(header) = rows.iter().find(|r| r.iter().any(|c| c.eq_ignore_ascii_case("date"))) else { return rows };
+    let n = header.len();
+    if n < 4 || n % 2 != 0 {
+        return rows;
+    }
+    let half = n / 2;
+    let same = header[..half].iter().zip(&header[half..]).all(|(a, b)| a.eq_ignore_ascii_case(b));
+    if !same {
+        return rows;
+    }
+    let header_idx = rows.iter().position(|r| r == header).unwrap_or(0);
+    let mut out: Vec<Vec<String>> = rows[..header_idx].to_vec();
+    out.push(header[..half].to_vec());
+    let (mut left, mut right) = (Vec::new(), Vec::new());
+    for row in &rows[header_idx + 1..] {
+        if row.len() != n {
+            left.push(row.clone()); // a subtotal or a short row: kept in order
+            continue;
+        }
+        if row[..half].iter().any(|c| !c.is_empty()) {
+            left.push(row[..half].to_vec());
+        }
+        if row[half..].iter().any(|c| !c.is_empty()) {
+            right.push(row[half..].to_vec());
+        }
+    }
+    out.extend(left);
+    out.extend(right);
     out
 }
 
@@ -225,6 +261,14 @@ mod tests {
         assert_eq!(credits.len(), 2, "{:?}", ledger.transactions);
         assert_eq!(ledger.transactions.len(), 5);
         assert!((ledger.parsed_debit_total - 350.70).abs() < 0.001, "{}", ledger.parsed_debit_total);
+    }
+
+    #[test]
+    fn side_by_side_check_tables_are_stacked() {
+        let md = "| DATE | SERIAL NO. | AMOUNT | DATE | SERIAL NO. | AMOUNT |\n| :--- | :--- | :--- | :--- | :--- | :--- |\n| 04/05 | 2250 | 300.00 | 04/15 | 10783 | 966.47 |\n| 04/15 | 10782 | 1,340.29 | | | |\n";
+        let text = expand_markdown_tables(md);
+        let rows: Vec<Vec<&str>> = text.lines().skip(1).map(|l| l.split_whitespace().collect()).collect();
+        assert_eq!(rows, vec![vec!["04/05", "2250", "300.00"], vec!["04/15", "10782", "1,340.29"], vec!["04/15", "10783", "966.47"]], "{text}");
     }
 
     #[test]

@@ -3955,6 +3955,58 @@ pub fn rows_missing_amounts(text: &str) -> usize {
     missing
 }
 
+/// Number of listings whose dated rows add up to less than the subtotal printed under
+/// them. The OCR model sometimes drops rows it can see (the right column of TD's two-column
+/// "Checks Paid" table; the tail of a long list): the printed "Subtotal: 15,547.77" then
+/// exceeds the rows read, and the caller re-reads the page at a higher resolution. Only
+/// unambiguous listings count: one amount per dated entry (two-column check tables carry a
+/// date before each), and a subtotal line with a single figure. Running-balance tables and
+/// two-figure totals give no signal.
+pub fn rows_short_of_totals(text: &str) -> usize {
+    let mut short = 0;
+    let mut sum_cents: i64 = 0;
+    let mut rows = 0;
+    let mut clean = true; // every row so far had one amount per dated entry
+    let mut continued = false; // the listing began on the page before
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let toks: Vec<&str> = line.split_whitespace().filter(|t| *t != "|").collect();
+        let lower = line.to_ascii_lowercase();
+        let amounts: Vec<i64> = toks.iter().filter(|t| is_amount_token(t)).filter_map(|t| parse_amount(t)).map(|v| (v.abs() * 100.0).round() as i64).collect();
+        let total_line = (lower.trim_start().starts_with("subtotal") || lower.trim_start().starts_with("total")) && !lower.contains("balance");
+        if total_line {
+            if amounts.len() == 1 && rows > 0 && clean && !continued && sum_cents < amounts[0] {
+                short += 1;
+            }
+            sum_cents = 0;
+            rows = 0;
+            clean = true;
+            continued = false;
+            continue;
+        }
+        let dates = toks.iter().filter(|t| parse_date_token(t).is_some()).count();
+        if dates == 0 || parse_date_token(toks[0]).is_none() {
+            // A header or heading resets the listing; a wrapped description line does not.
+            if amounts.is_empty() && toks.len() <= 8 && (lower.contains("date") || lower.ends_with(':')) {
+                sum_cents = 0;
+                rows = 0;
+                clean = true;
+            }
+            // A listing continued from the page before cannot reach its subtotal here.
+            if amounts.is_empty() && lower.contains("continued") {
+                continued = true;
+            }
+            continue;
+        }
+        if amounts.len() != dates {
+            clean = false; // running balance beside the amount, or a cell lost
+            continue;
+        }
+        rows += dates;
+        sum_cents += amounts.iter().sum::<i64>();
+    }
+    short
+}
+
 /// Bank named on the statement. Counts mentions on the first pages and picks the most
 /// frequent name from a fixed list, so a Wells Fargo statement that mentions Zelle or a
 /// wire to Chase still reads "Wells Fargo".
@@ -4239,6 +4291,22 @@ mod tests {
         let l = parse(&[(1, p1), (2, p2)]);
         assert!(l.transactions.is_empty(), "{:?}", l.transactions);
         assert_eq!((l.summary.total_credits, l.summary.total_debits), (Some(0.0), Some(0.0)));
+    }
+
+    #[test]
+    fn rows_short_of_a_printed_subtotal_are_counted() {
+        // TD's two-column check table as GLM-OCR read it at 150 dpi: the right column gone.
+        let short = "Subtotal: 161,296.05\nDATE SERIAL NO. AMOUNT\n04/05       2250                                                                  300.00\n04/04       10766*                                                                768.72\n04/15       10782                                                               1,340.29\nSubtotal: 15,547.77\n";
+        assert_eq!(rows_short_of_totals(short), 1);
+        // The 200 dpi reading, both columns on each line.
+        let whole = "DATE SERIAL NO. AMOUNT DATE SERIAL NO. AMOUNT\n04/05 2250 300.00 04/15 10783 966.47\n04/04 10766* 768.72 04/18 10784 548.86\n04/01 10775* 1,214.61 04/15 10785 743.96\n04/01 10776 578.22 04/29 10786 3,907.11\n04/01 10778* 400.25 04/29 10787 1,332.28\n04/01 10779 1,102.13 04/30 10788 946.35\n04/01 10781* 583.87 04/29 10790* 814.65\n04/15 10782 1,340.29\nSubtotal: 15,547.77\n";
+        assert_eq!(rows_short_of_totals(whole), 0);
+        // A running-balance table gives no signal, nor does a two-figure totals line.
+        let balances = "Date Description Deposits Withdrawals Balance\n10/4 Check 369.24 -518.63\n10/6 Purchase 10.00 -528.63\nTotals $0.00 $379.24\n";
+        assert_eq!(rows_short_of_totals(balances), 0);
+        // A section continued from the page before is short by nature.
+        let continued = "Electronic Deposits (continued)\nDate Description Amount\n04/18 CCD DEPOSIT, TOAST 3,176.12\n04/19 CCD DEPOSIT, TOAST 5,225.77\nSubtotal: 161,296.05\n";
+        assert_eq!(rows_short_of_totals(continued), 0);
     }
 
     #[test]
