@@ -663,6 +663,15 @@ pub async fn read_pages(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdfs: &[S
     if queued == 0 {
         return Ok(pages);
     }
+    // The OCR model reads the body and drops the bank's "Page N of M" footer; the text
+    // layer's footer line is kept so a copy with pages missing is still recognized.
+    for (r, p) in retry.iter_mut().zip(&pages) {
+        if r.method == "ocr" && p.method == "text" && ledger::footer_line(&r.text).is_none() {
+            if let Some(footer) = ledger::footer_line(&p.text) {
+                r.text = format!("{}\n{}\n", r.text.trim_end(), footer.trim());
+            }
+        }
+    }
     dump_pages(&retry, "-retry");
     // Page by page: an OCR page is kept only when it brings the totals closer. The text
     // task can lose credit rows on one page while fixing the debit rows of another, so
@@ -687,6 +696,57 @@ pub async fn read_pages(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdfs: &[S
                 best_gap = g;
                 best_verified = n;
                 best_passing = p;
+            }
+        }
+    }
+    // Statement by statement: one OCR page on its own can widen the gap while the set of
+    // them closes it (a court copy whose text layer over-counts fees on one page and drops
+    // deposits on the next). Every statement still off gets all its remaining OCR pages at
+    // once, then the single pages are offered again in case the swap unlocked one.
+    let mut improved = true;
+    while improved {
+        improved = false;
+        let refs: Vec<(usize, &str)> = best.iter().enumerate().map(|(i, p)| (i + 1, p.text.as_str())).collect();
+        let ranges: Vec<(usize, usize)> = ledger::parse(&refs).statements.iter().filter(|st| {
+            let off = st.total_credits.map(|c| (c - st.parsed_credits.unwrap_or(0.0)).abs()).unwrap_or(0.0) + st.total_debits.map(|d| (d - st.parsed_debits.unwrap_or(0.0)).abs()).unwrap_or(0.0);
+            off > 1.0
+        }).filter_map(|st| st.pages).collect();
+        for (first, last) in ranges {
+            let mut candidate = best.clone();
+            let mut swapped = 0;
+            for i in first.saturating_sub(1)..last.min(retry.len()) {
+                if retry[i].method == "ocr" && candidate[i].method != "ocr" {
+                    candidate[i] = retry[i].clone();
+                    swapped += 1;
+                }
+            }
+            if swapped == 0 {
+                continue;
+            }
+            if let Some((g, n, p)) = totals_gap(&candidate) {
+                if g < best_gap && n >= best_verified && p >= best_passing {
+                    best = candidate;
+                    best_gap = g;
+                    best_verified = n;
+                    best_passing = p;
+                    improved = true;
+                }
+            }
+        }
+        for i in 0..retry.len() {
+            if retry[i].method != "ocr" || best[i].method == "ocr" {
+                continue;
+            }
+            let mut candidate = best.clone();
+            candidate[i] = retry[i].clone();
+            if let Some((g, n, p)) = totals_gap(&candidate) {
+                if g < best_gap && n >= best_verified && p >= best_passing {
+                    best = candidate;
+                    best_gap = g;
+                    best_verified = n;
+                    best_passing = p;
+                    improved = true;
+                }
             }
         }
     }
@@ -1152,8 +1212,10 @@ fn assemble_report(ledger: &ledger::Ledger, cls: &Value, pages: &[PageText]) -> 
             "statements": ledger.statements.iter().map(|st| json!({
                 "bank": st.bank, "account_last4": st.account_last4, "period_start": st.period_start, "period_end": st.period_end,
                 "beginning_balance": st.beginning_balance, "ending_balance": st.ending_balance,
-                "total_credits": st.total_credits, "total_debits": st.total_debits
+                "total_credits": st.total_credits, "total_debits": st.total_debits,
+                "missing_pages": st.missing_pages
             })).collect::<Vec<_>>(),
+            "missing_pages": s.missing_pages,
             "transactions_parsed": ledger.transactions.len(),
             "daily_balances_found": ledger.daily_balances.len(),
             "funding_deposits": funding_lines,

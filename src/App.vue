@@ -394,6 +394,8 @@
                   <span v-if="parsedData.verification.document_kind">{{ parsedData.verification.document_kind }}, not a bank statement: the figures below are that document's, not an account's</span>
                   <span v-if="parsedData.verification.bank" class="text-gray-600">bank</span>
                   <span v-if="parsedData.verification.bank">{{ parsedData.verification.bank }}<span v-if="parsedData.verification.statements?.length > 1">, {{ parsedData.verification.statements.length }} statements in the files</span></span>
+                  <span v-if="parsedData.verification.missing_pages" class="text-gray-600">copy</span>
+                  <span v-if="parsedData.verification.missing_pages">pages missing from the file (the statement's own page numbers skip): totals cannot be met from the lines present</span>
                   <span class="text-gray-600">credits</span>
                   <span>stated {{ formatCurrency(parsedData.verification.stated_total_credits) }}, parsed {{ formatCurrency(parsedData.verification.parsed_total_credits) }}</span>
                   <span class="text-gray-600">debits</span>
@@ -406,7 +408,7 @@
                 <div v-if="parsedData.verification.statements?.length > 1" class="mt-2">
                   <p class="text-gray-600">per statement</p>
                   <p v-for="(st, i) in parsedData.verification.statements" :key="'st' + i" class="text-gray-400 truncate">
-                    {{ st.bank || '' }} {{ st.account_last4 ? '…' + st.account_last4 : '' }} {{ st.period_start || '' }} {{ st.period_end ? 'to ' + st.period_end : '' }}: credits {{ formatCurrency(st.total_credits) }}, debits {{ formatCurrency(st.total_debits) }}, balance {{ formatCurrency(st.beginning_balance) }} to {{ formatCurrency(st.ending_balance) }}
+                    {{ st.bank || '' }} {{ st.account_last4 ? '…' + st.account_last4 : '' }} {{ st.period_start || '' }} {{ st.period_end ? 'to ' + st.period_end : '' }}: credits {{ formatCurrency(st.total_credits) }}, debits {{ formatCurrency(st.total_debits) }}, balance {{ formatCurrency(st.beginning_balance) }} to {{ formatCurrency(st.ending_balance) }}<span v-if="st.missing_pages">, pages missing from the copy</span>
                   </p>
                 </div>
                 <div v-if="parsedData.verification.funding_deposits?.length" class="mt-2">

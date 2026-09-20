@@ -61,6 +61,13 @@ def main():
     # consolidated statements) live in not_statements.txt next to the PDF folder: one file
     # name per line, anything after a space is the reason.
     exclude_file = sys.argv[sys.argv.index("--exclude") + 1] if "--exclude" in sys.argv else os.path.join(os.path.dirname(os.path.abspath(folder.rstrip("/"))), "not_statements.txt")
+    # The OCR cache lives next to the PDF folder (corpus/ocr-cache); without it the parser
+    # falls back to the app's own cache and every scanned page counts as unread, which once
+    # looked like 22 regressions.
+    corpus_cache = os.path.join(os.path.dirname(os.path.abspath(folder.rstrip("/"))), "ocr-cache")
+    if ocr and "MCA_OCR_CACHE" not in os.environ and os.path.isdir(corpus_cache):
+        os.environ["MCA_OCR_CACHE"] = corpus_cache
+        print(f"using OCR cache {corpus_cache}")
     excluded = set()
     if os.path.exists(exclude_file):
         excluded = {l.split()[0] for l in open(exclude_file) if l.strip() and not l.startswith("#")}
@@ -95,21 +102,29 @@ def main():
                "lenders": [r["payee"][:40] for r in lender_activity(d)]}
         statements = d.get("statements") or []
         row["statements"] = len(statements) or 1
+        # A copy that skips pages of a statement (one-sided scan, "Page 3 of 14" then
+        # "Page 7 of 14") can never meet that statement's totals: "incomplete", not a fail.
         if len(statements) > 1:
             # A bundle passes when every statement that prints a total matches its own lines.
             checked = [st for st in statements if st.get("total_credits") is not None or st.get("total_debits") is not None]
             if not checked:
                 row["status"] = "no summary"
             else:
-                ok = all((st.get("total_credits") is None or abs(st["total_credits"] - (st.get("parsed_credits") or 0)) <= 1.0)
-                         and (st.get("total_debits") is None or abs(st["total_debits"] - (st.get("parsed_debits") or 0)) <= 1.0) for st in checked)
-                row["status"] = "pass" if ok else "fail"
+                met = lambda st: ((st.get("total_credits") is None or abs(st["total_credits"] - (st.get("parsed_credits") or 0)) <= 1.0)
+                                  and (st.get("total_debits") is None or abs(st["total_debits"] - (st.get("parsed_debits") or 0)) <= 1.0))
+                complete = [st for st in checked if not st.get("missing_pages")]
+                if not all(met(st) for st in complete):
+                    row["status"] = "fail"
+                elif len(complete) < len(checked) and not all(met(st) for st in checked):
+                    row["status"] = "incomplete"
+                else:
+                    row["status"] = "pass"
         elif stated_c is None and stated_d is None:
             row["status"] = "no summary"
         else:
             ok_c = stated_c is None or abs(stated_c - p["credit_total"]) <= 1.0
             ok_d = stated_d is None or abs(stated_d - p["debit_total"]) <= 1.0
-            row["status"] = "pass" if ok_c and ok_d else "fail"
+            row["status"] = "pass" if ok_c and ok_d else ("incomplete" if s.get("missing_pages") else "fail")
         rows.append(row)
 
     if snapshot:
@@ -117,6 +132,9 @@ def main():
         if os.path.exists(snapshot):
             previous = json.load(open(snapshot))
         current = {r["name"]: r.get("status") for r in rows}
+        # A file the parser names as not a statement leaves the score, so a statement newly
+        # misnamed would otherwise vanish instead of counting as a regression.
+        current.update({n: f"not a statement ({k})" for n, k in not_statements})
         regressions = sorted(n for n, st in previous.items() if st == "pass" and current.get(n) not in (None, "pass"))
         gains = sorted(n for n, st in current.items() if st == "pass" and previous.get(n, "pass") != "pass" and n in previous)
         if regressions:
@@ -144,9 +162,10 @@ def main():
     passed = [r for r in rows if r["status"] == "pass"]
     failed = [r for r in rows if r["status"] == "fail"]
     no_summary = [r for r in rows if r["status"] == "no summary"]
+    incomplete = [r for r in rows if r["status"] == "incomplete"]
     errors = [r for r in rows if r["status"] == "error"]
     lend = [r for r in rows if r.get("lenders")]
-    print(f"passed {len(passed)}, failed {len(failed)}, no summary found {len(no_summary)}, errors {len(errors)}; with lender activity {len(lend)}")
+    print(f"passed {len(passed)}, failed {len(failed)}, incomplete copies {len(incomplete)}, no summary found {len(no_summary)}, errors {len(errors)}; with lender activity {len(lend)}")
     if not_statements:
         print(f"recognized as not bank statements and skipped: {len(not_statements)} ({', '.join(sorted(set(k for _, k in not_statements)))})")
     if lend and verbose:
@@ -157,6 +176,10 @@ def main():
     if failed:
         print("\nFAILED (stated / parsed):")
         for r in failed:
+            print("  ", fmt(r))
+    if incomplete:
+        print("\nINCOMPLETE COPIES (pages missing from the file, stated / parsed):")
+        for r in incomplete:
             print("  ", fmt(r))
     if no_summary:
         print("\nNO SUMMARY FOUND:")
