@@ -616,11 +616,21 @@ pub async fn extract_pages(
     let mut pages: Vec<PageText> = Vec::with_capacity(n);
     let mut ocr_queue: Vec<usize> = Vec::new();
 
+    let cache = ocr_cache_dir(app).and_then(|dir| file_hash(pdf).map(|h| (dir, h)));
+    let tessdata = tessdata_dir(app);
     for page in 1..=n {
         let current = page_offset + page;
         let started = Instant::now();
-        let layer = text_layer(pdf, page)?;
-        let method = page_method(pdf, page, &layer, force_ocr);
+        let mut layer = text_layer(pdf, page)?;
+        let mut method = page_method(pdf, page, &layer, force_ocr);
+        // A scanned page is read by classic OCR first (a second or two, exact on a clean
+        // scan); the model reads it only when the totals say the page needs it.
+        if method == "ocr" && !force_ocr {
+            if let Some(text) = tesseract_layer(cache.as_ref(), tessdata.as_deref(), pdf, page) {
+                layer = text;
+                method = "tesseract";
+            }
+        }
         if method == "ocr" {
             ocr_queue.push(page);
             let _ = app.emit("analysis-progress", json!({
@@ -637,6 +647,53 @@ pub async fn extract_pages(
     ocr_into(app, ep, pdf, &mut pages, &ocr_queue, page_offset, total_pages).await?;
     dump_pages(&pages, "");
     Ok(pages)
+}
+
+/// Resolution for classic OCR: Tesseract wants about 300 dpi for 10-point print.
+const TESSERACT_DPI: u32 = 300;
+
+/// Where Tesseract's language data lives: the engine directory's `tessdata` (the app
+/// downloads `eng.traineddata` there), else whatever the system Tesseract finds itself.
+fn tessdata_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let dir = super::runtime::engine_dir(app).ok()?.join("tessdata");
+    dir.join("eng.traineddata").exists().then_some(dir)
+}
+
+/// Classic OCR of a scanned page (Tesseract, when installed): deterministic, a second or
+/// two on the CPU, and exact on a clean scan, where the vision model drops rows. None
+/// when Tesseract is missing, fails, or reads fewer than `MIN_TEXT_WORDS` words (a
+/// garbled or faint scan the model must read). Cached next to the model's readings.
+/// `MCA_NO_TESSERACT=1` skips it (testing aid).
+fn tesseract_layer(cache: Option<&(PathBuf, String)>, tessdata: Option<&Path>, pdf: &str, page: usize) -> Option<String> {
+    if std::env::var("MCA_NO_TESSERACT").is_ok() {
+        return None;
+    }
+    let path = cache.map(|(dir, h)| dir.join(format!("{h}-p{page:03}-{TESSERACT_DPI}dpi-tesseract.txt")));
+    if let Some(text) = path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
+        return (text.split_whitespace().count() >= MIN_TEXT_WORDS).then_some(text);
+    }
+    let dir = tempfile::tempdir().ok()?;
+    let prefix = dir.path().join("page");
+    let p = page.to_string();
+    let out = run("pdftocairo", &["-png", "-gray", "-r", &TESSERACT_DPI.to_string(), "-f", &p, "-l", &p, "-singlefile", pdf, &prefix.to_string_lossy()]).ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let png = prefix.with_extension("png");
+    let mut cmd = Command::new("tesseract");
+    cmd.arg(&png).arg("stdout").args(["--psm", "6"]);
+    if let Some(td) = tessdata {
+        cmd.env("TESSDATA_PREFIX", td);
+    }
+    let out = cmd.output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    if let Some(p) = path {
+        let _ = std::fs::write(p, &text);
+    }
+    (text.split_whitespace().count() >= MIN_TEXT_WORDS).then_some(text)
 }
 
 /// Testing aid: MCA_DUMP_PAGES=<dir> writes every page text to disk for parser work
@@ -777,128 +834,96 @@ pub async fn read_pages(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdfs: &[S
     // No printed totals at all is a gap too when the text layer is court OCR so poor that
     // not even the balances survive ("Eeglnnirq Balance"): every image-backed page is
     // re-read and adopted as soon as it yields a summary.
+    // (A classic-OCR reading with no printed totals is unverified too: the model may read
+    // the summary the scan garbled for Tesseract.)
     let (gap, verified, passing) = match totals_gap(&pages) {
         Some((g, _, _)) if g <= 1.0 => return Ok(pages),
         Some((g, n, p)) => (g, n, p),
-        None if has_no_balances(&pages) => (f64::INFINITY, 0, 0),
+        None if has_no_balances(&pages) || pages.iter().any(|p| p.method == "tesseract") => (f64::INFINITY, 0, 0),
         None => return Ok(pages),
     };
-    let mut retry = pages.clone();
+    // First a second reading by classic OCR of every page that sits on an image (a court
+    // copy's text layer is someone else's poor OCR): a second per page, adopted page by
+    // page and statement by statement where it brings the totals closer. Often that is
+    // enough and the model never runs.
+    let cache_for = |pdf: &str| ocr_cache_dir(app).and_then(|dir| file_hash(pdf).map(|h| (dir, h)));
+    let tessdata = tessdata_dir(app);
+    let mut tess = pages.clone();
+    let mut tess_pages = 0;
+    for (pdf, &offset) in pdfs.iter().zip(&offsets) {
+        let n = page_count(pdf)?;
+        let cache = cache_for(pdf);
+        for p in &mut tess[offset..offset + n] {
+            if p.method == "text" && has_page_image(pdf, p.page) {
+                if let Some(text) = tesseract_layer(cache.as_ref(), tessdata.as_deref(), pdf, p.page) {
+                    p.text = text;
+                    p.method = "tesseract";
+                    tess_pages += 1;
+                }
+            }
+        }
+    }
+    let (mut best, mut best_gap, mut best_verified, mut best_passing) = (pages.clone(), gap, verified, passing);
+    if tess_pages > 0 {
+        let _ = app.emit("analysis-progress", json!({
+            "type": "page_start", "current_page": 0, "total_pages": total_pages,
+            "message": format!("Totals do not match the statement summary (off by {gap:.2}); re-reading {tess_pages} scanned page(s) with classic OCR")
+        }));
+        let (b, g, n, p) = adopt_readings(best, &tess, "tesseract", best_gap, best_verified, best_passing);
+        let adopted = b.iter().filter(|p| p.method == "tesseract").count() - pages.iter().filter(|p| p.method == "tesseract").count();
+        if adopted > 0 {
+            println!("[Engine] classic OCR improved the totals gap from {best_gap:.2} to {g:.2} using {adopted} page(s)");
+        }
+        (best, best_gap, best_verified, best_passing) = (b, g, n, p);
+        if best_gap <= 1.0 {
+            return Ok(best);
+        }
+    }
+    // Then the model, on the pages that still sit on an image, wherever the totals are
+    // still off.
+    let mut retry = best.clone();
     let mut queued = 0;
     for (pdf, &offset) in pdfs.iter().zip(&offsets) {
         let n = page_count(pdf)?;
         let slice = &mut retry[offset..offset + n];
-        let queue: Vec<usize> = slice.iter().filter(|p| p.method == "text" && has_page_image(pdf, p.page)).map(|p| p.page).collect();
+        let queue: Vec<usize> = slice.iter().filter(|p| p.method == "tesseract" || p.method == "text" && has_page_image(pdf, p.page)).map(|p| p.page).collect();
         if queue.is_empty() {
             continue;
         }
         queued += queue.len();
         let _ = app.emit("analysis-progress", json!({
             "type": "page_start", "current_page": offset, "total_pages": total_pages,
-            "message": if gap.is_finite() { format!("Totals do not match the statement summary (off by {gap:.2}); re-reading {} scanned page(s) with OCR", queue.len()) } else { format!("No balances found in the text layer; re-reading {} scanned page(s) with OCR", queue.len()) }
+            "message": if best_gap.is_finite() { format!("Totals do not match the statement summary (off by {best_gap:.2}); re-reading {} scanned page(s) with the OCR model", queue.len()) } else { format!("No balances found in the text layer; re-reading {} scanned page(s) with the OCR model", queue.len()) }
         }));
         ocr_into(app, ep.as_ref(), pdf, slice, &queue, offset, total_pages).await?;
     }
     if queued == 0 {
-        return Ok(pages);
+        return Ok(best);
     }
     // The OCR model reads the body and drops the bank's "Page N of M" footer; the text
     // layer's footer line is kept so a copy with pages missing is still recognized.
-    for (r, p) in retry.iter_mut().zip(&pages) {
-        if r.method == "ocr" && p.method == "text" && ledger::footer_line(&r.text).is_none() {
+    for (r, p) in retry.iter_mut().zip(&best) {
+        if r.method == "ocr" && (p.method == "text" || p.method == "tesseract") && ledger::footer_line(&r.text).is_none() {
             if let Some(footer) = ledger::footer_line(&p.text) {
                 r.text = format!("{}\n{}\n", r.text.trim_end(), footer.trim());
             }
         }
     }
     dump_pages(&retry, "-retry");
-    // Page by page: an OCR page is kept only when it brings the totals closer. The text
-    // task can lose credit rows on one page while fixing the debit rows of another, so
-    // the two readings are mixed, never swapped wholesale.
-    // (A page whose OCR loses a statement's summary would make that statement drop out of
-    // the gap and look like an improvement, and one that breaks a statement already to the
-    // cent could still lower the sum: a candidate may never verify fewer statements nor
-    // pass fewer.)
-    let mut best = pages.clone();
-    let mut best_gap = gap;
-    let mut best_verified = verified;
-    let mut best_passing = passing;
-    for i in 0..retry.len() {
-        if retry[i].method != "ocr" || pages[i].method == "ocr" {
-            continue;
-        }
-        let mut candidate = best.clone();
-        candidate[i] = retry[i].clone();
-        if let Some((g, n, p)) = totals_gap(&candidate) {
-            if g < best_gap && n >= best_verified && p >= best_passing {
-                best = candidate;
-                best_gap = g;
-                best_verified = n;
-                best_passing = p;
-            }
-        }
-    }
-    // Statement by statement: one OCR page on its own can widen the gap while the set of
-    // them closes it (a court copy whose text layer over-counts fees on one page and drops
-    // deposits on the next). Every statement still off gets all its remaining OCR pages at
-    // once, then the single pages are offered again in case the swap unlocked one.
-    let mut improved = true;
-    while improved {
-        improved = false;
-        let refs: Vec<(usize, &str)> = best.iter().enumerate().map(|(i, p)| (i + 1, p.text.as_str())).collect();
-        let ranges: Vec<(usize, usize)> = ledger::parse(&refs).statements.iter().filter(|st| {
-            let off = st.total_credits.map(|c| (c - st.parsed_credits.unwrap_or(0.0)).abs()).unwrap_or(0.0) + st.total_debits.map(|d| (d - st.parsed_debits.unwrap_or(0.0)).abs()).unwrap_or(0.0);
-            off > 1.0
-        }).filter_map(|st| st.pages).collect();
-        for (first, last) in ranges {
-            let mut candidate = best.clone();
-            let mut swapped = 0;
-            for i in first.saturating_sub(1)..last.min(retry.len()) {
-                if retry[i].method == "ocr" && candidate[i].method != "ocr" {
-                    candidate[i] = retry[i].clone();
-                    swapped += 1;
-                }
-            }
-            if swapped == 0 {
-                continue;
-            }
-            if let Some((g, n, p)) = totals_gap(&candidate) {
-                if g < best_gap && n >= best_verified && p >= best_passing {
-                    best = candidate;
-                    best_gap = g;
-                    best_verified = n;
-                    best_passing = p;
-                    improved = true;
-                }
-            }
-        }
-        for i in 0..retry.len() {
-            if retry[i].method != "ocr" || best[i].method == "ocr" {
-                continue;
-            }
-            let mut candidate = best.clone();
-            candidate[i] = retry[i].clone();
-            if let Some((g, n, p)) = totals_gap(&candidate) {
-                if g < best_gap && n >= best_verified && p >= best_passing {
-                    best = candidate;
-                    best_gap = g;
-                    best_verified = n;
-                    best_passing = p;
-                    improved = true;
-                }
-            }
-        }
-    }
+    let base = best.clone();
+    let (b, g, n, p) = adopt_readings(best, &retry, "ocr", best_gap, best_verified, best_passing);
+    (best, best_gap, best_verified, best_passing) = (b, g, n, p);
+    let _ = (best_verified, best_passing);
     // Second look: a page adopted early, while a later statement's summary was still
     // unread, may have helped the wrong total (dropping rows of a statement that was over
     // because the pages behind it had not been split off yet). Each adopted page is put
-    // back to its text layer once; the reversal stays when the gap gets smaller.
+    // back to its earlier reading once; the reversal stays when the gap gets smaller.
     for i in 0..retry.len() {
-        if best[i].method != "ocr" || pages[i].method == "ocr" {
+        if best[i].method != "ocr" || base[i].method == "ocr" {
             continue;
         }
         let mut candidate = best.clone();
-        candidate[i] = pages[i].clone();
+        candidate[i] = base[i].clone();
         if let Some((g, n, p)) = totals_gap(&candidate) {
             if g < best_gap && n >= best_verified && p >= best_passing {
                 best = candidate;
@@ -908,12 +933,12 @@ pub async fn read_pages(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdfs: &[S
             }
         }
     }
-    let adopted = best.iter().zip(&pages).filter(|(b, p)| b.method != p.method).count();
+    let adopted = best.iter().filter(|p| p.method == "ocr").count() - pages.iter().filter(|p| p.method == "ocr").count();
     if adopted == 0 {
-        println!("[Engine] OCR re-read did not improve the totals gap ({gap:.2}); keeping the text layer");
-        return Ok(pages);
+        println!("[Engine] the OCR model's re-read did not improve the totals gap ({best_gap:.2}); keeping the earlier readings");
+        return Ok(base);
     }
-    println!("[Engine] OCR re-read improved the totals gap from {gap:.2} to {best_gap:.2} using {adopted} OCR page(s)");
+    println!("[Engine] the OCR model's re-read improved the totals gap from {gap:.2} to {best_gap:.2} using {adopted} page(s)");
     // The OCR model reads the transaction body and may skip the letterhead; the bank's
     // name from the text layer is kept as a line of its own.
     let texts = |ps: &[PageText]| ps.iter().map(|p| p.text.clone()).collect::<Vec<_>>();
@@ -925,6 +950,72 @@ pub async fn read_pages(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdfs: &[S
         }
     }
     Ok(best)
+}
+
+/// Mix a second reading into `base`: every page of `candidates` read by `method` is offered
+/// page by page (kept only when the totals gap shrinks without verifying or passing fewer
+/// statements), then every statement still off gets all of its remaining candidate pages
+/// at once, then the single pages again in case the swap unlocked one. The text task can
+/// lose credit rows on one page while fixing the debit rows of another, so readings are
+/// mixed, never swapped wholesale. Returns the mix and its gap, verified and passing counts.
+fn adopt_readings(mut best: Vec<PageText>, candidates: &[PageText], method: &str, mut best_gap: f64, mut best_verified: usize, mut best_passing: usize) -> (Vec<PageText>, f64, usize, usize) {
+    let mut try_candidate = |best: &mut Vec<PageText>, candidate: Vec<PageText>, best_gap: &mut f64, best_verified: &mut usize, best_passing: &mut usize| -> bool {
+        if let Some((g, n, p)) = totals_gap(&candidate) {
+            if g < *best_gap && n >= *best_verified && p >= *best_passing {
+                *best = candidate;
+                *best_gap = g;
+                *best_verified = n;
+                *best_passing = p;
+                return true;
+            }
+        }
+        false
+    };
+    let offer_singles = |best: &mut Vec<PageText>, best_gap: &mut f64, best_verified: &mut usize, best_passing: &mut usize, try_candidate: &mut dyn FnMut(&mut Vec<PageText>, Vec<PageText>, &mut f64, &mut usize, &mut usize) -> bool| -> bool {
+        let mut any = false;
+        for i in 0..candidates.len() {
+            if candidates[i].method != method || best[i].method == method {
+                continue;
+            }
+            let mut candidate = best.clone();
+            candidate[i] = candidates[i].clone();
+            any |= try_candidate(best, candidate, best_gap, best_verified, best_passing);
+        }
+        any
+    };
+    offer_singles(&mut best, &mut best_gap, &mut best_verified, &mut best_passing, &mut try_candidate);
+    let mut improved = true;
+    while improved {
+        improved = false;
+        let refs: Vec<(usize, &str)> = best.iter().enumerate().map(|(i, p)| (i + 1, p.text.as_str())).collect();
+        let parsed = ledger::parse(&refs);
+        let mut ranges: Vec<(usize, usize)> = parsed.statements.iter().filter(|st| {
+            let off = st.total_credits.map(|c| (c - st.parsed_credits.unwrap_or(0.0)).abs()).unwrap_or(0.0) + st.total_debits.map(|d| (d - st.parsed_debits.unwrap_or(0.0)).abs()).unwrap_or(0.0);
+            off > 1.0
+        }).filter_map(|st| st.pages).collect();
+        // A single statement (no per-statement list) is offered whole as well: its summary
+        // page and its row pages may each be wrong alone and right together.
+        if parsed.statements.is_empty() && best_gap > 1.0 {
+            ranges.push((1, candidates.len()));
+        }
+        for (first, last) in ranges {
+            let mut candidate = best.clone();
+            let mut swapped = 0;
+            for i in first.saturating_sub(1)..last.min(candidates.len()) {
+                if candidates[i].method == method && candidate[i].method != method {
+                    candidate[i] = candidates[i].clone();
+                    swapped += 1;
+                }
+            }
+            if swapped > 0 && try_candidate(&mut best, candidate, &mut best_gap, &mut best_verified, &mut best_passing) {
+                improved = true;
+            }
+        }
+        if offer_singles(&mut best, &mut best_gap, &mut best_verified, &mut best_passing, &mut try_candidate) {
+            improved = true;
+        }
+    }
+    (best, best_gap, best_verified, best_passing)
 }
 
 /// After a watchdog stop: wait (up to five minutes) until the engine's plan fits in free
@@ -994,7 +1085,7 @@ fn emit_page_done(app: &tauri::AppHandle, file_name: &str, page: usize, n: usize
     let _ = app.emit("analysis-progress", json!({
         "type": "page_complete", "current_page": current, "total_pages": total_pages,
         "method": method, "seconds": seconds, "page_result": "",
-        "message": format!("{file_name} page {page}: {} in {seconds:.1}s", match method { "ocr" => "OCR", "blank" => "blank page skipped", _ => "text layer" })
+        "message": format!("{file_name} page {page}: {} in {seconds:.1}s", match method { "ocr" => "OCR", "tesseract" => "classic OCR", "blank" => "blank page skipped", _ => "text layer" })
     }));
 }
 

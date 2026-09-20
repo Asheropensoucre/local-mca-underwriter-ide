@@ -403,7 +403,7 @@
                   <span class="text-gray-600">lines</span>
                   <span>{{ parsedData.verification.transactions_parsed }} transactions, {{ parsedData.verification.daily_balances_found }} daily balances</span>
                   <span class="text-gray-600">pages</span>
-                  <span>{{ (parsedData.verification.pages || []).filter(p => p.method === 'ocr').length }} of {{ (parsedData.verification.pages || []).length }} via OCR</span>
+                  <span>{{ (parsedData.verification.pages || []).filter(p => p.method === 'ocr').length }} of {{ (parsedData.verification.pages || []).length }} via the OCR model<span v-if="(parsedData.verification.pages || []).some(p => p.method === 'tesseract')">, {{ (parsedData.verification.pages || []).filter(p => p.method === 'tesseract').length }} via classic OCR</span></span>
                 </div>
                 <div v-if="parsedData.verification.statements?.length > 1" class="mt-2">
                   <p class="text-gray-600">per statement</p>

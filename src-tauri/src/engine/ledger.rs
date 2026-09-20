@@ -1546,11 +1546,18 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         // (BMO's "CLOSING DAILY BALANCES AND DEBIT TOTALS" over "DATE  BALANCE  DEBITS" names a
         // debit column too, but a daily table has no description or amount column.)
         let txn_header = names_txn_columns && (lower.contains("description") || lower.contains("amount"));
-        if !txn_header && (lower.contains("daily balance") || lower.contains("daily ending balance") || lower.contains("daily ledger balance") || repeated_date_balance_header || balance_summary_heading || smeared_daily || end_of_day) {
+        // A daily balance table whose heading the OCR lost (TD prints "DAILY BALANCE SUMMARY"
+        // in pale green): right after a listing's subtotal, a line made only of date and
+        // amount pairs, two or more of them, is that table.
+        let prev_total = raw_lines[..line_no].iter().rev().find(|l| !l.trim().is_empty()).map(|l| { let l = l.trim_start().to_ascii_lowercase(); (l.starts_with("subtotal") || l.starts_with("total")) && l.split_whitespace().any(is_amount_token) }).unwrap_or(false);
+        let bare_pairs = !st.in_daily && prev_total && tokens.len() >= 4 && tokens.len() % 2 == 0 && tokens.chunks(2).all(|p| parse_date_token(p[0]).is_some() && is_amount_token(p[1]));
+        if !txn_header && (lower.contains("daily balance") || lower.contains("daily ending balance") || lower.contains("daily ledger balance") || repeated_date_balance_header || balance_summary_heading || smeared_daily || end_of_day || bare_pairs) {
             st.enter_table("daily balances");
             st.in_daily = true;
             last_txn = None;
-            continue;
+            if !bare_pairs {
+                continue;
+            }
         }
         // Column header for a transaction table with separate credit/debit/balance columns,
         // possibly wrapped over two lines.
@@ -4307,6 +4314,16 @@ mod tests {
         // A section continued from the page before is short by nature.
         let continued = "Electronic Deposits (continued)\nDate Description Amount\n04/18 CCD DEPOSIT, TOAST 3,176.12\n04/19 CCD DEPOSIT, TOAST 5,225.77\nSubtotal: 161,296.05\n";
         assert_eq!(rows_short_of_totals(continued), 0);
+    }
+
+    #[test]
+    fn date_amount_pairs_after_a_subtotal_are_daily_balances() {
+        // TD savings page as Tesseract reads it: the pale "DAILY BALANCE SUMMARY" heading lost.
+        let p1 = "Beginning Balance 25.00 Average Collected Balance 2,541.78\nElectronic Deposits 4,009.23 Interest Earned This Period 0.00\nEnding Balance 4,034.23 Annual Percentage Yield Earned 0.00%\nElectronic Deposits\n08/10 eTransfer Credit, eas 3,074.13\nTransfer from CK 1217\n08/17 eTransfer Credit, i fer 415.52\nTransfer from CK 1217\n08/24 eTransfer Credit, Online Xfer 519.58\nTransfer from CK ma: 217\nSubtotal: 4,009.23\n07/31 25.00 08/17 3,514.65\n08/10 3,099.13 08/24 4,034.23\n";
+        let l = parse(&[(1, p1)]);
+        let rows: Vec<f64> = l.transactions.iter().map(|t| t.amount).collect();
+        assert_eq!(rows, vec![3074.13, 415.52, 519.58], "{:?}", l.transactions);
+        assert_eq!(l.daily_balances.len(), 4, "{:?}", l.daily_balances);
     }
 
     #[test]
