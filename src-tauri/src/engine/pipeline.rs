@@ -573,12 +573,19 @@ async fn ocr_prompt(ep: &Endpoint, uri: &str, prompt: &str, progress: &PageProgr
 pub fn page_method(pdf: &str, page: usize, layer: &str, force_ocr: bool) -> &'static str {
     let words = layer.split_whitespace().count();
     let thin = words < MIN_TEXT_WORDS;
-    if force_ocr || words == 0 || (thin && has_page_image(pdf, page)) {
+    // A thin page with no image object can still be a scan drawn as vector outlines (some
+    // court filings convert the scan): ink well beyond a stamp's worth says so.
+    let inked_vector = || page_ink_ratio(pdf, page).map(|r| r >= VECTOR_SCAN_INK_RATIO).unwrap_or(false);
+    if force_ocr || words == 0 || thin && (has_page_image(pdf, page) || inked_vector()) {
         if !force_ocr && page_ink_ratio(pdf, page).map(|r| r < BLANK_INK_RATIO).unwrap_or(false) { "blank" } else { "ocr" }
     } else {
         "text"
     }
 }
+
+/// Dark-pixel share above which a page with almost no text layer is treated as a scan even
+/// without an image object; a court stamp alone is well under one percent.
+const VECTOR_SCAN_INK_RATIO: f64 = 0.02;
 
 
 /// Error returned when a page needs the OCR model but no engine endpoint was given.

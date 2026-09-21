@@ -854,7 +854,10 @@ pub fn normalize_month_dates(line: &str) -> String {
                             yend += 1;
                         }
                         let mut date = format!("{:02}/{:02}", m + 1, day);
-                        if yend - ys == 4 && ys > de {
+                        // (A four-digit number after the day is a year only when it reads as
+                        // one: "Jan 07 1135 21,705.13" is check 1135, not the year 1135.)
+                        let year_ok = yend - ys == 4 && chars[ys..yend].iter().collect::<String>().parse::<u32>().map(|y| (1990..=2100).contains(&y)).unwrap_or(false);
+                        if year_ok && ys > de {
                             date.push('/');
                             date.extend(chars[ys..yend].iter());
                             ye = yend;
@@ -1546,11 +1549,12 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         // (BMO's "CLOSING DAILY BALANCES AND DEBIT TOTALS" over "DATE  BALANCE  DEBITS" names a
         // debit column too, but a daily table has no description or amount column.)
         let txn_header = names_txn_columns && (lower.contains("description") || lower.contains("amount"));
-        // A daily balance table whose heading the OCR lost (TD prints "DAILY BALANCE SUMMARY"
-        // in pale green): right after a listing's subtotal, a line made only of date and
-        // amount pairs, two or more of them, is that table.
-        let prev_total = raw_lines[..line_no].iter().rev().find(|l| !l.trim().is_empty()).map(|l| { let l = l.trim_start().to_ascii_lowercase(); (l.starts_with("subtotal") || l.starts_with("total")) && l.split_whitespace().any(is_amount_token) }).unwrap_or(false);
-        let bare_pairs = !st.in_daily && prev_total && tokens.len() >= 4 && tokens.len() % 2 == 0 && tokens.chunks(2).all(|p| parse_date_token(p[0]).is_some() && is_amount_token(p[1]));
+        // A daily balance table whose heading the OCR lost or cut short (TD prints "DAILY
+        // BALANCE SUMMARY" in pale green; Synovus' "Balance Summary" comes back as "Balance
+        // Summa"): a line made only of date and amount pairs, two or more of them, is that
+        // table. A transaction row always carries some description between its date and
+        // its amount, so nothing else looks like this.
+        let bare_pairs = !st.in_daily && tokens.len() >= 4 && tokens.len() % 2 == 0 && tokens.chunks(2).all(|p| parse_date_token(p[0]).is_some() && is_amount_token(p[1]));
         if !txn_header && (lower.contains("daily balance") || lower.contains("daily ending balance") || lower.contains("daily ledger balance") || repeated_date_balance_header || balance_summary_heading || smeared_daily || end_of_day || bare_pairs) {
             st.enter_table("daily balances");
             st.in_daily = true;
@@ -1666,6 +1670,13 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
                 }
             }
             if any {
+                continue;
+            }
+            // A row of the table whose dates the OCR garbled ("I912 117,075.89 og/21
+            // 173,718:29 O9/29 156,906.18", Tesseract on a Chase page): figures with no
+            // word among them is still the table, not a transaction. Its balances are lost.
+            let garbled_row = tokens.iter().any(|t| is_amount_token(t)) && tokens.iter().all(|t| t.chars().filter(|c| c.is_ascii_alphabetic()).count() <= 2);
+            if garbled_row {
                 continue;
             }
             // Real content (an amount, or a long line) ends the daily balance block; short
@@ -2149,7 +2160,10 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
             // row, dated like the one before it.
             let single_trailing_amount = tokens.len() >= 2 && tokens.len() <= 14 && is_amount_token(tokens[tokens.len() - 1]) && tokens[..tokens.len() - 1].iter().all(|t| !is_amount_token(t));
             let summary_like = lower.contains("total") || lower.contains("balance");
-            if flat && !starts_with_date && single_trailing_amount && !summary_like && st.section.is_some() && ledger.transactions[id].page == page {
+            // (A real row has a word in it; "MS 5 02 I 8.45" and "1 1.62" are OCR noise
+            // between rows on a scan, not payments.)
+            let has_word = tokens[..tokens.len() - 1].iter().any(|t| t.chars().filter(|c| c.is_ascii_alphabetic()).count() >= 3);
+            if flat && !starts_with_date && single_trailing_amount && has_word && !summary_like && st.section.is_some() && ledger.transactions[id].page == page {
                 let (date, day) = (ledger.transactions[id].date.clone(), ledger.transactions[id].day);
                 let desc = tokens[..tokens.len() - 1].join(" ");
                 let amount = parse_amount(tokens[tokens.len() - 1]).unwrap_or(0.0).abs();
@@ -3349,7 +3363,7 @@ fn footer_numbers(line: &str) -> Option<(usize, usize)> {
     }
     let toks: Vec<&str> = lower.split_whitespace().collect();
     for w in toks.windows(4) {
-        if w[0] == "page" && w[2] == "of" {
+        if (w[0] == "page" || w[0] == "page:") && w[2] == "of" {
             if let (Ok(n), Ok(m)) = (w[1].parse::<usize>(), w[3].trim_matches(|c: char| !c.is_ascii_digit()).parse::<usize>()) {
                 if n >= 1 && n <= m && m >= 2 {
                     return Some((n, m));
@@ -3723,7 +3737,11 @@ fn segment_statements<'a>(pages: &[(usize, &'a str)], forced: &[bool]) -> Vec<Ve
         // ending balance is another statement, even when both accounts began at $0.00
         // (two trustee checking accounts in one filing).
         let summary_repeat = matches!((begins, probe.summary.ending_balance, current_beginning, current_ending), (Some(_), Some(e), Some(_), Some(cur)) if (e - cur).abs() >= 0.005) && !current.is_empty();
-        let starts_new = forced.get(i).copied().unwrap_or(false) || bank_changes || account_changes || continues || period_changes || printout || after_printout || summary_repeat || match (begins, current_beginning) {
+        // The bank's own "Page 1 of 10" footer opens a statement even when its summary is
+        // printed elsewhere (Mercantile puts the balances at the end); only after rows or
+        // balances have been seen, so a cover sheet's own footer does not split.
+        let first_page = footer_pages(text).map(|(n, _)| n == 1).unwrap_or(false) && (current_rows > 0 || current_beginning.is_some() || current_ending.is_some());
+        let starts_new = forced.get(i).copied().unwrap_or(false) || bank_changes || account_changes || continues || period_changes || printout || after_printout || summary_repeat || first_page || match (begins, current_beginning) {
             (Some(b), Some(cur)) if (b - cur).abs() >= 0.005 => true,
             _ => false,
         };
@@ -3740,7 +3758,7 @@ fn segment_statements<'a>(pages: &[(usize, &'a str)], forced: &[bool]) -> Vec<Ve
         let heading_account = text.lines().filter(|l| !l.trim().is_empty()).take(2).find_map(|l| l.split_whitespace().rev().find(|t| t.len() >= 4 && t.chars().all(|c| c.is_ascii_digit())));
         let summary_names_account = heading_account.map(|a| current.iter().any(|(_, t)| t.contains(a))).unwrap_or(false);
         let same_page_summary = forced_here && current_rows == 0 && (current_summary_page == Some(page) || summary_names_account && current_summary_page.is_some());
-        if starts_new && !current.is_empty() && (current_beginning.is_some() || current_ending.is_some() || current_is_printout) && !same_page_summary {
+        if starts_new && !current.is_empty() && (current_beginning.is_some() || current_ending.is_some() || current_is_printout || first_page) && !same_page_summary {
             segments.push(std::mem::take(&mut current));
             current_beginning = None;
             current_ending = None;
@@ -4039,19 +4057,42 @@ fn bank_votes(texts: &[&str]) -> Vec<(&'static str, usize)> {
         ("first republic", "First Republic"), ("umpqua", "Umpqua"), ("banner bank", "Banner Bank"), ("amerant", "Amerant"), ("city national", "City National"),
         ("first state bank", "First State Bank"), ("bell bank", "Bell Bank"), ("choice bank", "Choice Bank"), ("alerus", "Alerus"), ("bremer", "Bremer Bank"), ("gate city", "Gate City Bank"),
         ("credit union", "Credit Union"),
+        ("mercantile bank", "Mercantile Bank"), ("mercantile", "Mercantile Bank"), ("ynovus", "Synovus"),
+        ("banknorth", "BankNorth"), ("brookline bank", "Brookline Bank"), ("brooklinebank", "Brookline Bank"), ("tristate capital", "TriState Capital"),
+        ("first american bank", "First American Bank"), ("gulf bank", "Gulf Bank"), ("gulfbank", "Gulf Bank"), ("umb bank", "UMB Bank"), ("community bank", "Community Bank"),
+        ("national city", "National City"), ("bank one", "Bank One"), ("bankone", "Bank One"), ("chase manhattan", "Chase"), ("first usa bank", "First USA"),
+    ];
+    // Multi-word names matched with the spaces gone; single words are not here, they hide
+    // inside other words ("purchase").
+    const SQUEEZED_BANKS: &[(&str, &str)] = &[
+        ("jpmorganchase", "Chase"), ("chase.com", "Chase"), ("wellsfargo", "Wells Fargo"), ("bankofamerica", "Bank of America"), ("pncbank", "PNC"), ("tdbank", "TD Bank"),
+        ("u.s.bank", "U.S. Bank"), ("capitalone", "Capital One"), ("fifththird", "Fifth Third"), ("citizensbank", "Citizens"), ("m&tbank", "M&T Bank"), ("navyfederal", "Navy Federal"),
+        ("firstcitizens", "First Citizens"), ("regionsbank", "Regions"), ("hancockwhitney", "Hancock Whitney"), ("truist", "Truist"), ("synovus", "Synovus"),
     ];
     let mut votes: BTreeMap<&'static str, usize> = BTreeMap::new();
-    for text in texts.iter().take(3) {
+    for (i, text) in texts.iter().enumerate() {
         let lower = text.to_ascii_lowercase();
         // The bank's own name sits in the letterhead, the top of the page; other banks
         // show up in transaction descriptions ("Capital One Auto" deposits at a dealer).
         // Transaction rows near the top of a short page are not letterhead (a wire "from
-        // Fifth Third" on a Synovus continuation page).
+        // Fifth Third" on a Synovus continuation page). Every page's letterhead counts (a
+        // court filing puts the statement behind pages of forms); only the first pages'
+        // bodies do.
         let head: String = lower.lines().filter(|l| !l.trim().is_empty()).take(30).filter(|l| l.split_whitespace().next().and_then(parse_date_token).is_none()).collect::<Vec<_>>().join("\n");
+        // OCR of a letterhead spaces or drops letters ("C H AS E", "YNOVUS" with the logo
+        // S): a second look at the head with the spaces squeezed out.
+        let squeezed: String = head.chars().filter(|c| !c.is_whitespace()).collect();
         for (needle, name) in BANKS {
-            let n = lower.matches(needle).count() + 5 * head.matches(needle).count();
+            let body = if i < 3 { lower.matches(needle).count() } else { 0 };
+            let n = body + 5 * head.matches(needle).count();
             if n > 0 {
                 *votes.entry(name).or_default() += n;
+            }
+        }
+        for (needle, name) in SQUEEZED_BANKS {
+            let n = squeezed.matches(needle).count();
+            if n > 0 {
+                *votes.entry(name).or_default() += 5 * n;
             }
         }
     }
