@@ -498,6 +498,16 @@ async fn export_csv(
 }
 
 fn main() {
+    // Parser work: `--parse-text page1.txt [page2.txt ...]` runs the deterministic parser
+    // on page texts (one file per page, in order) and prints the ledger JSON. No window,
+    // no engine.
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(pos) = args.iter().position(|a| a == "--parse-text") {
+        let texts: Vec<String> = args[pos + 1..].iter().map(|f| std::fs::read_to_string(f).unwrap_or_else(|e| panic!("{f}: {e}"))).collect();
+        let pages: Vec<(usize, &str)> = texts.iter().enumerate().map(|(i, t)| (i + 1, t.as_str())).collect();
+        println!("{}", serde_json::to_string_pretty(&engine::ledger::parse(&pages)).unwrap());
+        return;
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())

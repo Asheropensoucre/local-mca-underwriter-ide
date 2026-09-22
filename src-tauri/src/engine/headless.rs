@@ -172,13 +172,15 @@ async fn ocr_pages(app: &tauri::AppHandle, pdfs: &[String]) -> Result<Vec<super:
 
 /// Deterministic pass over page texts, no reasoning model involved.
 fn ledger_dump(pages: Vec<super::pipeline::PageText>) -> Result<String, String> {
+    super::pipeline::dump_pages(&pages, "-final"); // the readings the parser was given
     let texts: Vec<(usize, String)> = pages.iter().enumerate().map(|(i, p)| (i + 1, p.text.clone())).collect();
     let mut methods: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
     for p in &pages {
         *methods.entry(p.method).or_default() += 1;
     }
-    let pages: Vec<(usize, &str)> = texts.iter().map(|(p, t)| (*p, t.as_str())).collect();
-    let ledger = super::ledger::parse(&pages);
+    let refs: Vec<(usize, &str)> = texts.iter().map(|(p, t)| (*p, t.as_str())).collect();
+    let mut ledger = super::ledger::parse(&refs);
+    super::pipeline::mark_unreadable_pages(&mut ledger, &pages);
     let metrics = super::ledger::compute_metrics(&ledger, &ledger.funding_candidates, &[]);
     let credits = ledger.transactions.iter().filter(|t| t.kind == super::ledger::Kind::Credit).count();
     let out = serde_json::json!({

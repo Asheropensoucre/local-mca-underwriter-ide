@@ -102,16 +102,28 @@ def main():
                "lenders": [r["payee"][:40] for r in lender_activity(d)]}
         statements = d.get("statements") or []
         row["statements"] = len(statements) or 1
+
+        # The balance equation is a second witness: beginning + credits - debits = ending,
+        # printed balances against the parsed rows. When it closes to the cent and at most
+        # one printed total disagrees, that total is the misread figure (the other total and
+        # both balances agree with the rows), so the statement passes. Two disagreeing
+        # totals still fail: a dropped transfer pair closes the equation without them.
+        def closes(st, ok_c, ok_d):
+            return st.get("balance_check") is True and (ok_c or ok_d)
         # A copy that skips pages of a statement (one-sided scan, "Page 3 of 14" then
         # "Page 7 of 14") can never meet that statement's totals: "incomplete", not a fail.
         if len(statements) > 1:
             # A bundle passes when every statement that prints a total matches its own lines.
             checked = [st for st in statements if st.get("total_credits") is not None or st.get("total_debits") is not None]
             if not checked:
-                row["status"] = "no summary"
+                row["status"] = "pass" if statements and all(st.get("balance_check") is True for st in statements) else "no summary"
+                if row["status"] == "pass":
+                    row["note"] = "balances close"
             else:
-                met = lambda st: ((st.get("total_credits") is None or abs(st["total_credits"] - (st.get("parsed_credits") or 0)) <= 1.0)
-                                  and (st.get("total_debits") is None or abs(st["total_debits"] - (st.get("parsed_debits") or 0)) <= 1.0))
+                def met(st):
+                    ok_c = st.get("total_credits") is None or abs(st["total_credits"] - (st.get("parsed_credits") or 0)) <= 1.0
+                    ok_d = st.get("total_debits") is None or abs(st["total_debits"] - (st.get("parsed_debits") or 0)) <= 1.0
+                    return (ok_c and ok_d) or closes(st, ok_c, ok_d)
                 complete = [st for st in checked if not st.get("missing_pages")]
                 if not all(met(st) for st in complete):
                     row["status"] = "fail"
@@ -120,11 +132,18 @@ def main():
                 else:
                     row["status"] = "pass"
         elif stated_c is None and stated_d is None:
-            row["status"] = "no summary"
+            row["status"] = "pass" if s.get("balance_check") is True else "no summary"
+            if row["status"] == "pass":
+                row["note"] = "balances close"
         else:
             ok_c = stated_c is None or abs(stated_c - p["credit_total"]) <= 1.0
             ok_d = stated_d is None or abs(stated_d - p["debit_total"]) <= 1.0
-            row["status"] = "pass" if ok_c and ok_d else ("incomplete" if s.get("missing_pages") else "fail")
+            if ok_c and ok_d:
+                row["status"] = "pass"
+            elif closes(s, ok_c, ok_d):
+                row["status"], row["note"] = "pass", "balances close, one printed total misread"
+            else:
+                row["status"] = "incomplete" if s.get("missing_pages") else "fail"
         rows.append(row)
 
     if snapshot:
@@ -165,7 +184,11 @@ def main():
     incomplete = [r for r in rows if r["status"] == "incomplete"]
     errors = [r for r in rows if r["status"] == "error"]
     lend = [r for r in rows if r.get("lenders")]
+    by_balance = [r for r in passed if "balances close" in r.get("note", "")]
     print(f"passed {len(passed)}, failed {len(failed)}, incomplete copies {len(incomplete)}, no summary found {len(no_summary)}, errors {len(errors)}; with lender activity {len(lend)}")
+    if by_balance:
+        # (Passes the printed totals alone would not give: the balance equation closed.)
+        print(f"of the passes, {len(by_balance)} by the balance equation: {', '.join(sorted(r['name'] for r in by_balance))}")
     if not_statements:
         print(f"recognized as not bank statements and skipped: {len(not_statements)} ({', '.join(sorted(set(k for _, k in not_statements)))})")
     if lend and verbose:

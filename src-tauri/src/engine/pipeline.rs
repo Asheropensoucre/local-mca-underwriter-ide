@@ -137,13 +137,20 @@ fn has_page_image(pdf: &str, page: usize) -> bool {
     // Columns: page num type width height color comp bpc enc interp object ID x-ppi y-ppi size ratio
     // A scan is a large image with real content: letterhead watermarks (Legends prints a
     // 622x860 JPEG of 12 KB on every page) must not send clean text pages to OCR.
-    String::from_utf8_lossy(&out.stdout).lines().skip(2).any(|l| {
+    // Some scanners store the page as a stack of strips (Brookline court copies: nine
+    // 2550x367 CCITT stencils): together they are the scan.
+    let mut strips: u64 = 0;
+    let whole = String::from_utf8_lossy(&out.stdout).lines().skip(2).any(|l| {
         let cols: Vec<&str> = l.split_whitespace().collect();
         let w: u32 = cols.get(3).and_then(|v| v.parse().ok()).unwrap_or(0);
         let h: u32 = cols.get(4).and_then(|v| v.parse().ok()).unwrap_or(0);
         let size = cols.get(14).map(|v| parse_size(v)).unwrap_or(0);
+        if w >= 1000 {
+            strips += w as u64 * h as u64;
+        }
         w >= SCAN_IMAGE_MIN_PX && h >= SCAN_IMAGE_MIN_PX && (size >= SCAN_IMAGE_MIN_BYTES || w * h >= 1_000_000)
-    })
+    });
+    whole || strips >= 2_000_000
 }
 
 /// pdfimages size column: "12.6K", "304K", "1.2M", "5137B".
@@ -687,6 +694,7 @@ fn tesseract_layer(cache: Option<&(PathBuf, String)>, tessdata: Option<&Path>, p
         return None;
     }
     let png = prefix.with_extension("png");
+    whiten_redactions(&png);
     let mut cmd = Command::new("tesseract");
     cmd.arg(&png).arg("stdout").args(["--psm", "6"]);
     if let Some(td) = tessdata {
@@ -703,9 +711,139 @@ fn tesseract_layer(cache: Option<&(PathBuf, String)>, tessdata: Option<&Path>, p
     (text.split_whitespace().count() >= MIN_TEXT_WORDS).then_some(text)
 }
 
+/// Paint the solid black boxes of a redacted court copy, and the page's horizontal rules,
+/// white before Tesseract reads the page: a box on a row makes Tesseract drop that row and its neighbours ("8/20 [box]
+/// 500.00  8,894.39" and the wire under it, Brookline). A box is a run of 8x8 blocks that
+/// are nearly all ink, at least 100 px wide and 32 px tall at 300 dpi; type never fills
+/// such blocks. In place; a page that cannot be read or has no boxes is left alone.
+fn whiten_redactions(png: &Path) {
+    let Ok(img) = image::open(png) else { return };
+    let mut gray = img.into_luma8();
+    let (w, h) = gray.dimensions();
+    let (bw, bh) = ((w / 8) as usize, (h / 8) as usize);
+    if bw == 0 || bh == 0 {
+        return;
+    }
+    // Solid blocks: 60 or more of the 64 pixels darker than 64.
+    let mut solid = vec![false; bw * bh];
+    for by in 0..bh {
+        for bx in 0..bw {
+            let mut dark = 0;
+            for y in 0..8 {
+                for x in 0..8 {
+                    if gray.get_pixel(bx as u32 * 8 + x, by as u32 * 8 + y).0[0] < 64 {
+                        dark += 1;
+                    }
+                }
+            }
+            solid[by * bw + bx] = dark >= 60;
+        }
+    }
+    // Connected runs of solid blocks (4-neighbour flood fill); keep the box-sized ones.
+    let mut seen = vec![false; bw * bh];
+    let mut boxes: Vec<(usize, usize, usize, usize)> = Vec::new();
+    for start in 0..bw * bh {
+        if !solid[start] || seen[start] {
+            continue;
+        }
+        let mut stack = vec![start];
+        let (mut x0, mut y0, mut x1, mut y1) = (bw, bh, 0, 0);
+        let mut n = 0;
+        while let Some(i) = stack.pop() {
+            if seen[i] || !solid[i] {
+                continue;
+            }
+            seen[i] = true;
+            n += 1;
+            let (x, y) = (i % bw, i / bw);
+            x0 = x0.min(x);
+            y0 = y0.min(y);
+            x1 = x1.max(x);
+            y1 = y1.max(y);
+            if x > 0 { stack.push(i - 1); }
+            if x + 1 < bw { stack.push(i + 1); }
+            if y > 0 { stack.push(i - bw); }
+            if y + 1 < bh { stack.push(i + bw); }
+        }
+        let (cw, ch) = (x1 - x0 + 1, y1 - y0 + 1);
+        // At least 100 px wide, 32 px tall, and all but filled (a redaction is solid; a
+        // heading bar with white type in it, "Statement Summary", is not, and Tesseract
+        // reads such bars better as they are).
+        if cw >= 13 && ch >= 4 && n * 100 >= cw * ch * 97 {
+            boxes.push((x0, y0, x1, y1));
+        }
+    }
+    // Horizontal rules: a contiguous dark span (gaps of three pixels allowed) across 25
+    // percent of the width or more. The rule under a table header makes Tesseract drop
+    // the first row beneath it ("11/3 Zelle From Adam Spencer Willmouth ... 3,500.00",
+    // Wells), so the span goes, a pixel each side. Only the span: a rule that runs into a
+    // heading's box (Chase's "DAILY ENDING BALANCE") must not cut through the letters.
+    let mut rules = 0;
+    let min_span = w / 4;
+    for y in 0..h {
+        let mut x = 0;
+        while x < w {
+            if gray.get_pixel(x, y).0[0] >= 128 {
+                x += 1;
+                continue;
+            }
+            let start = x;
+            let mut last_dark = x;
+            while x < w && x - last_dark <= 3 {
+                if gray.get_pixel(x, y).0[0] < 128 {
+                    last_dark = x;
+                }
+                x += 1;
+            }
+            if last_dark - start + 1 >= min_span {
+                for yy in y.saturating_sub(1)..(y + 2).min(h) {
+                    for xx in start..=last_dark {
+                        gray.put_pixel(xx, yy, image::Luma([255]));
+                    }
+                }
+                rules += 1;
+            }
+        }
+    }
+    if boxes.is_empty() && rules == 0 {
+        return;
+    }
+    for (x0, y0, x1, y1) in boxes {
+        // One block of margin so the box's anti-aliased edge goes too.
+        let (px0, py0) = (x0.saturating_sub(1) as u32 * 8, y0.saturating_sub(1) as u32 * 8);
+        let (px1, py1) = (((x1 + 2) as u32 * 8).min(w), ((y1 + 2) as u32 * 8).min(h));
+        for y in py0..py1 {
+            for x in px0..px1 {
+                gray.put_pixel(x, y, image::Luma([255]));
+            }
+        }
+    }
+    let _ = gray.save(png);
+}
+
+/// A page nobody could read (a scan with no OCR, or a page the court blacked out entirely,
+/// whose OCR holds nothing but the stamp) leaves its statement incomplete: whatever rows
+/// it carried are not in the totals. The headless dump applies the same rule.
+pub fn mark_unreadable_pages(ledger: &mut ledger::Ledger, pages: &[PageText]) {
+    let unreadable: Vec<usize> = pages.iter().enumerate().filter(|(_, p)| {
+        let words = p.text.lines().skip(2).flat_map(|l| l.split_whitespace()).count();
+        p.method == "scan" || p.method != "text" && p.method != "blank" && words < 5
+    }).map(|(i, _)| i + 1).collect();
+    for st in &mut ledger.statements {
+        if let Some((a, b)) = st.pages {
+            if unreadable.iter().any(|p| (a..=b).contains(p)) {
+                st.missing_pages = true;
+            }
+        }
+    }
+    if ledger.statements.is_empty() && !unreadable.is_empty() {
+        ledger.summary.missing_pages = true;
+    }
+}
+
 /// Testing aid: MCA_DUMP_PAGES=<dir> writes every page text to disk for parser work
 /// (`suffix` tells the OCR re-read apart from the first pass).
-fn dump_pages(pages: &[PageText], suffix: &str) {
+pub fn dump_pages(pages: &[PageText], suffix: &str) {
     if let Ok(dir) = std::env::var("MCA_DUMP_PAGES") {
         let _ = std::fs::create_dir_all(&dir);
         for p in pages {
@@ -861,7 +999,10 @@ pub async fn read_pages(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdfs: &[S
         let n = page_count(pdf)?;
         let cache = cache_for(pdf);
         for p in &mut tess[offset..offset + n] {
-            if p.method == "text" && has_page_image(pdf, p.page) {
+            // (A vector text page whose layer dropped a row's amount, "04/09/2025  Square Inc
+            // SQ250409  [blank]  $715,889.24", is rendered and read as well: the glyphs are
+            // on the page, only the text layer lost them.)
+            if p.method == "text" && (has_page_image(pdf, p.page) || ledger::rows_missing_amounts(&p.text) > 0) {
                 if let Some(text) = tesseract_layer(cache.as_ref(), tessdata.as_deref(), pdf, p.page) {
                     p.text = text;
                     p.method = "tesseract";
@@ -872,6 +1013,7 @@ pub async fn read_pages(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdfs: &[S
     }
     let (mut best, mut best_gap, mut best_verified, mut best_passing) = (pages.clone(), gap, verified, passing);
     if tess_pages > 0 {
+        dump_pages(&tess, "-candidate");
         let _ = app.emit("analysis-progress", json!({
             "type": "page_start", "current_page": 0, "total_pages": total_pages,
             "message": format!("Totals do not match the statement summary (off by {gap:.2}); re-reading {tess_pages} scanned page(s) with classic OCR")
@@ -1067,16 +1209,21 @@ fn has_no_balances(pages: &[PageText]) -> bool {
 /// Sum of |stated - parsed| over the totals the statement prints; None when it prints none.
 /// Sum of |stated - parsed| over the totals the statement prints, how many statements
 /// printed totals, and how many of those are met to the cent; None when none printed any.
+/// The distance between the printed totals and the parsed rows: (gap, printed figures,
+/// statements passing). The figure count is every printed total found, so a reading that
+/// garbles a statement's "Totals" line (its debits then unverified, gap 0) can never look
+/// like an improvement over one that reads it.
 fn totals_gap(pages: &[PageText]) -> Option<(f64, usize, usize)> {
     let refs: Vec<(usize, &str)> = pages.iter().enumerate().map(|(i, p)| (i + 1, p.text.as_str())).collect();
     let ledger = ledger::parse(&refs);
+    let figures = |c: Option<f64>, d: Option<f64>| c.is_some() as usize + d.is_some() as usize;
     // A bundle is judged statement by statement: parts that print no totals (an online
     // activity printout filed behind the statement) neither count nor block the others.
     if ledger.statements.len() > 1 {
-        let parts: Vec<f64> = ledger.statements.iter().filter(|st| st.total_credits.is_some() || st.total_debits.is_some()).map(|st| {
-            st.total_credits.map(|c| (c - st.parsed_credits.unwrap_or(0.0)).abs()).unwrap_or(0.0) + st.total_debits.map(|d| (d - st.parsed_debits.unwrap_or(0.0)).abs()).unwrap_or(0.0)
+        let parts: Vec<(f64, usize)> = ledger.statements.iter().filter(|st| st.total_credits.is_some() || st.total_debits.is_some()).map(|st| {
+            (st.total_credits.map(|c| (c - st.parsed_credits.unwrap_or(0.0)).abs()).unwrap_or(0.0) + st.total_debits.map(|d| (d - st.parsed_debits.unwrap_or(0.0)).abs()).unwrap_or(0.0), figures(st.total_credits, st.total_debits))
         }).collect();
-        return if parts.is_empty() { None } else { Some((parts.iter().sum(), parts.len(), parts.iter().filter(|g| **g <= 1.0).count())) };
+        return if parts.is_empty() { None } else { Some((parts.iter().map(|p| p.0).sum(), parts.iter().map(|p| p.1).sum(), parts.iter().filter(|p| p.0 <= 1.0).count())) };
     }
     let s = &ledger.summary;
     if s.total_credits.is_none() && s.total_debits.is_none() {
@@ -1084,7 +1231,7 @@ fn totals_gap(pages: &[PageText]) -> Option<(f64, usize, usize)> {
     }
     let gc = s.total_credits.map(|c| (c - ledger.parsed_credit_total).abs()).unwrap_or(0.0);
     let gd = s.total_debits.map(|d| (d - ledger.parsed_debit_total).abs()).unwrap_or(0.0);
-    Some((gc + gd, 1, (gc + gd <= 1.0) as usize))
+    Some((gc + gd, figures(s.total_credits, s.total_debits), (gc + gd <= 1.0) as usize))
 }
 
 fn emit_page_done(app: &tauri::AppHandle, file_name: &str, page: usize, n: usize, current: usize, total_pages: usize, method: &str, seconds: f32) {
@@ -1282,7 +1429,8 @@ pub async fn underwrite(
     max_tokens: i32,
 ) -> Result<String, String> {
     let page_refs: Vec<(usize, &str)> = pages.iter().enumerate().map(|(i, p)| (i + 1, p.text.as_str())).collect();
-    let ledger = ledger::parse(&page_refs);
+    let mut ledger = ledger::parse(&page_refs);
+    mark_unreadable_pages(&mut ledger, pages);
     let recurring_ids: Vec<usize> = ledger.recurring_debits.iter().map(|r| r.id).collect();
     let funding_ids: Vec<usize> = ledger.funding_candidates.clone();
 
@@ -1556,6 +1704,24 @@ mod tests {
         for y in (28..120).step_by(12) { ink(&mut img, y, y + 8); }
         for y in (180..260).step_by(12) { ink(&mut img, y, y + 8); }
         assert_eq!(super::page_bands(&img, 30, 40), vec![(10, 120), (180, 260)]);
+    }
+
+    #[test]
+    fn redaction_boxes_and_rules_are_whitened_but_type_is_kept() {
+        // 400 wide, 200 tall: a black box (a redacted name, 160x40), a horizontal rule across
+        // the page (3 px), and a line of "type" (thin 3 px strokes) that must survive.
+        let mut img = image::GrayImage::from_pixel(400, 200, image::Luma([255u8]));
+        for y in 40..80 { for x in 100..260 { img.put_pixel(x, y, image::Luma([0u8])); } }
+        for y in 120..123 { for x in 10..390 { img.put_pixel(x, y, image::Luma([0u8])); } }
+        for x in (20..380).step_by(8) { for y in 150..160 { img.put_pixel(x, y, image::Luma([0u8])); img.put_pixel(x + 1, y, image::Luma([0u8])); } }
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("page.png");
+        img.save(&png).unwrap();
+        super::whiten_redactions(&png);
+        let out = image::open(&png).unwrap().into_luma8();
+        assert_eq!(out.get_pixel(180, 60).0[0], 255, "box stays");
+        assert_eq!(out.get_pixel(200, 121).0[0], 255, "rule stays");
+        assert_eq!(out.get_pixel(20, 155).0[0], 0, "type lost");
     }
 
     /// `MCA_BANDS_PNG=/tmp/page.png cargo test bands_of_a_page -- --ignored --nocapture`
