@@ -175,6 +175,10 @@ pub struct Ledger {
     /// balance arithmetic. The printed totals get the last word on them (`meet_totals`).
     #[serde(skip)]
     pub weak: Vec<usize>,
+    /// The kind a section's total line names ("Total Deposits and Additions") per table
+    /// id, for the rows under a section title the scan lost (`settle_weak_by_section_kinds`).
+    #[serde(skip)]
+    pub section_kinds: Vec<(usize, Kind)>,
 }
 
 // ─── Line parsing ─────────────────────────────────────────────────────────
@@ -240,6 +244,22 @@ fn join_split_amounts(line: &str) -> String {
     if !line.is_ascii() {
         return line.to_string();
     }
+    // The point lost to a space at the very end of a dated row that has no other figure
+    // ("02/21 CCD DEPOSIT, GRUBHUB INC FEB ACTVTY ****2119dKHGk50 424 67", TD in a scan):
+    // a row lists an amount, so its last two tokens are its dollars and cents.
+    let line = &{
+        let toks: Vec<&str> = line.split_whitespace().collect();
+        let n = toks.len();
+        let digits = |t: &str| !t.is_empty() && t.chars().all(|c| c.is_ascii_digit());
+        if n >= 4 && parse_date_token(toks[0]).is_some() && digits(toks[n - 1]) && toks[n - 1].len() == 2 && digits(toks[n - 2].replace(',', "").as_str()) && toks[n - 2].len() <= 7
+            && !toks[1..n - 2].iter().any(|t| is_amount_token(t)) && toks[1..n - 2].iter().any(|t| t.chars().any(|c| c.is_ascii_alphabetic()))
+        {
+            let cut = line.trim_end().rfind(toks[n - 1]).unwrap();
+            format!("{}.{}", line[..cut].trim_end(), toks[n - 1])
+        } else {
+            line.to_string()
+        }
+    };
     // A decimal point lost to a space after a thousands group ("Deposits 8,498 69"): the
     // group of three after a comma, a space, two digits and no more digits is ".dd".
     let line = &{
@@ -293,7 +313,9 @@ fn join_split_amounts(line: &str) -> String {
         let run_before = (0..i).rev().take_while(|&k| b[k].is_ascii_digit()).count();
         // (Not after a date: "03/28 .05 Interest Payment" is a date and a cents-only amount.)
         let after_date = i > run_before && matches!(b[i - run_before - 1], b'/' | b'-');
-        let before_point = b[i - 1].is_ascii_digit() && run_before <= 6 && !after_date && b.get(i + 1) == Some(&b'.') && digit(i + 2) && digit(i + 3) && !digit(i + 4);
+        // (Not after a figure that already has its cents: "80,689.22 .00" is two figures.)
+        let after_cents = i >= 3 && b[i - 3] == b'.' && b[i - 2].is_ascii_digit() && b[i - 1].is_ascii_digit();
+        let before_point = b[i - 1].is_ascii_digit() && run_before <= 6 && !after_date && !after_cents && b.get(i + 1) == Some(&b'.') && digit(i + 2) && digit(i + 3) && !digit(i + 4);
         // "15 ..00-": the same with the point read twice (the second point goes below).
         let before_points = b[i - 1].is_ascii_digit() && b.get(i + 1) == Some(&b'.') && b.get(i + 2) == Some(&b'.') && digit(i + 3) && digit(i + 4) && !digit(i + 5);
         // ("27 , 893.44": the thousands comma spaced on both sides; the second space is
@@ -706,7 +728,38 @@ fn drop_second_date(line: &str) -> String {
 /// A month no calendar has at the start of a line ("42/09 4455950653 3,250.00 12/24 ...",
 /// a 1 read as 4) is the month of the other date on the line, when there is one.
 fn repair_bad_month(line: &str) -> String {
+    // (A scan's margin glyph in front of the date, "| 05/03. Deposit": the repairs apply to
+    // the line behind it.)
+    if let Some(first) = line.split_whitespace().next() {
+        if first.chars().count() == 1 && !first.chars().all(|c| c.is_alphanumeric()) {
+            let at = line.find(first).unwrap();
+            let rest = &line[at + first.len()..];
+            let repaired = repair_bad_month(rest.trim_start());
+            if repaired != rest.trim_start() {
+                return format!("{}{first} {repaired}", &line[..at]);
+            }
+            return line.to_string();
+        }
+    }
     let Some(first) = line.split_whitespace().next() else { return line.to_string() };
+    // ("dan 31 489 36,210.81 Jan 29 508 5,555.41": a month name with one letter misread in
+    // front of a day, when the same line prints the month right further on.)
+    let month_word = |t: &str| MONTHS.iter().position(|m| t.len() == 3 && t.eq_ignore_ascii_case(m));
+    if first.len() == 3 && first.chars().all(|c| c.is_ascii_alphabetic()) && month_word(first).is_none() {
+        let toks: Vec<&str> = line.split_whitespace().collect();
+        let day_next = toks.get(1).and_then(|d| d.parse::<u32>().ok()).map(|d| (1..=31).contains(&d)).unwrap_or(false);
+        let mut later: Vec<usize> = toks.iter().skip(2).filter_map(|t| month_word(t)).collect();
+        later.dedup();
+        if day_next && later.len() == 1 {
+            let m = MONTHS[later[0]];
+            let off = first.to_ascii_lowercase().chars().zip(m.chars()).filter(|(a, b)| a != b).count();
+            if off == 1 {
+                let at = line.find(first).unwrap();
+                let cased: String = if first.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false) { format!("{}{}", m[..1].to_ascii_uppercase(), &m[1..]) } else { m.to_string() };
+                return format!("{}{cased}{}", &line[..at], &line[at + first.len()..]);
+            }
+        }
+    }
     // ("02/17. Card Purchase With Pin": a speck after the date.)
     if let Some(bare) = first.strip_suffix('.').or_else(|| first.strip_suffix(',')) {
         if bare.len() >= 3 && parse_date_token(bare).is_some() && parse_date_token(first).is_none() {
@@ -749,11 +802,13 @@ fn repair_slashless_dates(text: &str) -> String {
             return None;
         }
         let mut readings: Vec<(u32, u32)> = Vec::new();
+        // (The slash read as a 7 as well, "579" for 5/9: only when the real dates confirm it.)
+        let mut sevens: Vec<(u32, u32)> = Vec::new();
         for m_len in [1usize, 2] {
-            if t.len() > m_len + 1 && &t[m_len..m_len + 1] == "1" {
+            if t.len() > m_len + 1 && (&t[m_len..m_len + 1] == "1" || &t[m_len..m_len + 1] == "7") {
                 if let (Ok(m), Ok(d)) = (t[..m_len].parse::<u32>(), t[m_len + 1..].parse::<u32>()) {
                     if (1..=12).contains(&m) && (1..=31).contains(&d) && t[m_len + 1..].len() <= 2 {
-                        readings.push((m, d));
+                        if &t[m_len..m_len + 1] == "1" { readings.push((m, d)); } else { sevens.push((m, d)); }
                     }
                 }
             }
@@ -771,19 +826,29 @@ fn repair_slashless_dates(text: &str) -> String {
             }
         }
         let confirmed = |(m, _): &(u32, u32)| !real_months.is_empty() && real_months.iter().all(|r| r == m);
-        readings.iter().copied().find(confirmed).or_else(|| dropped.iter().copied().find(confirmed)).or_else(|| readings.first().copied())
+        readings.iter().copied().find(confirmed).or_else(|| dropped.iter().chain(sevens.iter()).copied().find(confirmed)).or_else(|| readings.first().copied())
     };
     let firsts: Vec<Option<(u32, u32)>> = lines.iter().map(|l| {
         let mut toks = l.split_whitespace();
         let first = toks.next()?;
-        let other_date = toks.take(3).any(|t| parse_date_token(t).is_some());
+        // (A check number with its amount right after it, "1031 1,528.00 Paid Check", is
+        // not a date either.)
+        let rest: Vec<&str> = toks.take(3).collect();
+        let other_date = rest.iter().any(|t| parse_date_token(t).is_some()) || rest.first().map(|t| is_amount_token(t)).unwrap_or(false);
         split(first, other_date)
     }).collect();
     let months: Vec<u32> = firsts.iter().flatten().map(|(m, _)| *m).collect();
     // (Two or three slashless dates are enough when every real date on the page shares
     // their month: "1105", "1106", "1108" beside "11/05" and "11/07" in a PNC check table.)
     let confirmed = months.len() >= 2 && real_months.len() >= 2 && real_months.iter().all(|m| *m == months[0]);
-    if months.is_empty() || months.len() < 4 && !confirmed || months.iter().any(|m| *m != months[0]) {
+    // (A single one is repaired when the real dates confirm its month and the line has the
+    // shape of a row with its running balance, two figures at the end: "579 Legal Order
+    // Debit ... 50.00 0.00" beside 5/16 and 5/18.)
+    let lone_row = months.len() == 1 && real_months.len() >= 2 && real_months.iter().all(|m| *m == months[0]) && lines.iter().zip(&firsts).any(|(l, f)| {
+        let toks: Vec<&str> = l.split_whitespace().collect();
+        f.is_some() && toks.len() >= 4 && is_amount_token(toks[toks.len() - 1]) && is_amount_token(toks[toks.len() - 2])
+    });
+    if months.is_empty() || months.len() < 4 && !confirmed && !lone_row || months.iter().any(|m| *m != months[0]) {
         return text.to_string();
     }
     let agreeing = real_months.iter().filter(|m| **m == months[0]).count();
@@ -803,7 +868,19 @@ fn repair_slashless_dates(text: &str) -> String {
 /// The same for a line with no other date on it ("42/22 ACH DEPOSIT, VENMO CASHOUT ...
 /// 868.00"): the month of the nearest dated lines above and below, when they agree.
 fn repair_bad_months(text: &str) -> String {
-    let text = &repair_slashless_dates(text);
+    // (A scan's margin glyph in front of the date, "| 05/05 Deposit", "‘11-04 ...": blanked
+    // first so the dates behind it are seen by every repair here; bullets and signs stay.)
+    let glyphs = ['|', '!', '¦', '[', ']', '{', '}', '\'', '\u{2018}', '\u{2019}', '"', '\u{201c}', '\u{201d}', '_', '~', '='];
+    let unglyphed: String = text.lines().map(|l| {
+        match l.split_whitespace().next() {
+            Some(t) if t.chars().count() == 1 && glyphs.contains(&t.chars().next().unwrap()) => {
+                let at = l.find(t).unwrap();
+                format!("{}{}{}", &l[..at], " ".repeat(t.len()), &l[at + t.len()..])
+            }
+            _ => l.to_string(),
+        }
+    }).collect::<Vec<_>>().join("\n");
+    let text = &repair_slashless_dates(&unglyphed);
     // A zero read as the letter o anywhere in a leading date ("oo/o9 7238 130.00"): the
     // letters become zeros; a month of 00 is then repaired from the neighbours below.
     let text = &text.lines().map(|l| {
@@ -823,8 +900,12 @@ fn repair_bad_months(text: &str) -> String {
     // read in ("121/15 NATIONWIDE EDI PYMNTS 169.25-").
     let bad = |l: &str| -> Option<usize> {
         let first = l.split_whitespace().next()?;
-        let (m, d) = first.split_once('/')?;
-        if !(m.len() == 2 || m.len() == 3) || d.is_empty() || d.len() > 2 || !m.chars().chain(d.chars()).all(|c| c.is_ascii_digit()) {
+        let (m, rest) = first.split_once('/')?;
+        // ("42/22/2021", Heritage Bank in a scan: the day is what comes before the year;
+        // "95/09." a speck after the day.)
+        let rest = rest.trim_end_matches(|c| c == '.' || c == ',');
+        let d = rest.split('/').next().unwrap_or(rest);
+        if !(m.len() == 2 || m.len() == 3) || d.is_empty() || d.len() > 2 || !m.chars().chain(d.chars()).all(|c| c.is_ascii_digit()) || rest.split('/').nth(1).map(|y| !(y.len() == 2 || y.len() == 4) || !y.chars().all(|c| c.is_ascii_digit())).unwrap_or(false) {
             return None;
         }
         (m.len() == 3 || m.parse::<u32>().map(|v| v > 12 || v == 0).unwrap_or(false)).then_some(m.len())
@@ -835,7 +916,9 @@ fn repair_bad_months(text: &str) -> String {
     let bad_day = |l: &str| -> bool {
         let Some(first) = l.split_whitespace().next() else { return false };
         let Some((m, d)) = first.split_once('/') else { return false };
-        m.len() <= 2 && !m.is_empty() && m.chars().all(|c| c.is_ascii_digit()) && (1..=2).contains(&d.len()) && d.chars().filter(|c| c.is_ascii_lowercase()).count() == 1 && d.chars().all(|c| c.is_ascii_alphanumeric())
+        // (Or a day no month has, "02/41" for 02/11: one digit misread.)
+        let over = d.len() == 2 && d.chars().all(|c| c.is_ascii_digit()) && d.parse::<u32>().map(|v| v > 31).unwrap_or(false);
+        m.len() <= 2 && !m.is_empty() && m.chars().all(|c| c.is_ascii_digit()) && (1..=2).contains(&d.len()) && (d.chars().filter(|c| c.is_ascii_alphabetic()).count() == 1 && d.chars().all(|c| c.is_ascii_alphanumeric()) || over)
     };
     if !lines.iter().any(|l| bad(l).is_some() || bad_day(l)) {
         return text.to_string();
@@ -845,14 +928,39 @@ fn repair_bad_months(text: &str) -> String {
         if bad_day(l) {
             let first = l.split_whitespace().next().unwrap();
             let (month, day) = first.split_once('/').unwrap();
+            // (A day of digits alone, over 31, may differ from the neighbour's in one digit.)
+            let slack = if day.chars().all(|c| c.is_ascii_digit()) { 1 } else { 0 };
             let fits = |(m, d): &(u32, u32)| -> bool {
                 let printed = if day.len() == 2 { format!("{d:02}") } else { d.to_string() };
-                month.parse::<u32>().ok() == Some(*m) && printed.len() == day.len() && printed.chars().zip(day.chars()).all(|(p, c)| c.is_ascii_lowercase() || p == c)
+                month.parse::<u32>().ok() == Some(*m) && printed.len() == day.len() && printed.chars().zip(day.chars()).filter(|(p, c)| !(c.is_ascii_alphabetic() || p == c)).count() <= slack
             };
             let above = lines[..i].iter().rev().find_map(|x| date_of(x));
             let below = lines[i + 1..].iter().find_map(|x| date_of(x));
-            let mut fitting: Vec<(u32, u32)> = [above, below].into_iter().flatten().filter(fits).collect();
+            // (The three nearest dated lines each way: the row's own section may end before
+            // a date that fits appears, "03/1C" over a withdrawal dated 03/22 and the daily
+            // table's 03/10.)
+            let near: Vec<(u32, u32)> = lines[..i].iter().rev().filter_map(|x| date_of(x)).take(3).chain(lines[i + 1..].iter().filter_map(|x| date_of(x)).take(3)).collect();
+            let mut fitting: Vec<(u32, u32)> = near.iter().copied().filter(fits).collect();
+            fitting.sort_unstable();
             fitting.dedup();
+            // (A day over 31 with no neighbour to copy: the one-digit repairs that fall
+            // between the row above and the row below, the row's own transaction date
+            // ("02/41 Card Purchase 02/10 ...") standing in for a missing row above; one
+            // such day is the day.)
+            if fitting.is_empty() && slack == 1 {
+                // (The row's own date first: the row above may close another section.)
+                let own = l.split_whitespace().skip(1).find_map(parse_date_token).map(|(m, d, _)| (m, d));
+                let low = own.or(above);
+                let m: u32 = month.parse().unwrap_or(0);
+                let mut days: Vec<(u32, u32)> = (1..=31u32).filter(|d| {
+                    let printed = format!("{d:02}");
+                    printed.chars().zip(day.chars()).filter(|(p, c)| p != c).count() == 1
+                }).map(|d| (m, d)).filter(|c| low.map(|a| *c >= a).unwrap_or(false) && below.map(|b| *c <= b).unwrap_or(false)).collect();
+                days.dedup();
+                if days.len() == 1 {
+                    fitting = days;
+                }
+            }
             if fitting.len() == 1 {
                 let at = l.find(first).unwrap();
                 return format!("{}{:02}/{:02}{}", &l[..at], fitting[0].0, fitting[0].1, &l[at + first.len()..]);
@@ -862,8 +970,20 @@ fn repair_bad_months(text: &str) -> String {
         let Some(width) = bad(l) else { return l.to_string() };
         let above = lines[..i].iter().rev().find_map(|x| month_of(x));
         let below = lines[i + 1..].iter().find_map(|x| month_of(x));
+        // (When the two disagree, "05/31 Balance Forward" above "96/03 Deposit" over June's
+        // rows, the month most of the page's dated lines carry decides, if it is one digit
+        // off the misread one.)
+        let majority = || -> Option<String> {
+            let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+            for m in lines.iter().filter_map(|x| month_of(x)) { *counts.entry(m).or_insert(0) += 1; }
+            let (best, n) = counts.iter().max_by_key(|(_, n)| **n)?;
+            let total: usize = counts.values().sum();
+            let bad_m = &l.split_whitespace().next()?[..2];
+            (n * 2 > total && bad_m.len() == 2 && best.len() == 2 && best.chars().zip(bad_m.chars()).filter(|(a, b)| a != b).count() == 1).then(|| best.clone())
+        };
         let month = match (above, below) {
             (Some(a), Some(b)) if a == b => Some(a),
+            (Some(_), Some(_)) => majority(),
             (Some(a), None) => Some(a),
             (None, Some(b)) => Some(b),
             _ => None,
@@ -873,9 +993,10 @@ fn repair_bad_months(text: &str) -> String {
             // never "345".)
             Some(m) if width == 2 || { let t = &l.split_whitespace().next().unwrap()[..3]; (0..3).any(|k| format!("{}{}", &t[..k], &t[k + 1..]) == m) } => {
                 let first = l.split_whitespace().next().unwrap();
-                if parse_date_token(&format!("{m}/{}", &first[width + 1..])).is_some() {
+                let day = first[width + 1..].trim_end_matches(|c| c == '.' || c == ',');
+                if parse_date_token(&format!("{m}/{day}")).is_some() {
                     let at = l.find(first).unwrap();
-                    return format!("{}{m}{}", &l[..at], &l[at + width..]);
+                    return format!("{}{m}/{day}{}", &l[..at], &l[at + first.len()..]);
                 }
                 l.to_string()
             }
@@ -903,7 +1024,10 @@ fn strip_margin_junk(line: &str, credit_section: bool) -> String {
     let all_digits = first.chars().all(|c| c.is_ascii_digit());
     // ("#6" on a check image caption is check number 6, not a stray mark.)
     let numbered = first.len() >= 2 && first.starts_with('#') && first[1..].chars().all(|c| c.is_ascii_digit());
-    let short_junk = first.len() <= 4 && (!all_digits || first.len() <= 2) && !numbered;
+    // (SunTrust sets its section label in the margin over two lines, "Deposits/" then
+    // "Credits" beside the first row: "Credits 04/18 284.88 DEPOSIT".)
+    let margin_label = ["credits", "debits", "deposits", "withdrawals", "checks", "paid", "history"].iter().any(|w| first.eq_ignore_ascii_case(w));
+    let short_junk = (first.len() <= 4 && (!all_digits || first.len() <= 2) || margin_label) && !numbered;
     let code_in_credits = credit_section && all_digits && first.len() >= 5;
     let junk = (short_junk || code_in_credits) && parse_date_token(first).is_none() && parse_date_token(second).is_some() && !is_amount_token(first);
     if !junk {
@@ -926,8 +1050,82 @@ fn pad_short_dashed_date(line: &str) -> String {
     let padded = format!("{:0>2}-{:0>2}", m, d);
     let after = &rest[tok.len()..];
     let extra = padded.len() - tok.len();
-    let trimmed_after = after.strip_prefix(&" ".repeat(extra)).unwrap_or(after);
+    // (The columns keep their places only when there are spaces to spare; flat OCR's
+    // single space stays, "12-1 Direct Deposit" must not become "12-01Direct Deposit".)
+    let spare = after.len() - after.trim_start().len();
+    let trimmed_after = if spare > extra { after.strip_prefix(&" ".repeat(extra)).unwrap_or(after) } else { after };
     format!("{}{}{}", &line[..indent], padded, trimmed_after)
+}
+
+/// Figures at the end of a row whose commas and points a scan turned into spaces ("-6 789
+/// 84 25 409.88"): read from the right, a figure is a cents pair (or an amount with its
+/// point) behind groups of three digits behind a leading group of one to three, signed or
+/// not. Two figures must come out of the tail, the row's amount and its balance, and the
+/// plain reading must not already give them; otherwise the line is left alone.
+fn rejoin_split_figures(line: &str) -> Option<String> {
+    let toks: Vec<&str> = line.split_whitespace().collect();
+    let digits = |t: &str| !t.is_empty() && t.chars().all(|c| c.is_ascii_digit());
+    let group3 = |t: &str| t.len() == 3 && digits(t);
+    let lead = |t: &str| { let b = t.trim_start_matches('-'); (1..=3).contains(&b.len()) && digits(b) };
+    if toks.iter().rev().take_while(|t| is_amount_token(t) && t.contains('.')).count() >= 2 {
+        return None;
+    }
+    let mut i = toks.len();
+    let mut figures: Vec<String> = Vec::new();
+    while figures.len() < 2 && i > 0 {
+        let t = toks[i - 1];
+        let (mut int_groups, cents): (Vec<&str>, String) = if is_amount_token(t) && t.contains('.') && !t.contains(',') {
+            // "409.88": a whole figure, or the last group of one that lost its commas.
+            let (int, c) = t.rsplit_once('.').unwrap();
+            if int.len() != 3 || !digits(int) {
+                figures.push(t.to_string());
+                i -= 1;
+                continue;
+            }
+            (vec![int], c.to_string())
+        } else if t.len() == 2 && digits(t) {
+            (Vec::new(), t.to_string())
+        } else if t.len() == 3 && digits(t) && t.starts_with('0') && figures.is_empty() {
+            // ("014" at the very end: a balance of 0.14 whose point went too.)
+            figures.push(format!("0.{}", &t[1..]));
+            i -= 1;
+            continue;
+        } else {
+            break;
+        };
+        i -= 1;
+        // Groups of three (an unsigned group of three may be the leading group itself),
+        // then a shorter or signed leading group.
+        while i > 0 {
+            let p = toks[i - 1];
+            if group3(p) {
+                int_groups.insert(0, p);
+                i -= 1;
+                continue;
+            }
+            if lead(p) {
+                int_groups.insert(0, p);
+                i -= 1;
+            }
+            break;
+        }
+        if int_groups.is_empty() {
+            return None;
+        }
+        let sign = if int_groups[0].starts_with('-') { "-" } else { "" };
+        let mut int = int_groups.iter().map(|g| g.trim_start_matches('-')).collect::<Vec<_>>().join(",");
+        if int.is_empty() { int = "0".into(); }
+        let figure = format!("{sign}{int}.{cents}");
+        if !is_amount_token(&figure) {
+            return None;
+        }
+        figures.push(figure);
+    }
+    if figures.len() != 2 || i == 0 {
+        return None;
+    }
+    figures.reverse();
+    Some(format!("{} {} {}", toks[..i].join(" "), figures[0], figures[1]))
 }
 
 /// A summary label that some banks print as a dated row of the activity table.
@@ -1085,7 +1283,35 @@ fn glued_code(t: &str) -> Option<usize> {
 /// glyph is a 5 or gone. Runs before the page's non-ASCII characters are blanked.
 /// (Also a letter read into the cents of a signed figure, "7.1i1-": three characters
 /// after the point, one of them an i, l or I, are the two cents digits with an insertion.)
+/// A text layer whose font map lost its figures ("$o.oo", "$431.3s", "O9lO1l24" for
+/// $0.00, $431.35, 09/01/24; Wintrust's second account page): letters that stand in for
+/// figures are put back when the whole token then reads as an amount (behind its "$") or a
+/// date. Other tokens are left alone.
+fn unfont(t: &str) -> Option<String> {
+    let has_letter = t.chars().any(|c| c.is_ascii_alphabetic());
+    let has_digit = t.chars().any(|c| c.is_ascii_digit());
+    if !has_letter {
+        return None;
+    }
+    let figure = |c: char| match c { 'o' | 'O' => '0', 'l' | 'I' => '1', 's' | 'S' => '5', 'z' | 'Z' => '2', other => other };
+    if let Some(body) = t.strip_prefix('$') {
+        let mapped: String = body.chars().map(figure).collect();
+        return (mapped.contains('.') && is_amount_token(&format!("${mapped}"))).then(|| format!("${mapped}"));
+    }
+    // (A date's slashes read as "l": two of them, with digits or figure letters around.)
+    if has_digit && t.matches('l').count() == 2 && t.chars().all(|c| c.is_ascii_digit() || matches!(c, 'o' | 'O' | 'l' | 'z' | 's' | 'S' | 'Z' | 'I')) {
+        let mapped: String = t.chars().map(|c| if c == 'l' { '/' } else { figure(c) }).collect();
+        return parse_date_token(&mapped).map(|_| mapped);
+    }
+    None
+}
+
 fn glyph_figures(line: &str) -> String {
+    let line = &if line.contains('$') || line.contains('l') {
+        line.split(' ').map(|t| unfont(t).unwrap_or_else(|| t.to_string())).collect::<Vec<_>>().join(" ")
+    } else {
+        line.to_string()
+    };
     let stray_in_cents = |t: &str| -> Option<String> {
         let body = t.strip_suffix('-').or_else(|| t.strip_suffix('+'))?;
         let (dollars, cents) = body.rsplit_once('.')?;
@@ -1104,7 +1330,8 @@ fn glyph_figures(line: &str) -> String {
             return fixed;
         }
         if !(t.contains('§') || t.contains('£')) { return t.to_string(); }
-        let five = t.replace('§', "5").replace('£', "5");
+        // ("§0,000:00" for 50,000.00: the colon for the point is put right here too.)
+        let five = t.replace('§', "5").replace('£', "5").replace(':', ".");
         let gone = t.replace(['§', '£'], "");
         if is_amount_token(&five) && t.contains('§') { five } else if is_amount_token(&gone) { gone } else { t.to_string() }
     }).collect::<Vec<_>>().join(" ")
@@ -1128,8 +1355,12 @@ fn attach_trailing_sign(line: &str) -> String {
     // scan's margin marks read as glyphs) is dropped; a sign there stays for the rule below.
     // (The same between two amounts: "AES STDNT LOAN $188.11 : $221.66", "CHECK #1527
     // $48.50 . $104.05".)
+    // (The dropped marks are blanked in place, so the amounts keep their columns: "$4.99 D
+    // $32.00" under Pinnacle's Credits / Debits / Balance header is a $32.00 debit.)
     let line = &{
-        let mut toks: Vec<&str> = line.split_whitespace().collect();
+        let spans: Vec<(usize, &str)> = line.split_whitespace().map(|t| (t.as_ptr() as usize - line.as_ptr() as usize, t)).collect();
+        let mut toks: Vec<&str> = spans.iter().map(|(_, t)| *t).collect();
+        let mut removed: Vec<usize> = Vec::new();
         let stray = |t: &str| t.chars().count() == 1 && !t.chars().all(|c| c.is_ascii_digit() || c == '-' || c == '+' || c == ')');
         // (At the very end also a lone digit, signed or not: "425 * 04/25 $26,295.28 ——4",
         // a rule's tail read as a figure.)
@@ -1137,6 +1368,7 @@ fn attach_trailing_sign(line: &str) -> String {
         let mut dropped = false;
         while toks.len() >= 3 && (stray(toks[toks.len() - 1]) || stray_digit(toks[toks.len() - 1])) && is_amount_token(toks[toks.len() - 2]) {
             toks.pop();
+            removed.push(toks.len());
             dropped = true;
         }
         // (The tail of a rule read as a short scribble after a check row's amount, "225 4“
@@ -1148,20 +1380,34 @@ fn attach_trailing_sign(line: &str) -> String {
         if check_row {
             let run = toks.iter().rev().take(3).take_while(|t| scribble(t) || stray(t)).count();
             if run >= 1 && toks.len() > run + 2 && is_amount_token(toks[toks.len() - 1 - run]) {
+                removed.extend(toks.len() - run..toks.len());
                 toks.truncate(toks.len() - run);
                 dropped = true;
             }
         }
+        // (Indexes into `spans`: nothing before the tail has been removed yet.)
         let mut i = 1;
+        let mut kept: Vec<usize> = (0..toks.len()).collect();
         while i + 1 < toks.len() {
             if stray(toks[i]) && is_amount_token(toks[i - 1]) && is_amount_token(toks[i + 1]) {
                 toks.remove(i);
+                removed.push(kept.remove(i));
                 dropped = true;
             } else {
                 i += 1;
             }
         }
-        if dropped { toks.join(" ") } else { line.to_string() }
+        if dropped {
+            let mut out = line.to_string();
+            removed.sort_unstable_by(|a, b| b.cmp(a));
+            for idx in removed {
+                let (start, tok) = spans[idx];
+                out.replace_range(start..start + tok.len(), &" ".repeat(tok.chars().count()));
+            }
+            out
+        } else {
+            line.to_string()
+        }
     };
     // An overdrawn balance marked "OD" ("3.16-OD", "10.59-0D", a Puerto Rico bank): the
     // marker goes, the minus stays. (Without the minus, "3.160D" in its daily balance
@@ -1186,8 +1432,13 @@ fn attach_trailing_sign(line: &str) -> String {
         line.split(' ').map(|t| {
             // (Never a plain time, "11:50" in "POS DEB 11:50 12/26/24": the token must carry
             // a semicolon or a thousands comma to be a figure.)
-            if (t.contains(';') || t.contains(':') && t.contains(',')) && t.chars().all(|c| c.is_ascii_digit() || c == ';' || c == ':' || c == ',' || c == '.') && t.chars().any(|c| c.is_ascii_digit()) {
-                let fixed = t.replace(';', ",").replace(':', ".");
+            // (Or the figure before the colon is no hour: "221:39" is 221.39.)
+            let no_hour = t.split_once(':').map(|(h, m)| h.len() >= 3 && h.chars().all(|c| c.is_ascii_digit()) && m.len() == 2 && m.chars().all(|c| c.is_ascii_digit())).unwrap_or(false);
+            // ("$60;000.00-", Flushing Bank in a scan: the dollar sign and the trailing
+            // minus stay around the repaired figure.)
+            let (head, body, tail) = { let b = t.strip_prefix('$').unwrap_or(t); let (b, tail) = b.strip_suffix('-').map(|x| (x, "-")).unwrap_or((b, "")); (if t.starts_with('$') { "$" } else { "" }, b, tail) };
+            if (body.contains(';') || body.contains(':') && body.contains(',') || no_hour) && body.chars().all(|c| c.is_ascii_digit() || c == ';' || c == ':' || c == ',' || c == '.') && body.chars().any(|c| c.is_ascii_digit()) {
+                let fixed = format!("{head}{}{tail}", body.replace(';', ",").replace(':', "."));
                 if is_amount_token(&fixed) { return fixed; }
             }
             t.to_string()
@@ -1445,6 +1696,9 @@ fn weekday(day: i64) -> i64 {
 }
 
 /// Section a header line switches to, if it is a header.
+/// Full section phrases the banks print, matched even through a scan's glyph noise.
+const SECTION_PHRASES: &[(&str, Kind)] = &[("checks and other debits", Kind::Debit), ("deposits and other credits", Kind::Credit), ("all credit activity", Kind::Credit), ("all debit activity", Kind::Debit), ("deposits and additions", Kind::Credit), ("withdrawals and debits", Kind::Debit), ("electronic withdrawals", Kind::Debit), ("checks paid", Kind::Debit)];
+
 fn section_for(line: &str) -> Option<Kind> {
     let mut l = line.to_ascii_lowercase();
     // Fifth Third prints the section total on the header line: "Deposits / Credits
@@ -1472,19 +1726,23 @@ fn section_for(line: &str) -> Option<Kind> {
     // ..... ACCOUNT 02229319"; the number after "account" is not a reference there. Without
     // the leader, "TRANSFER TO DEPOSIT SYSTEM ACCOUNT XXXXXX3134" is a wire's continuation.)
     let leader = l.contains("...") || l.contains("---");
-    let before_account = if leader { toks.iter().position(|t| *t == "account").unwrap_or(toks.len()) } else { toks.len() };
+    // ("Account:-------1079", Huntington's title, glues the leader and number to the word.)
+    let before_account = if leader { toks.iter().position(|t| *t == "account" || t.starts_with("account:")).unwrap_or(toks.len()) } else { toks.len() };
     let has_reference = toks[..before_account].iter().any(|t| t.chars().filter(|c| c.is_ascii_digit()).count() >= 4 || t.contains("xxx"));
     // (First American's recaps run to seven words in capitals: "SUMMARY OF ELECTRONIC
     // DEBITS AND OTHER WITHDRAWALS".)
     let shouted = line.split_whitespace().all(|t| t.chars().all(|c| !c.is_ascii_lowercase()));
     // A full section phrase drowned in a scan's glyph noise ("ESE =~ CHECKS AND OTHER
     // DEBITS Ssainieacme mee ont ie iwc mis", Premier Bank) is still the header.
-    const SECTION_PHRASES: &[(&str, Kind)] = &[("checks and other debits", Kind::Debit), ("deposits and other credits", Kind::Credit), ("all credit activity", Kind::Credit), ("all debit activity", Kind::Debit), ("deposits and additions", Kind::Credit), ("withdrawals and debits", Kind::Debit), ("electronic withdrawals", Kind::Debit), ("checks paid", Kind::Debit)];
     if !starts_with_date && !ends_with_amount && !toks.iter().any(|t| is_amount_token(t)) {
         if let Some((_, k)) = SECTION_PHRASES.iter().find(|(p, _)| l.contains(p)) {
             if !l.contains("total") && !l.contains("summary") {
                 return Some(*k);
             }
+        }
+        // (Union Bank's "Purchases ATM card and Debit card™ purchases" runs to seven words.)
+        if l.starts_with("purchases") && !l.contains("total") {
+            return Some(Kind::Debit);
         }
     }
     // (A wire's wrapped detail line starting with a figure, "347 '43ELEKTA INC DEPOSIT",
@@ -1529,9 +1787,16 @@ fn kind_and_confidence(desc: &str, section: Option<Kind>) -> (Kind, bool) {
     // "Purchase Return authorized" on a flat OCR page; Wells incoming wires name the
     // originator ("WT ... Morgan Stanley /Org=..."), outgoing ones the beneficiary (/Bnf=).
     // Legends lists a returned ACH pull under deposits as "Non Check Return Ret-R08".
-    const CREDIT_PHRASES: &[&str] = &["check deposit", "purchase return", "/org=", "non check return", "payment from", "pmt from"];
+    // (Signature's "DEBIT CARD REFUND" is money back on the card: a credit.)
+    const CREDIT_PHRASES: &[&str] = &["check deposit", "purchase return", "/org=", "non check return", "payment from", "pmt from", "refund"];
     if CREDIT_PHRASES.iter().any(|w| l.contains(w)) {
         return (Kind::Credit, true);
+    }
+    // (Heritage Bank's "INET XFER 12-02 FROM XXXXXXXX0686" / "INET XFER 12-02 TO ...": the
+    // direction word comes after the date.)
+    if l.contains("xfer") && !l.contains("transfer") {
+        if l.contains(" from ") { return (Kind::Credit, true); }
+        if l.contains(" to ") { return (Kind::Debit, true); }
     }
     if l.starts_with("debit") || DEBIT_WORDS.iter().any(|w| l.contains(w)) {
         return (Kind::Debit, true);
@@ -1673,6 +1938,14 @@ struct State {
     /// Last running balance seen on a flat (OCR) page, and the transactions read since,
     /// with whether their kind came from a word. See `resolve_group`.
     last_balance: Option<f64>,
+    /// Amount of the last row that carried a running balance.
+    last_amount: Option<f64>,
+    /// This page's rows are headed "Date  Description  Amount  Balance": two figures at the
+    /// end of a row are its amount and the balance after it, whether or not they chain.
+    amount_balance: bool,
+    /// PNC's two summary boxes read as one line ("Deposits and Other Additions   Checks and
+    /// Other Deductions"): the "Total ... Total ..." line below carries both totals.
+    two_box_summary: bool,
     open_group: Vec<(usize, bool)>,
     /// Inside a paid-checks listing ("Summary of checks written", "CHECKS IN CHECK NO.
     /// ORDER"): a row whose date the scan garbled is still a check.
@@ -1754,7 +2027,7 @@ fn resolve_group(ledger: &mut Ledger, group: &[(usize, bool)], prev: f64, next: 
 }
 
 /// Headers of blocks whose dated, amounted lines are not transactions.
-const INFORMATIONAL_HEADERS: &[&str] = &["items returned unpaid", "monthly service fee summary", "account transaction fees summary", "fee period", "overdraft protection", "interest summary", "automatic transactions", "service charge summary"];
+const INFORMATIONAL_HEADERS: &[&str] = &["items returned unpaid", "monthly service fee summary", "account transaction fees summary", "fee period", "overdraft protection", "interest summary", "automatic transactions", "service charge summary", "service fee calculation"];
 
 impl State {
     /// Kind of a row under the current section. A section header on this page decides;
@@ -1809,6 +2082,7 @@ impl State {
 
 /// Parse one page. `year_hint` fills in years for MM/DD dates.
 fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledger, st: &mut State) {
+    st.amount_balance = false;
     // Month-name dates and split amounts are normalized line by line first, so stacked
     // "Apr02" / "1,395 .37" cells zip like any other (the per-line pass below is idempotent).
     let text = &merge_doubled_fragments(text);
@@ -1816,8 +2090,11 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
     // Other symbols (arrows, glyphs the text layer made of icons) become spaces, so the
     // ASCII-only repairs still run on their lines.
     let ascii = |l: &str| -> String { l.chars().map(|c| if c.is_ascii() || c == '\u{2022}' { c } else { ' ' }).collect() };
-    let pre: String = text.lines().map(|l| join_split_amounts(&normalize_month_dates(&ascii(&dashes_to_signs(&glyph_figures(l)))))).collect::<Vec<_>>().join("\n");
+    // ("Dally Balance Summary": Tesseract's i as l in a heading the parser keys on.)
+    let headings = |l: &str| -> String { if l.contains("Dally") || l.contains("DALLY") { l.replace("Dally", "Daily").replace("DALLY", "DAILY") } else { l.to_string() } };
+    let pre: String = text.lines().map(|l| join_split_amounts(&normalize_month_dates(&ascii(&dashes_to_signs(&glyph_figures(&headings(l))))))).collect::<Vec<_>>().join("\n");
     let pre = repair_bad_months(&pre);
+    let pre = pre.lines().map(repair_check_pairs).collect::<Vec<_>>().join("\n");
     let (pre, mercury_date) = unfold_mercury_rows(&pre, st.mercury_date.as_deref());
     if mercury_date.is_some() {
         st.mercury_date = mercury_date;
@@ -1850,7 +2127,9 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
     // (Teller receipts carry "TRAN DATE:" and "PREPARED BY:" too.)
     let lower_text = text.to_ascii_lowercase();
     let receipts = ["record of deposit", "prepared by:", "tran date:"].iter().map(|w| lower_text.matches(w).count()).sum::<usize>();
-    if caption_lines >= 3 || paid_captions >= 2 || receipts >= 2 {
+    // (Flushing Bank titles its check picture pages "Image Statement".)
+    let image_statement = text.lines().take(4).any(|l| l.to_ascii_lowercase().contains("image statement"));
+    if caption_lines >= 3 || paid_captions >= 2 || receipts >= 2 || image_statement {
         st.images_page = Some(page);
     }
     // A page whose dated rows end in signed amounts ("$-500.00") for at least three rows and
@@ -1894,6 +2173,8 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
     let mut last_txn: Option<usize> = None;
     // Dated OCR line waiting for its amount on a following line (date token, description).
     let mut pending_flat: Option<(String, String)> = None;
+    // Undated text lines taken into the pending row's description so far.
+    let mut pending_flat_lines = 0usize;
     // Column table rows broken over two lines: a dated line without amounts ("12/02/2024"
     // alone, or "12/02/2024   XX2823CHKPURCHSIG SP FRAGRANT"), then an undated line with
     // the cells ("JEWE   $96.58   $30,997.94"). The date is written into the second line's
@@ -1901,6 +2182,9 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
     let mut pending_row: Option<(String, String)> = None;
     let mut pending_lead: Option<String> = None;
     let mut desc_indent: Option<usize> = None;
+    // Whether the line before the current one was blank (flat OCR keeps no indent, so a
+    // wrapped description straight under its row is told from a title by that alone).
+    let mut blank_before = false;
     // Column-style summaries ("Previous Balance  Total Credits  Total Debits  Current Balance")
     // put the labels on one line and the values on the next.
     let mut pending_columns: Vec<&'static str> = Vec::new();
@@ -1913,6 +2197,16 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
     // cells are explicit, so labels and values pair by cell.
     let mut pending_cells: Vec<Option<&'static str>> = Vec::new();
     let raw_lines: Vec<&str> = text.lines().collect();
+    // Dated rows listed newest first (an online printout): the first dated line's date is
+    // later than the last's. Running balances then chain backwards.
+    // (Counted step by step, so a statement running from December into January, whose
+    // last date is "smaller" than its first, is not taken for one.)
+    let newest_first = {
+        let dated: Vec<(u32, u32)> = raw_lines.iter().filter_map(|l| l.split_whitespace().next().and_then(parse_date_token).map(|(m, d, _)| (m, d))).collect();
+        let down = dated.windows(2).filter(|w| w[1] < w[0]).count();
+        let up = dated.windows(2).filter(|w| w[1] > w[0]).count();
+        dated.len() >= 3 && down >= 1 && up == 0
+    };
     for (line_no, &raw) in raw_lines.iter().enumerate() {
         if raw.matches('|').count() >= 2 {
             let cells: Vec<String> = raw.split('|').map(|c| c.trim().to_ascii_lowercase()).filter(|c| !c.is_empty()).collect();
@@ -1991,8 +2285,11 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         let line: &str = stripped.trim_end();
         let trimmed = line.trim();
         if trimmed.is_empty() {
+            blank_before = true;
             continue;
         }
+        let blank_above = blank_before;
+        blank_before = false;
         let lower = trimmed.to_ascii_lowercase();
         // Where the rows' descriptions start on this page (the first word after the date
         // and any amount or reference): a "header" printed at that column, straight after
@@ -2006,10 +2303,37 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         // rows the two-column unfolding rewrote start their descriptions further left.)
         let bulleted = trimmed.starts_with('\u{2022}') || trimmed.starts_with("* ");
         let continuation_position = last_txn.is_some() && !bulleted && desc_indent.map(|d| d >= 4 && indent + 2 >= d).unwrap_or(false);
+        // (Flat OCR: a line of three or more words at the margin straight under a row, with
+        // no blank line between and not one of the banks' section phrases, is the row's
+        // wrapped description, "PAYMENT ELEKTA INC DEPOSIT" under a wire, not a section.)
+        // (Two or more words outside the banks' heading vocabulary make it a wrap: "Other
+        // withdrawals, debits and service charges" has none.)
+        const HEADING_WORDS: &[&str] = &["deposits", "deposit", "credits", "credit", "debits", "debit", "withdrawals", "withdrawal", "checks", "check", "other", "and", "additions", "subtractions", "electronic", "paid", "fees", "fee", "charges", "charge", "service", "activity", "transactions", "transaction", "summary", "of", "the", "date", "amount", "description", "serial", "no", "number", "balance", "daily", "posted", "cleared", "atm", "card", "purchases", "payments", "payment", "items", "returned", "wire", "transfers", "ach", "for", "in", "out", "detail", "account", "history", "continued", "misc", "miscellaneous", "cash", "mobile", "online", "banking", "bill", "pay", "total", "all"];
+        // (Counted before the first section word: a heading leads with its word, "Banking/
+        // Debit Card Withdrawals ..."; a wrap reaches it after the payee's name.)
+        let flat_wrap = last_txn.is_some() && !bulleted && !blank_above && indent == 0 && trimmed.split_whitespace().count() >= 3 && !SECTION_PHRASES.iter().any(|(p, _)| lower.contains(p)) && {
+            const SECTION_WORDS: &[&str] = &["deposit", "deposits", "credit", "credits", "debit", "debits", "withdrawal", "withdrawals", "checks", "fees", "charges", "payments", "subtractions", "additions"];
+            let words: Vec<&str> = lower.split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| !w.is_empty()).collect();
+            let first_section = words.iter().position(|w| SECTION_WORDS.contains(w)).unwrap_or(words.len());
+            words[..first_section].iter().filter(|w| !w.chars().all(|c| c.is_ascii_digit()) && !HEADING_WORDS.contains(w)).count() >= 2
+        };
         if !st.dashed_dates && trimmed.split_whitespace().any(|t| t.contains('-') && t.len() >= 5 && parse_date_token(t).is_some()) {
             st.dashed_dates = true;
         }
 
+        // Flushing Bank wraps its six summary labels over two lines, "Beginning  Interest
+        // Service  Ending" over "Balance + Deposits + Paid - Withdrawals ~ Charge = Balance",
+        // the figures beneath ("634,907.25  120,084.03  00  80,689.22  .00  674,302.06").
+        {
+            let words: Vec<&str> = lower.split_whitespace().collect();
+            // ("Beginning Interest. i Service Ending" in a scan: specks and lone letters aside.)
+            let words: Vec<&str> = words.iter().map(|w| w.trim_matches(|c: char| !c.is_ascii_alphabetic())).filter(|w| w.len() > 1).collect();
+            if words == ["beginning", "interest", "service", "ending"] {
+                pending_columns = vec!["beginning", "credits", "interest", "debits", "fees", "ending"];
+                pending_has_checks = false;
+                continue;
+            }
+        }
         // A lone "Beginning Balance" label only takes a line that is nothing but the
         // amount, or "as of 03/01/24   1,310,488.01" (a money market statement); anything
         // else is parsed as usual.
@@ -2021,11 +2345,15 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
             pending_columns.clear();
         }
         if !pending_columns.is_empty() {
-            let amounts: Vec<f64> = trimmed.split_whitespace().filter(|t| is_amount_token(t)).filter_map(parse_amount).collect();
+            // ("00" and ".00": a zero whose point the scan lost, see `lost_zero`.)
+            // ("$114,633.19." with a speck after it, Flushing Bank in a scan: the figure.)
+            let amounts: Vec<f64> = trimmed.split_whitespace().map(|t| if t.len() > 4 && (t.ends_with('.') || t.ends_with(',')) && is_amount_token(&t[..t.len() - 1]) { &t[..t.len() - 1] } else { t }).filter(|t| is_amount_token(t) || lost_zero(t)).filter_map(|t| if lost_zero(t) { Some(0.0) } else { parse_amount(t) }).collect();
             // Second header line ("balance  other credits  other debits  balance"): keep waiting.
             // So does an account name between the header and its figures (Navy Federal:
             // "Business Checking" over "7125242482  $17,360.42  $395,422.08 ...").
-            if amounts.is_empty() && trimmed.split_whitespace().count() <= 8 && ["balance", "credits", "debits", "other"].iter().any(|w| lower.contains(w)) {
+            // (Flushing Bank's second line runs to eleven tokens with its signs: "Balance +
+            // Deposits + Paid - Withdrawals ~ Charge = Balance".)
+            if amounts.is_empty() && trimmed.split_whitespace().count() <= 12 && ["balance", "credits", "debits", "other", "deposits", "withdrawals"].iter().any(|w| lower.contains(w)) {
                 continue;
             }
             if amounts.is_empty() && trimmed.split_whitespace().count() <= 4 && !trimmed.chars().any(|c| c.is_ascii_digit()) {
@@ -2045,6 +2373,7 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
                             ledger.summary.total_debits.get_or_insert(value.abs())
                         }
                         "fees" => ledger.summary.fees_total.get_or_insert(value.abs()),
+                        "interest" => ledger.summary.interest_total.get_or_insert(value.abs()),
                         _ => ledger.summary.ending_balance.get_or_insert(value),
                     };
                 }
@@ -2071,6 +2400,34 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         let squeezed_line = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
         capture_summary(&squeezed_line.to_ascii_lowercase(), &squeezed_line, &mut ledger.summary, page);
 
+        // A dated row whose amount lost its point behind a long reference ("06/14/23
+        // Preencoded Deposit 0000000001 813108252112849 27725"): the row carries no other
+        // figure and a reference of nine digits or more, so the tail is its amount in cents.
+        let pointless_tail: Option<String> = {
+            let t: Vec<&str> = trimmed.split_whitespace().collect();
+            let n = t.len();
+            let tail_ok = n >= 4 && (4..=7).contains(&t[n - 1].len()) && t[n - 1].chars().all(|c| c.is_ascii_digit()) && !t[n - 1].starts_with('0');
+            if tail_ok && parse_date_token(t[0]).is_some() && !t.iter().any(|x| is_amount_token(x)) && t[1..n - 1].iter().any(|x| x.len() >= 9 && x.chars().all(|c| c.is_ascii_digit())) {
+                let last = t[n - 1];
+                let cut = trimmed.rfind(last).unwrap();
+                Some(format!("{}{}.{}", &trimmed[..cut], &last[..last.len() - 2], &last[last.len() - 2..]))
+            } else {
+                None
+            }
+        };
+        let trimmed: &str = pointless_tail.as_deref().unwrap_or(trimmed);
+        // (Under an amount-and-balance header, a scan's figures that lost their commas and
+        // points to spaces, "-6 789 84 25 409.88" for -6,789.84 and 25,409.88, are put back
+        // together before the line is read.)
+        let rejoined: String;
+        let trimmed: &str = if st.amount_balance && trimmed.split_whitespace().next().and_then(parse_date_token).is_some() {
+            match rejoin_split_figures(trimmed) {
+                Some(r) => { rejoined = r; &rejoined }
+                None => trimmed,
+            }
+        } else {
+            trimmed
+        };
         let tokens: Vec<&str> = trimmed.split_whitespace().collect();
         // A table header names the column order (see `State::amount_first`).
         // (A check table header, "Date posted  Check number  Amount  Reference number" three
@@ -2145,7 +2502,10 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         // Daily balance tables: a "Daily Balance" heading, or a header repeating "Date ...
         // balance" for several columns ("Date  Ledger balance  Date  Ledger balance").
         let has_amount = tokens.iter().any(|t| is_amount_token(t));
-        let repeated_date_balance_header = !has_amount && lower.matches("date").count() >= 2 && lower.contains("balance") && tokens.len() <= 12;
+        // ("‘Date -Lediger balanée Bate: Ledger balance Dats: Ledger. batence", a scan of
+        // PNC's three-column table: the misread "Date"s count, one "balance" is enough.)
+        let date_like = lower.split(|c: char| !c.is_ascii_alphabetic()).filter(|w| matches!(*w, "date" | "dale" | "data" | "dato" | "oate" | "datc" | "dats" | "bate")).count();
+        let repeated_date_balance_header = !has_amount && (lower.matches("date").count() >= 2 || date_like >= 3) && lower.contains("balance") && tokens.len() <= 12;
         // A transaction table header naming a credit or debit column ("... Ending daily balance") is not a daily balance block.
         let hdr = Columns::labels(line);
         let names_txn_columns = hdr.credit.is_some() || hdr.debit.is_some();
@@ -2154,7 +2514,9 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         // Court OCR breaks the heading's letters apart ("I DAIL y ENDING BALANCE I"): the
         // spaceless form still reads.
         let squashed: String = lower.chars().filter(|c| !c.is_whitespace()).collect();
-        let smeared_daily = !has_amount && tokens.len() <= 8 && (squashed.contains("dailyendingbalance") || squashed.contains("dailybalance") || squashed.contains("dailyledgerbalance"));
+        // ("it eersre= sess sssessseceessssc= Daily Bal ance Information s=es===ss====": a
+        // scan's rule noise around the heading runs to a dozen tokens.)
+        let smeared_daily = !has_amount && tokens.len() <= 12 && (squashed.contains("dailyendingbalance") || squashed.contains("dailybalance") || squashed.contains("dailyledgerbalance"));
         // (UMB heads its table "End of Day - Current Balance".)
         let end_of_day = lower.starts_with("end of day") && lower.contains("balance") && !has_amount;
         // (BMO's "CLOSING DAILY BALANCES AND DEBIT TOTALS" over "DATE  BALANCE  DEBITS" names a
@@ -2166,13 +2528,35 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         // table. A transaction row always carries some description between its date and
         // its amount, so nothing else looks like this.
         let bare_pairs = !st.in_daily && tokens.len() >= 4 && tokens.len() % 2 == 0 && tokens.chunks(2).all(|p| parse_date_token(p[0]).is_some() && is_amount_token(p[1]));
-        if !txn_header && (lower.contains("daily balance") || lower.contains("daily ending balance") || lower.contains("daily ledger balance") || repeated_date_balance_header || balance_summary_heading || smeared_daily || end_of_day || bare_pairs) {
+        // (Chase's single-column daily table whose "DAILY ENDING BALANCE" heading the scan
+        // lost: a bare "DATE  AMOUNT" header over two or more lines of a date and a figure
+        // alone. Rows without any description are balances, not transactions.)
+        // (Or the three-column "Date Amount ~ Date Amount Date Amount", a stray glyph between
+        // the groups, whose columns the unfolding has already cut into such lines.)
+        let bare_words: Vec<&str> = lower.split_whitespace().filter(|t| t.chars().count() > 1 || t.chars().all(|c| c.is_ascii_alphanumeric())).collect();
+        let bare_daily_header = !st.in_daily && bare_words.len() >= 2 && bare_words.iter().all(|t| *t == "date" || *t == "amount") && bare_words.contains(&"date") && bare_words.contains(&"amount") && {
+            let following = raw_lines[line_no + 1..].iter().filter(|l| !l.trim().is_empty()).take(2).filter(|l| {
+                let t: Vec<&str> = l.split_whitespace().collect();
+                t.len() == 2 && parse_date_token(t[0]).is_some() && is_amount_token(t[1])
+            }).count();
+            following >= 2
+        };
+        if !txn_header && (lower.contains("daily balance") || lower.contains("daily ending balance") || lower.contains("daily ledger balance") || repeated_date_balance_header || balance_summary_heading || smeared_daily || end_of_day || bare_pairs) || bare_daily_header {
             st.enter_table("daily balances");
             st.in_daily = true;
             last_txn = None;
             if !bare_pairs {
                 continue;
             }
+        }
+        if !tokens.iter().any(|t| is_amount_token(t)) && lower.contains("deposits and other additions") && (lower.contains("checks and other deductions") || lower.contains("checks and other debits")) {
+            st.two_box_summary = true;
+        }
+        // "Date  Description  Amount  Balance" (online printouts, credit unions): the page's
+        // rows end in their amount and the balance after it. (Not consumed here: the column
+        // logic below still keeps it as a pending header.)
+        if !tokens.iter().any(|t| is_amount_token(t)) && tokens.len() <= 6 && lower.contains("date") && lower.contains("amount") && lower.contains("balance") && !["credit", "debit", "deposit", "withdrawal", "check"].iter().any(|w| lower.contains(w)) {
+            st.amount_balance = true;
         }
         // Relay's export heads its rows "Name  Date  Status  Amount  Balance": the
         // description comes before the date (rows are read below).
@@ -2237,7 +2621,10 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
             else { None }
         }.is_some();
         let lead_in_kind = if lower.contains("deposit") || lower.contains("credit") { Kind::Credit } else { Kind::Debit };
-        if let Some(k) = section_for(trimmed).filter(|_| !continuation_position && !wrapped_word).or(if lead_in { Some(lead_in_kind) } else { None }) {
+        // (A short title at the description's indent, "Other Debits" under a deposits list
+        // whose wrapped lines sit at the same indent, is still the section, not a wrap.)
+        let short_title = tokens.len() <= 3 && tokens.iter().all(|t| t.chars().all(|c| c.is_ascii_alphabetic() || c == '/')) && (lower.starts_with("other ") || lower.contains('/'));
+        if let Some(k) = section_for(trimmed).filter(|_| (!continuation_position && !flat_wrap || short_title) && !wrapped_word).or(if lead_in { Some(lead_in_kind) } else { None }) {
             st.enter_table(trimmed);
             st.section = Some(k);
             st.section_page = Some(page);
@@ -2252,8 +2639,13 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         let lower = &squeezed_lower;
         // (TD's check table header "DATE  SERIAL NO.  AMOUNT" names a checks listing on its
         // own, for when the title above it is misread: "Checks Pald".)
-        let serial_header = !has_amount && tokens.len() <= 8 && lower.contains("serial") && lower.contains("amount") && lower.contains("date");
-        if serial_header || !has_amount && lower.contains("check") && (lower.starts_with("checks paid") || (lower.contains("summary of") || lower.contains("checks paid") || lower.contains("checks cleared") || lower.contains("checks written") || lower.contains("checks posted")) && tokens.len() <= 16) {
+        // (Not under a deposits title of this page: Huntington's "Date  Amount  Serial #  Type"
+        // heads its deposits, the serial being the deposit slip's.)
+        let serial_header = !has_amount && tokens.len() <= 8 && lower.contains("serial") && lower.contains("amount") && lower.contains("date") && !(st.section == Some(Kind::Credit) && st.section_page == Some(page));
+        // (A doubled "Check  Date  Amount  Check  Date  Amount" header names a two-column
+        // checks listing too, and "Checks listed in numerical order" is its title.)
+        let doubled_check_header = !has_amount && tokens.len() <= 8 && lower.matches("check").count() >= 2 && lower.matches("date").count() >= 2 && lower.matches("amount").count() >= 2;
+        if serial_header || doubled_check_header || !has_amount && lower.contains("check") && (lower.starts_with("checks paid") || lower.starts_with("checks listed") || (lower.contains("summary of") || lower.contains("checks paid") || lower.contains("checks cleared") || lower.contains("checks written") || lower.contains("checks posted")) && tokens.len() <= 16) {
             st.enter_table(trimmed);
             st.section = Some(Kind::Debit);
             st.section_page = Some(page);
@@ -2279,6 +2671,30 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
             let figures: Vec<f64> = tokens.iter().filter(|t| is_amount_token(t)).filter_map(|t| parse_amount(t)).collect();
             if lower.starts_with("total") && !lower.starts_with("totals") && figures.len() == 1 && figures[0] > 0.0 && !st.in_daily && ledger.transactions.iter().any(|t| t.table == st.table) && !ledger.section_totals.iter().any(|(tb, _)| *tb == st.table) {
                 ledger.section_totals.push((st.table, figures[0].abs()));
+                // (The words after "Total" and before the figure name the section.)
+                let label = trimmed.split_whitespace().skip(1).take_while(|t| !is_amount_token(t) && *t != "=" && *t != "$").collect::<Vec<_>>().join(" ");
+                if let Some(k) = section_for(&label) {
+                    ledger.section_kinds.push((st.table, k));
+                }
+                // (The section is closed: rows after its total, under a header the scan
+                // stripped of its title, are another section's.)
+                st.enter_table(&format!("after {}", trimmed));
+            }
+            // PNC's two summary boxes squashed onto one line by a poor text layer: "Deposits
+            // and Other Additions   Checks and Other Deductions" over the categories, then
+            // "Total  400,378.67  Total  6  388,717.00": the credits' total, then the item
+            // count and the debits' total. These outrank a category taken for the total.
+            if st.two_box_summary && lower.matches("total").count() == 2 && !lower.contains("balance") {
+                let mut halves = lower.splitn(3, "total").skip(1);
+                let amount_in = |part: &str| part.split_whitespace().filter(|t| is_amount_token(t) && t.contains('.')).last().and_then(parse_amount).map(f64::abs);
+                if let (Some(left), Some(right)) = (halves.next(), halves.next()) {
+                    if let (Some(c), Some(d)) = (amount_in(left), amount_in(right)) {
+                        ledger.summary.total_credits = Some(c);
+                        ledger.summary.total_debits = Some(d);
+                        ledger.summary.debits_key = "two-box summary (checks and service fees included)";
+                    }
+                }
+                st.two_box_summary = false;
             }
             // "Totals  $62,461.80  $66,931.38" under a credit/debit column header (Citi:
             // "Total Debits/Credits  2,022.00  907.75").
@@ -2322,7 +2738,9 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
             // A row of the table whose dates the OCR garbled ("I912 117,075.89 og/21
             // 173,718:29 O9/29 156,906.18", Tesseract on a Chase page): figures with no
             // word among them is still the table, not a transaction. Its balances are lost.
-            let garbled_row = tokens.iter().any(|t| is_amount_token(t)) && tokens.iter().all(|t| t.chars().filter(|c| c.is_ascii_alphabetic()).count() <= 2);
+            // (Or a month name read as another word, "gan 31 1,050,488.04 Feb 14 ...": four
+            // letters in the whole line at most, where a transaction row has a description.)
+            let garbled_row = tokens.iter().any(|t| is_amount_token(t)) && (tokens.iter().all(|t| t.chars().filter(|c| c.is_ascii_alphabetic()).count() <= 2) || trimmed.chars().filter(|c| c.is_ascii_alphabetic()).count() <= 4);
             if garbled_row {
                 continue;
             }
@@ -2565,7 +2983,9 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         // $23,530.00") means one row quoting another transaction, not a check table.
         let check_table_shape = date_idx.iter().zip(&amt_idx).all(|(d, a)| d < a && a - d <= 3)
             && date_idx.windows(2).zip(&amt_idx).all(|(w, a)| w[1] <= a + 3);
-        if date_idx.len() >= 2 && date_idx.len() == amt_idx.len() && check_table_shape && !st.amount_first {
+        // (Never inside a daily balance table: its garbled row "gan 31 1,050,488.04 Feb 14
+        // 1,3129,847.30" is no check 31.)
+        if date_idx.len() >= 2 && date_idx.len() == amt_idx.len() && check_table_shape && !st.amount_first && !st.in_daily {
             let mut prev_end = 0usize;
             let mut seen_on_line: Vec<(String, f64)> = Vec::new();
             for (&d, &a) in date_idx.iter().zip(&amt_idx) {
@@ -2604,7 +3024,7 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         // The same table in "number amount date" order: "285 733.58 05/03 290 700.00 05/05".
         let number_amount_date = date_idx.len() >= 1 && date_idx.len() == amt_idx.len()
             && amt_idx.iter().zip(&date_idx).all(|(a, d)| a < d && d - a == 1 && *a >= 1 && check_no(tokens[a - 1]).chars().all(|c| c.is_ascii_digit()) && check_no(tokens[a - 1]).len() <= 7 && !check_no(tokens[a - 1]).is_empty());
-        if number_amount_date && (date_idx.len() >= 2 || st.section == Some(Kind::Debit)) {
+        if number_amount_date && (date_idx.len() >= 2 || st.section == Some(Kind::Debit)) && !st.in_daily {
             for (&a, &d) in amt_idx.iter().zip(&date_idx) {
                 let id = ledger.transactions.len();
                 let (date, day) = resolve_date(tokens[d], year_hint);
@@ -2623,8 +3043,13 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         // check number and its date: "9126 4“ 10/20 568.31", "9129 A 10/22 2,714.82"; a
         // token of one or two characters there is such a mark. "6909 “ 10/28 10/28 $2,500.00"
         // then repeats the date.)
-        if no_star.len() >= 4 && no_star[1].chars().count() <= 2 && !check_no(no_star[0]).is_empty() && check_no(no_star[0]).chars().all(|c| c.is_ascii_digit()) && parse_date_token(no_star[1]).is_none() && parse_date_token(no_star[2]).is_some() {
-            no_star.remove(1);
+        // (Up to three such marks in a row: "60541 A” a —_ 01/26 984.41".)
+        for _ in 0..3 {
+            if no_star.len() >= 4 && no_star[1].chars().count() <= 2 && !check_no(no_star[0]).is_empty() && check_no(no_star[0]).chars().all(|c| c.is_ascii_digit()) && parse_date_token(no_star[1]).is_none() && (parse_date_token(no_star[2]).is_some() || no_star.len() >= 5 && no_star[2].chars().count() <= 2 && parse_date_token(no_star[2]).is_none()) {
+                no_star.remove(1);
+            } else {
+                break;
+            }
         }
         if no_star.len() == 4 && no_star[1] == no_star[2] && parse_date_token(no_star[1]).is_some() && is_amount_token(no_star[3]) {
             no_star.remove(2);
@@ -2637,7 +3062,7 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         if no_star.len() >= 4 && no_star.len() <= 5 && is_amount_token(no_star[2]) && no_star[3..].iter().all(|t| t.chars().all(|c| c.is_ascii_digit())) && no_star[3..].iter().map(|t| t.len()).sum::<usize>() >= 9 && !check_no(no_star[0]).is_empty() && check_no(no_star[0]).chars().all(|c| c.is_ascii_digit()) && parse_date_token(no_star[1]).is_some() {
             no_star = vec![no_star[0], no_star[1], no_star[2]];
         }
-        if no_star.len() == 3 && !check_no(no_star[0]).is_empty() && check_no(no_star[0]).chars().all(|c| c.is_ascii_digit()) && parse_date_token(no_star[1]).is_some() && is_amount_token(no_star[2]) {
+        if no_star.len() == 3 && !st.in_daily && !check_no(no_star[0]).is_empty() && check_no(no_star[0]).chars().all(|c| c.is_ascii_digit()) && parse_date_token(no_star[1]).is_some() && is_amount_token(no_star[2]) {
             let id = ledger.transactions.len();
             let (date, day) = resolve_date(no_star[1], year_hint);
             ledger.transactions.push(Txn { id, date, day, kind: Kind::Debit, amount: parse_amount(no_star[2]).unwrap_or(0.0).abs(), description: format!("Check {}", check_no(no_star[0])), page, table: st.table });
@@ -2674,6 +3099,38 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         let starts_with_date = tokens.first().and_then(|t| parse_date_token(t)).is_some();
         let ends_with_amount = tokens.last().map(|t| is_amount_token(t)).unwrap_or(false);
 
+        // National City heads its checks "Check Number  Amount  Description  Date Paid": the
+        // number first, then the amount, the date last.
+        if !tokens.iter().any(|t| is_amount_token(t)) && tokens.len() <= 8 && lower.starts_with("check number") && lower.contains("amount") && lower.contains("date") {
+            st.enter_table(trimmed);
+            st.check_table = true;
+            st.section = Some(Kind::Debit);
+            columns = None;
+            last_txn = None;
+            continue;
+        }
+        // (A scan's mark before the number, ": 1031 1,528.00", is skipped.)
+        let ct: &[&str] = if tokens.len() >= 3 && tokens[0].chars().count() == 1 && !tokens[0].chars().all(|c| c.is_alphanumeric()) { &tokens[1..] } else { &tokens[..] };
+        // (In a scan the number may carry one misread letter, "f040*" for 1040, and the
+        // amount may have lost its point, "132850" for 1,328.50: a check row's second cell
+        // is its amount, and a run of five to seven digits there ends in the cents.)
+        let serial_ok = |n: &str| (3..=7).contains(&n.len()) && n.chars().filter(|c| c.is_ascii_digit()).count() + 1 >= n.len() && n.chars().all(|c| c.is_ascii_alphanumeric()) && n.chars().any(|c| c.is_ascii_digit());
+        // (Never a leading zero: "0147240" in a mail-sort line, "48689 0147240 0003-0003
+        // TWS380WB123023091540", is a reference, not $1,472.40.)
+        let pointless = |t: &str| (5..=7).contains(&t.len()) && t.chars().all(|c| c.is_ascii_digit()) && !t.starts_with('0');
+        if st.check_table && !starts_with_date && ct.len() >= 2 && (is_amount_token(ct[1]) || pointless(ct[1]) && ct.len() >= 3) && serial_ok(check_no(ct[0])) {
+            let serial = check_no(ct[0]);
+            let date_tok = tokens.iter().rev().find(|t| parse_date_token(t).is_some()).map(|t| t.to_string());
+            let prev = ledger.transactions.iter().rev().find(|t| t.table == st.table && t.page == page).map(|t| (t.date.clone(), t.day));
+            if let Some((date, day)) = date_tok.map(|d| resolve_date(&d, year_hint)).or(prev) {
+                let cell = if pointless(ct[1]) { format!("{}.{}", &ct[1][..ct[1].len() - 2], &ct[1][ct[1].len() - 2..]) } else { ct[1].to_string() };
+                let amount = parse_amount(&cell).unwrap_or(0.0).abs();
+                let id = ledger.transactions.len();
+                ledger.transactions.push(Txn { id, date, day, kind: Kind::Debit, amount, description: format!("Check {serial}"), page, table: st.table });
+                last_txn = None;
+                continue;
+            }
+        }
         // A check-table row whose date the scan garbled ("1oys1s 2655 2,014.24"): the check
         // number and amount are clean, so the check is listed, dated like the row before it
         // in the table (the date is the only cell lost).
@@ -2696,7 +3153,10 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         // "06/21  12490  450.00  017261553": date first, exactly one amount, a reference
         // number last. The reference (nine or more digits) is dropped from the description.
         let amount_positions: Vec<usize> = (1..tokens.len()).filter(|&i| is_amount_token(tokens[i])).collect();
-        let summary_row = lower.contains("beginning balance") || lower.contains("ending balance") || lower.contains("previous balance") || lower.contains("balance forward");
+        // (Huntington's period beside its summary, "03/01/23 to 03/31/23   Credits (+)
+        // 1,000.00", is a summary line too: two dates joined by "to" open no row.)
+        let period_line = tokens.len() >= 3 && parse_date_token(tokens[0]).is_some() && matches!(tokens[1].to_ascii_lowercase().as_str(), "to" | "through" | "thru" | "-") && parse_date_token(tokens[2]).is_some();
+        let summary_row = lower.contains("beginning balance") || lower.contains("ending balance") || lower.contains("previous balance") || lower.contains("balance forward") || period_line;
         // A headerless flat list whose rows end in amount then running balance (an OCR
         // page retold as bullets: "10/02 External Withdrawal ... 1,651.07 14,478.08"). The
         // second figure is a balance when it chains from the previous balance or into the
@@ -2708,7 +3168,13 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
             let (amount, balance) = (parse_amount(tokens[n - 2]).map(f64::abs), parse_amount(tokens[n - 1]));
             if let (Some(amount), Some(balance)) = (amount, balance) {
                 let near = |x: f64, y: f64| (x - y).abs() < 0.005;
-                let from_prev = st.last_balance.or(ledger.summary.beginning_balance).map(|p| if near(p + amount, balance) { Some(Kind::Credit) } else if near(p - amount, balance) { Some(Kind::Debit) } else { None });
+                // (Newest first, the previous row is the later one: its balance is this
+                // row's balance plus a credit or less a debit.)
+                let from_prev = st.last_balance.or(ledger.summary.beginning_balance).filter(|_| !newest_first).map(|p| if near(p + amount, balance) { Some(Kind::Credit) } else if near(p - amount, balance) { Some(Kind::Debit) } else { None });
+                // (Newest first, the previous row is the later one: its balance is this
+                // row's balance moved by its own amount. That keeps the shape for the last
+                // row on a page; its kind comes from the sign or the words.)
+                let prev_chains = newest_first && st.last_balance.zip(st.last_amount).map(|(p, a)| near(balance + a, p) || near(balance - a, p)).unwrap_or(false);
                 // (amount, balance) of a later row in the same shape, if it has one.
                 // (Blank lines between rows are skipped, and so are up to twelve undated
                 // lines: the wire details Brookline prints under a row. k counts dated rows.)
@@ -2745,6 +3211,10 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
                 };
                 let chains = |b: f64, row: Option<(f64, f64)>| row.map(|(a2, b2)| near(b + a2, b2) || near(b - a2, b2)).unwrap_or(false);
                 let into_next = chains(balance, row_at(line_no + 1));
+                // An online listing newest first (CommunityAmerica's "Date Description Amount
+                // Balance" printout): the next row's balance plus or minus this row's amount
+                // is this row's balance, and the direction of the change is the kind.
+                let back_kind = row_at(line_no + 1).and_then(|(_, b2)| if near(b2 + amount, balance) { Some(Kind::Credit) } else if near(b2 - amount, balance) { Some(Kind::Debit) } else { None }).filter(|_| !into_next);
                 // One misread balance must not break the list: the two rows after this one
                 // chaining to each other is enough to keep the shape.
                 let shape_holds = row_at(line_no + 1).map(|(_, b2)| chains(b2, row_at(line_no + 2))).unwrap_or(false);
@@ -2772,19 +3242,20 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
                     }
                     _ => (amount, from_prev),
                 };
-                if from_prev.flatten().is_some() || (from_prev.flatten().is_none() && (into_next || shape_holds)) {
+                if from_prev.flatten().is_some() || (from_prev.flatten().is_none() && (into_next || shape_holds || back_kind.is_some() || prev_chains || st.amount_balance)) {
                     let mut desc = tokens[1..n - 2].join(" ");
                     if from_balance {
                         desc = format!("{desc} (amount read from the running balance)").trim().to_string();
                     }
                     // A signed amount ("20.00-", Navy Federal) names its own kind.
                     let signed = if tokens[n - 2].ends_with('-') || tokens[n - 2].starts_with('-') { Some(Kind::Debit) } else if tokens[n - 2].ends_with('+') || tokens[n - 2].starts_with('+') || signed_balance_page { Some(Kind::Credit) } else { None };
-                    let kind = from_prev.flatten().or(signed).unwrap_or_else(|| st.row_kind(page, &desc).0);
+                    let kind = from_prev.flatten().or(signed).or(back_kind).unwrap_or_else(|| st.row_kind(page, &desc).0);
                     let id = ledger.transactions.len();
                     let (date, day) = resolve_date(tokens[0], year_hint);
                     ledger.transactions.push(Txn { id, date: date.clone(), day, kind, amount, description: desc, page, table: st.table });
                     ledger.daily_balances.push(DailyBalance { date, balance });
                     st.last_balance = Some(balance);
+                    st.last_amount = Some(amount);
                     last_txn = Some(id);
                     continue;
                 }
@@ -2920,6 +3391,7 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
         // (Wells' page header "May31,2021 • Page3of4" is dated but never a row.)
         if (flat || aligned_ok) && starts_with_date && !tokens.iter().any(|t| is_amount_token(t)) && tokens.len() >= 2 && !summary_row && !st.in_daily && footer_numbers(trimmed).is_none() {
             pending_flat = Some((tokens[0].to_string(), tokens[1..].join(" ")));
+            pending_flat_lines = 0;
             last_txn = None;
             continue;
         }
@@ -2964,8 +3436,14 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
                     }
                 }
             }
-            if !starts_with_date && !tokens.iter().any(|t| is_amount_token(t)) && tokens.len() <= 12 {
+            // (A total's label between, "Total Debits" over "--  101,186.43" in a doubled
+            // text layer, ends the wait: the figure below it is the total's.)
+            // (And at most three lines of it: a figure four or more lines below the dated
+            // line, "--  101,186.43" under a check table's footnote and total labels, is
+            // not the row's.)
+            if !starts_with_date && !tokens.iter().any(|t| is_amount_token(t)) && tokens.len() <= 12 && !lower.contains("total") && pending_flat_lines < 3 && !trimmed.starts_with('*') {
                 pending_flat = Some((date_tok, format!("{desc} {trimmed}")));
+                pending_flat_lines += 1;
                 continue;
             }
             // Anything else: the dated line was not a transaction after all.
@@ -2986,12 +3464,21 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
             let footer_artifact = tokens.len() == 1 && tokens[0].len() >= 6 && tokens[0].chars().all(|c| c.is_ascii_uppercase());
             // ("Navy Federal Credit Union   9 of 36   12/12/2025": a page footer's "9 of 36".)
             let page_count = tokens.windows(3).any(|w| w[1] == "of" && w[0].chars().all(|c| c.is_ascii_digit()) && w[2].chars().all(|c| c.is_ascii_digit()));
-            let boilerplate = lower.contains("member fdic") || lower.contains("page ") && lower.contains(" of ") || lower.starts_with("pg ") || page_count;
+            // (Huntington's signed section titles, "Other Debits (-)   Account:---1079", and
+            // its "Balance Activity" heading are headers, whatever their indent.)
+            let signed_title = (lower.contains(" (-)") || lower.contains(" (+)")) && !has_amount || lower.starts_with("balance activity");
+            let boilerplate = lower.contains("member fdic") || lower.contains("page ") && lower.contains(" of ") || lower.starts_with("pg ") || page_count || signed_title;
             if !starts_with_date && !has_amount && tokens.len() <= 12 && !footer_artifact && !boilerplate {
                 let t = &mut ledger.transactions[id];
                 t.description.push(' ');
                 t.description.push_str(trimmed);
                 continue;
+            }
+            // A footer artifact or boilerplate ends the row's description: the lines after
+            // it belong to the page, not to the row (Navy Federal prints a change-of-address
+            // form under its "Items Paid" recap, and its field labels were being appended).
+            if footer_artifact || boilerplate {
+                last_txn = None;
             }
             // OCR sometimes drops the dates of the lower rows of a page ("PAYMENT Greystone
             // Power 7904 VitalPharmaceuticals 531.28" under dated rows). Inside a sectioned
@@ -3062,6 +3549,55 @@ fn garbled_amount_span(line: &str) -> Option<(usize, &str)> {
 }
 
 /// "#3214*" -> "3214": check numbers as printed in check tables and image captions.
+/// A two-column check table's row ("04/16  2281  22331  04/15  11071  1,199.05", TD in a
+/// scan): every amount slot carries cents, so a bare run of digits there lost its point
+/// ("22331" is 223.31) and a run split in two lost it to a space ("467 96"). Only on a line
+/// of two or more (date, serial, amount) groups where another slot reads as an amount.
+fn repair_check_pairs(line: &str) -> String {
+    let toks: Vec<&str> = line.split_whitespace().collect();
+    let dates: Vec<usize> = toks.iter().enumerate().filter(|(_, t)| parse_date_token(t).is_some()).map(|(i, _)| i).collect();
+    if dates.len() < 2 || dates[0] != 0 {
+        return line.to_string();
+    }
+    let digits = |t: &str| !t.is_empty() && t.chars().all(|c| c.is_ascii_digit());
+    let serial = |t: &str| { let n = check_no(t); digits(n) && n.len() <= 7 };
+    // Each group: the date, its serial, then the amount slot up to the next date.
+    let mut groups: Vec<(usize, usize)> = Vec::new(); // (slot start, slot end)
+    for (k, &d) in dates.iter().enumerate() {
+        let end = dates.get(k + 1).copied().unwrap_or(toks.len());
+        if d + 1 >= end || !serial(toks[d + 1]) {
+            return line.to_string();
+        }
+        groups.push((d + 2, end));
+    }
+    // (A slot's amount with a semicolon and colon for its comma and point, "1;199:05", is
+    // still a witness: it is put right further on.)
+    // (Or with a scan's glyph in front of it, "£28.48".)
+    let cents_amount = |t: &str| { let fixed = t.replace(';', ",").replace(':', ".").replace(['£', '§'], ""); is_amount_token(&fixed) && fixed.contains('.') };
+    let witness = groups.iter().any(|&(a, b)| b == a + 1 && cents_amount(toks[a]));
+    if !witness {
+        return line.to_string();
+    }
+    let mut out: Vec<String> = toks.iter().map(|t| t.to_string()).collect();
+    let mut repaired = false;
+    for &(a, b) in &groups {
+        let slot = &toks[a..b];
+        match slot {
+            [x] if digits(x) && (3..=7).contains(&x.len()) => {
+                out[a] = format!("{}.{}", &x[..x.len() - 2], &x[x.len() - 2..]);
+                repaired = true;
+            }
+            [x, y] if digits(x) && x.len() <= 5 && y.len() == 2 && digits(y) => {
+                out[a] = format!("{x}.{y}");
+                out[a + 1] = String::new();
+                repaired = true;
+            }
+            _ => {}
+        }
+    }
+    if repaired { out.into_iter().filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" ") } else { line.to_string() }
+}
+
 fn check_no(t: &str) -> &str {
     // (KeyBank marks a gap in the sequence with a leading star: "*2008"; a scan glues a
     // quote or apostrophe to an image caption's number: "0000\"".)
@@ -3235,8 +3771,8 @@ fn capture_summary(lower: &str, line: &str, s: &mut Summary, page: usize) {
     // credits", Mabrey "Deposits/Credits", Pinnacle "Credits + $.00".
     // (Renasant: "ADDITIONS + 2,947,678.33" and "SUBTRACTIONS - 2,994,110.64" beside other
     // figures in a two-column summary.)
-    const CREDIT_KEYS: &[&str] = &["deposits/other credits", "total credits", "total deposits", "deposits/additions", "deposits and additions", "credit(s) this period", "deposits, credits and interest", "deposits and credits", "deposits and other credits", "deposits/credits", "deposits & credits", "deposits & credit", "additions +"];
-    const DEBIT_KEYS: &[&str] = &["checks/other debits", "checks & other debits", "total debits", "total withdrawals", "withdrawals/subtractions", "withdrawals and subtractions", "debit(s) this period", "other withdrawals, debits and service charges", "withdrawals and debits", "withdrawals and other debits", "checks/debits", "withdrawals/debits", "withdrawals (-)", "subtractions -"];
+    const CREDIT_KEYS: &[&str] = &["deposits/other credits", "total credits", "total deposits", "deposits/additions", "deposits and additions", "credit(s) this period", "deposits, credits and interest", "deposits and credits", "deposits and other credits", "deposits/credits", "deposits & credits", "deposits & credit", "additions +", "credits (+)"];
+    const DEBIT_KEYS: &[&str] = &["checks/other debits", "checks & other debits", "checks and other debits", "total debits", "total withdrawals", "withdrawals/subtractions", "withdrawals and subtractions", "debit(s) this period", "other withdrawals, debits and service charges", "withdrawals and debits", "withdrawals and other debits", "checks/debits", "withdrawals/debits", "withdrawals (-)", "subtractions -", "debits (-)"];
     // A total smaller than the categories already captured is a garbled section total
     // ("Total Deposits & Credits  $1 )3,1i 7.18" in a court scan), not the figure.
     let plausible = |v: Option<f64>, parts: &[f64]| v.filter(|v| parts.is_empty() || *v + 0.01 >= parts.iter().sum::<f64>());
@@ -3303,7 +3839,7 @@ fn capture_summary(lower: &str, line: &str, s: &mut Summary, page: usize) {
     }
     // (Gulf Coast: "Interest Paid  1.58  Annual Percentage Yield Earned  0.05%" beside
     // "Interest Earned  1.58"; the first figure after the label is the period's.)
-    if s.interest_total.is_none() && (lower.starts_with("interest earned this period") || lower.starts_with("interest paid this period") || lower.starts_with("interest earned this statement")) {
+    if s.interest_total.is_none() && (lower.starts_with("interest earned this period") || lower.starts_with("interest paid this period") || lower.starts_with("interest earned this statement") || lower.starts_with("interest paid this statement")) {
         s.interest_total = first_amount_after(line, &["this period", "this statement"]).map(f64::abs);
     } else if s.interest_total.is_none() && lower.find("interest paid ").map(|p| lower[..p].chars().filter(|c| c.is_ascii_alphabetic()).count() <= 1 && lower[p..].split_whitespace().nth(2).map(|t| is_amount_token(t)).unwrap_or(false)).unwrap_or(false) {
         // ("g + INTEREST PAID 2,369.25": Hancock Whitney's summary signs, and a scan's
@@ -3336,11 +3872,15 @@ fn capture_summary(lower: &str, line: &str, s: &mut Summary, page: usize) {
     if s.account_last4.is_none() && lower.contains("account") {
         // "Primary Account: XXXXXXXX1177", "Account: ****1234", "Account Number 123456789"
         let after = &line[lower.find("account").unwrap() + 7..];
-        let cand = after
-            .split(|c: char| c.is_whitespace() || c == ':')
-            .filter(|t| t.len() >= 4)
-            .find(|t| t.chars().all(|c| c.is_ascii_digit() || c == 'X' || c == 'x' || c == '*' || c == '-') && t.chars().rev().take(4).all(|c| c.is_ascii_digit()));
-        if let Some(c) = cand {
+        let parts: Vec<&str> = after.split(|c: char| c.is_whitespace() || c == ':').collect();
+        let at = parts.iter().position(|t| t.len() >= 4 && t.chars().all(|c| c.is_ascii_digit() || c == 'X' || c == 'x' || c == '*' || c == '-') && t.chars().rev().take(4).all(|c| c.is_ascii_digit()));
+        if let Some(i) = at {
+            // (Bank of America prints the number in groups, "3250 8165 3203": the groups of
+            // four digits that follow belong to it, and the last four are the last group's.)
+            let mut c = parts[i].to_string();
+            for t in &parts[i + 1..] {
+                if t.len() == 4 && t.chars().all(|c| c.is_ascii_digit()) { c.push_str(t) } else { break }
+            }
             s.account_last4 = Some(c.chars().rev().take(4).collect::<String>().chars().rev().collect());
         }
     }
@@ -3673,6 +4213,8 @@ pub fn unfold_two_columns(text: &str) -> String {
     // safer cut than the whitespace gap when the columns nearly touch.
     let mut date_first = false;
     let mut check_first = false;
+    // The block's header names no description column: dates and figures only.
+    let mut figures_only = false;
     let flush = |out: &mut String, cols: &mut Vec<Vec<String>>| {
         for l in cols.iter_mut().flat_map(|c| c.drain(..)) {
             out.push_str(&l);
@@ -3680,7 +4222,9 @@ pub fn unfold_two_columns(text: &str) -> String {
         }
     };
     for line in text.lines() {
-        let repaired = repair_bad_month(line);
+        // (And a two-column check row's bare figures get their points back before the
+        // columns are cut apart, while the other column can still witness for them.)
+        let repaired = repair_check_pairs(&repair_bad_month(line));
         let line = repaired.as_str();
         let lower = line.to_ascii_lowercase();
         let toks: Vec<&str> = line.split_whitespace().collect();
@@ -3716,6 +4260,18 @@ pub fn unfold_two_columns(text: &str) -> String {
             cols = vec![Vec::new(); splits.len() + 1];
             date_first = lower.trim_start().starts_with("date");
             check_first = lower.trim_start().starts_with("check") || lower.trim_start().starts_with("number");
+            figures_only = !lower.contains("description");
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        // (In a block of dates and figures alone, a daily balance or check table, a line of
+        // three or more words without a digit is the next title, "TRANSACTIONS FOR SERVICE
+        // FEE CALCULATION", however it reads; it ends the block before the columns flush.)
+        let words_only = !splits.is_empty() && figures_only && toks.len() >= 3 && !toks.iter().any(|t| t.chars().any(|c| c.is_ascii_digit()));
+        if words_only {
+            flush(&mut out, &mut cols);
+            splits.clear();
             out.push_str(line);
             out.push('\n');
             continue;
@@ -4172,14 +4728,17 @@ fn is_card_page(text: &str) -> bool {
     let l = text.to_ascii_lowercase();
     // ("Mnlmum Payment Dua" in a poor text layer: the header's "Minimum Payment" over "Payment
     // Due" and the "Late Payment Warning" still name the card statement.)
+    // (American Express: "Minimum Due" with "New Charges", "Pay Over Time" and the
+    // "Payment Coupon"; "Closing Date" instead of a statement period.)
     l.contains("minimum payment") && (l.contains("credit limit") || l.contains("payment due") || l.contains("billing cycle") || l.contains("late payment warning"))
+        || l.contains("minimum due") && l.contains("new charges") && (l.contains("pay over time") || l.contains("payment coupon") || l.contains("closing date"))
 }
 
 /// Words the later pages of a credit card statement carry (interest charge calculation,
 /// purchases and cash advances, reward points) and a deposit statement does not.
 fn card_words(text: &str) -> bool {
     let l = text.to_ascii_lowercase();
-    l.contains("cash advance") || l.contains("reward point") || l.contains("interest charge") || l.split(|c: char| !c.is_ascii_alphanumeric()).any(|w| w == "apr")
+    l.contains("cash advance") || l.contains("reward point") || l.contains("interest charge") || l.contains("pay over time") || l.split(|c: char| !c.is_ascii_alphanumeric()).any(|w| w == "apr")
 }
 
 /// Words a bank prints on a statement page and a bookkeeping report does not.
@@ -4192,15 +4751,26 @@ fn statement_words(text: &str) -> bool {
         let t: Vec<&str> = l[p + 14..].split_whitespace().take(3).collect();
         t.len() == 3 && parse_date_token(t[0]).is_some() && parse_date_token(t[2]).is_some()
     }).unwrap_or(false);
-    period_range || ["beginning balance", "previous balance", "balance forward", "statement period", "account summary", "ending balance on", "daily balance", "member fdic", "balance summary", "primary account number"].iter().any(|w| l.contains(w))
+    // ("Daily Bal ance Information" in a scan: the words are matched with their spaces out.)
+    let squashed: String = l.chars().filter(|c| !c.is_whitespace()).collect();
+    // ("Statement Ending 05/31/2024" over "Summary of Accounts": Forcht Bank's first page.)
+    period_range || ["beginning balance", "previous balance", "balance forward", "statement period", "account summary", "ending balance on", "daily balance", "member fdic", "balance summary", "primary account number", "statement ending", "summary of accounts"].iter().any(|w| l.contains(w))
+        || ["dailybalance", "depositsandcredits", "checksanddebits"].iter().any(|w| squashed.contains(w))
 }
 
 /// An online-banking page printed to PDF: Bank of America's "Account Activity" with "available
 /// as of today", Wells' "Account Detail" with "Pending Transactions" and an available balance.
 /// It has no statement totals; its "Pending withdrawals/debits" figures are not ones.
 fn is_printout_page(lower: &str) -> bool {
-    lower.contains("account activity") && (lower.contains("available as of today") || lower.contains("all transactions") || lower.contains("view: today") || lower.contains("view:today"))
-        || lower.contains("pending transactions") && lower.contains("available balance")
+    // (A statement's own disclaimer, "The Ending Daily Balances provided do not reflect
+    // pending transactions ... If your available balance wasn't sufficient", SunTrust, is
+    // not a printout: the page prints its beginning and ending balance.)
+    let statement_page = lower.contains("beginning balance") && lower.contains("ending balance");
+    // (Chase's online activity export heads its rows "Date  Description  Type  Amount
+    // Balance", the type being "Account transfer" or "Check".)
+    let chase_export = lower.lines().any(|l| l.split_whitespace().collect::<Vec<_>>().join(" ") == "date description type amount balance");
+    lower.contains("account activity") && (lower.contains("available as of today") || lower.contains("all transactions") || lower.contains("view: today") || lower.contains("view:today") || chase_export)
+        || lower.contains("pending transactions") && lower.contains("available balance") && !statement_page
         || lower.contains("account detail -") && lower.contains("available balance")
 }
 
@@ -4291,7 +4861,7 @@ fn is_reconciliation_page(text: &str) -> bool {
     // books, listed by account, not the bank's statement.)
     // (So are the exhibits of a monthly operating report: "A/P Aging Summary Report",
     // "Balance Sheet", "Profit and Loss", each titled in its first lines.)
-    let general_ledger = text.lines().take(6).any(|l| { let l = l.to_ascii_lowercase(); ["general ledger", "generat ledger", "aging summary", "aging report", "balance sheet", "profit and loss", "profit & loss"].iter().any(|w| l.contains(w)) }) && !statement_words(text);
+    let general_ledger = text.lines().take(6).any(|l| { let l = l.to_ascii_lowercase(); ["general ledger", "generat ledger", "aging summary", "aging report", "balance sheet", "profit and loss", "profit & loss", "transaction summary"].iter().any(|w| l.contains(w)) }) && !statement_words(text);
     // (The court's exhibit stamp says "Statements and Reconciliations - PART 13 Page 5 of
     // 25"; a bookkeeper's "Bank Reconciliation Posting Report  Page 33" is not a stamp.)
     general_ledger || text.lines().take(14).any(|l| { let l = l.to_ascii_lowercase(); let stamp = l.contains("statements") || l.contains(" page ") && (l.contains("case") || l.contains("doc") || l.contains("filed") || l.contains(" of ")); l.contains("reconciliation report") || l.contains("reconciliation detail") || l.contains("reconciliation summary") || l.contains("reconciliation") && !stamp && (debtor_sheet || !statement_words(text)) })
@@ -4359,13 +4929,67 @@ fn document_kind(pages: &[(usize, &str)]) -> Option<String> {
     if (sq.contains("united states bankruptcy court") || sq.contains("case no")) && (sq.contains("in re") || sq.contains("debtor")) && no_statement_page() {
         return Some("court filing".into());
     }
-    let mor_page = |t: &str| is_court_form_page(t) || { let l = t.to_ascii_lowercase(); l.contains("reporting period") && (l.contains("balance sheet") || l.contains("schedule of cash") || l.contains("receipts and disbursements")) };
-    if pages.first().map(|(_, t)| mor_page(t)).unwrap_or(false) && !pages.iter().any(|(_, t)| statement_words(t) && !is_court_form_page(t)) {
+    // A debtor's own schedule of "Cash Disbursements" or "Cash Receipts" ("Per Bank
+    // Statements", each row tagged with its account and designation) filed as an exhibit.
+    let schedule_title = pages.first().map(|(_, t)| t.lines().take(8).any(|l| { let l = l.to_ascii_lowercase(); l.contains("cash disbursements") || l.contains("cash receipts") })).unwrap_or(false);
+    // (Its "Statement Period" column is a statement word; a bank's page prints balances.)
+    let no_balances = !pages.iter().any(|(_, t)| { let l = t.to_ascii_lowercase(); l.contains("beginning balance") || l.contains("ending balance") || l.contains("previous balance") });
+    if schedule_title && (head.contains("per bank statement") || head.contains("account designation")) && no_balances {
+        return Some("cash receipts and disbursements schedule".into());
+    }
+    // A district-court complaint (plaintiffs against funders, with the advances tabled in
+    // the pleading) with no statement page behind it.
+    if sq.contains("united states district court") && (sq.contains("plaintiff") || sq.contains("complaint")) && no_statement_page() {
+        return Some("court filing".into());
+    }
+    // (An adversary proceeding's cover sheet (Form 1040) opens a complaint; its exhibits,
+    // a funder's merchant agreement and the like, are not statements.)
+    if sq.contains("adversary proceeding cover sheet") {
+        return Some("court filing".into());
+    }
+    // (A criminal complaint (form AO 91) with an agent's affidavit: the account pictures
+    // in it are evidence excerpts, not statements.)
+    if sq.contains("criminal complaint") && (sq.contains("ao 91") || sq.contains("united states district court")) {
+        return Some("court filing".into());
+    }
+    // (Or a debtor's own "STATEMENT OF RECEIPTS AND DISBURSEMENTS FOR THE PERIOD ...", a
+    // schedule of payments by card, not a bank's statement.)
+    let mor_page = |t: &str| is_court_form_page(t) || { let l = t.to_ascii_lowercase(); l.contains("reporting period") && (l.contains("balance sheet") || l.contains("schedule of cash") || l.contains("receipts and disbursements")) || l.contains("statement of receipts and disbursements") };
+    // (The court's exhibit cover may come first: the form is on page one or two.)
+    if pages.iter().take(2).any(|(_, t)| mor_page(t)) && !pages.iter().any(|(_, t)| statement_words(t) && !is_court_form_page(t) && !mor_page(t)) {
         return Some("monthly operating report".into());
     }
     // A Chapter 7 trustee's Form 2 ledger of the estate account.
     if head.contains("receipts and disbursements record") || head.contains("form 2 - estate cash") {
         return Some("trustee form 2 ledger".into());
+    }
+    // A property's operating statement (income and expense by account code, year-to-date
+    // beside the month): a bookkeeper's report, not a bank's.
+    if (head.contains("operating statement") || head.contains("income statement") || head.contains("profit and loss") || head.contains("profit & loss")) && (head.contains("year-to-date") || head.contains("total income") || head.contains("expense")) && !pages.iter().any(|(_, t)| statement_words(t) && !t.to_ascii_lowercase().contains("operating statement")) {
+        return Some("operating statement".into());
+    }
+    // An FX trading account's statement ("Fx Spot & Forwards  USDJPY ...", currency pairs
+    // on row after row): a broker's positions, not a bank account.
+    let pairs = ["usdjpy", "eurusd", "usdtry", "usdcad", "gbpusd", "usdchf", "gbpchf", "audusd", "eurchf", "eurgbp"];
+    let fx_pages = pages.iter().filter(|(_, t)| { let l = t.to_ascii_lowercase(); l.matches("spot").count() >= 3 && pairs.iter().filter(|p| l.contains(*p)).count() >= 2 }).count();
+    if fx_pages >= 1 && !pages.iter().any(|(_, t)| { let l = t.to_ascii_lowercase(); l.contains("member fdic") }) {
+        return Some("foreign exchange statement".into());
+    }
+    // A foreign bank's statement in another currency ("Currency: UAE Dirham", Dubai Islamic
+    // Bank in a terrorism-litigation exhibit): not a U.S. merchant's account.
+    // (Or a translated one, "(Same language in Arabic)" on every label.)
+    let foreign = pages.iter().filter(|(_, t)| { let l = t.to_ascii_lowercase(); l.contains("same language in arabic") || l.contains("currency:") && !l.contains("currency: usd") && !l.contains("currency: us dollar") && (l.contains("dirham") || l.contains("euro") || l.contains("pound") || l.contains("riyal") || l.contains("dinar") || l.contains("rupee") || l.contains("peso") || l.contains("yuan") || l.contains("aed") || l.contains("eur ") || l.contains("gbp")) }).count();
+    if foreign >= 1 && !pages.iter().any(|(_, t)| { let l = t.to_ascii_lowercase(); l.contains("member fdic") || l.contains("fdic") }) {
+        return Some("foreign currency statement".into());
+    }
+    // A prosecutor's summary charts (loan tables, then "X1441 Account Activity" ledgers with
+    // "Payee/Payor" columns, each sourced to a government exhibit "Source: GX #1.s"): the
+    // government's retelling of accounts, not the bank's statements.
+    let chart_pages = pages.iter().filter(|(_, t)| { let l = t.to_ascii_lowercase(); l.contains("source: gx") || l.contains("payee/payor") && l.contains("account activity") }).count();
+    // (Or one such ledger among pages of charts stamped "DRAFT".)
+    let draft_pages = pages.iter().filter(|(_, t)| t.lines().take(12).any(|l| l.split_whitespace().any(|w| w == "DRAFT"))).count();
+    if (chart_pages >= 2 || chart_pages >= 1 && draft_pages >= 3) && !pages.iter().any(|(_, t)| statement_words(t) && !t.to_ascii_lowercase().contains("source: gx")) {
+        return Some("court exhibit charts".into());
     }
     // PayPal merchant activity statements (Gross / Fee / Net columns) are not bank accounts.
     if head.contains("paypal id:") || head.contains("merchant account id:") {
@@ -4376,7 +5000,10 @@ fn document_kind(pages: &[(usize, &str)]) -> Option<String> {
         return Some("brokerage statement".into());
     }
     // Credit card statements have no deposits; their totals are purchases and payments.
-    if head.contains("credit card statement") || (head.contains("minimum payment due") && head.contains("credit limit")) {
+    // (Or a card page opens the document and no page behind it is a deposit statement's:
+    // a filing of American Express months, whose detail pages carry no card words.)
+    let card_document = pages.first().map(|(_, t)| is_card_page(t)).unwrap_or(false) && !pages.iter().any(|(_, t)| statement_words(t) && !is_card_page(t) && !card_words(t));
+    if head.contains("credit card statement") || (head.contains("minimum payment due") && head.contains("credit limit")) || card_document {
         return Some("credit card statement".into());
     }
     None
@@ -4420,16 +5047,24 @@ fn parse_statements(pages: &[(usize, &str)]) -> Ledger {
 /// The bank's own "Page N of M" footers of one statement, one per physical page (the
 /// court's stamp, "Page 14 of 63" next to a case number or "NYSCEF", is not one).
 fn footer_numbers(line: &str) -> Option<(usize, usize)> {
+    footer_numbers_min(line, 2)
+}
+
+/// The same with the least page count accepted: 2 for a footer (a "Page 1 of 1" tells
+/// nothing about missing pages), 1 for the single-page statement's opening page.
+fn footer_numbers_min(line: &str, min_pages: usize) -> Option<(usize, usize)> {
     let lower = line.to_ascii_lowercase();
     if lower.contains("case ") || lower.contains("doc") || lower.contains("nyscef") || lower.contains("exhibit") || lower.contains("statements pg") {
         return None;
     }
     let toks: Vec<&str> = lower.split_whitespace().collect();
     // "3of4" (a squeezed text layer glues the words: "May31,2021 • Page3of4", "Page 2of5")
+    // (A bank's statement runs to a few dozen pages; "REDE Page 224 of253" is the court's
+    // exhibit stamp, whose count would swallow every statement in the filing.)
     let glued = |s: &str| -> Option<(usize, usize)> {
         let (a, b) = s.split_once("of")?;
         let (n, m) = (a.parse::<usize>().ok()?, b.trim_matches(|c: char| !c.is_ascii_digit()).parse::<usize>().ok()?);
-        (n >= 1 && n <= m && m >= 2).then_some((n, m))
+        (n >= 1 && n <= m && m >= min_pages && m <= 120).then_some((n, m))
     };
     for (i, t) in toks.iter().enumerate() {
         let Some(rest) = t.strip_prefix("page") else { continue };
@@ -4511,7 +5146,10 @@ fn drop_duplicate_pages<'a>(pages: &[(usize, &'a str)]) -> Vec<(usize, &'a str)>
         let b = body(text);
         let a = amounts(text);
         // Only pages with rows can double a total; short pages (letterheads) stay.
-        if b.split_whitespace().count() >= 40 && (seen.contains(&b) || a.len() >= 5 && seen_amounts.contains(&a)) {
+        // (The amounts must be a listing's: two U.S. Bank first pages share the fee
+        // schedule's six figures in their notices and are two statements' pages.)
+        let dated_rows = text.lines().filter(|l| { let t: Vec<&str> = l.split_whitespace().collect(); t.len() >= 3 && parse_date_token(t[0]).is_some() && t.iter().any(|x| is_amount_token(x)) }).count();
+        if b.split_whitespace().count() >= 40 && (seen.contains(&b) || a.len() >= 5 && dated_rows >= 3 && seen_amounts.contains(&a)) {
             continue;
         }
         seen.push(b);
@@ -4613,6 +5251,9 @@ fn parse_one(pages: &[(usize, &str)]) -> Ledger {
     let mut st = State::default();
     for (page, text) in pages {
         let unfolded = unfold_two_columns(text);
+        if std::env::var("MCA_DUMP_UNFOLDED").is_ok() {
+            eprintln!("--- unfolded page {page} ---\n{unfolded}");
+        }
         parse_page(&unfolded, *page, year, &mut ledger, &mut st);
         // A page that printed no section header of its own (a continuation the OCR
         // stripped) has one kind of row; a word-decided straggler against a page of ten or
@@ -4636,14 +5277,21 @@ fn parse_one(pages: &[(usize, &str)]) -> Ledger {
     }
     // Two or more debit categories in the summary block add up to the debit total; a single
     // signed one ("Checks Paid 2,675.62-", U.S. Bank) is the total when nothing else names it.
+    // (One part that is the sum of the others is the total itself, the rest its breakdown:
+    // Union Bank's "Subtractions -134.82" over "Purchases -66.82" and "Other Withdrawals
+    // -68.00".)
+    let whole_of = |parts: &[f64]| -> Option<f64> {
+        let total: f64 = parts.iter().sum();
+        parts.iter().copied().find(|p| parts.len() >= 3 && (total - 2.0 * p).abs() <= 0.011)
+    };
     if ledger.summary.debit_parts.len() >= 2 || ledger.summary.debit_parts.len() == 1 && ledger.summary.total_debits.is_none() && ledger.summary.debit_parts_unsigned.is_empty() {
-        ledger.summary.total_debits = Some(ledger.summary.debit_parts.iter().sum());
+        ledger.summary.total_debits = Some(whole_of(&ledger.summary.debit_parts).unwrap_or_else(|| ledger.summary.debit_parts.iter().sum()));
         ledger.summary.debits_key = "summary parts (checks and service fees included)";
     }
     // Unsigned categories fill in totals the statement never prints as one figure, and
     // two or more of them outrank a bare "Debits 42 28,151.29" line that is only one category.
     if !ledger.summary.credit_parts.is_empty() && (ledger.summary.total_credits.is_none() || ledger.summary.credit_parts.len() >= 2) {
-        ledger.summary.total_credits = Some(ledger.summary.credit_parts.iter().sum());
+        ledger.summary.total_credits = Some(whole_of(&ledger.summary.credit_parts).unwrap_or_else(|| ledger.summary.credit_parts.iter().sum()));
     }
     if !ledger.summary.debit_parts_unsigned.is_empty() && (ledger.summary.total_debits.is_none() || ledger.summary.debit_parts_unsigned.len() >= 2) {
         ledger.summary.total_debits = Some(ledger.summary.debit_parts_unsigned.iter().sum());
@@ -4710,10 +5358,48 @@ fn parse_one(pages: &[(usize, &str)]) -> Ledger {
     drop_repeated_copy(&mut ledger);
     dedup_across_tables(&mut ledger);
     net_reversals(&mut ledger);
+    settle_weak_by_section_kinds(&mut ledger);
     meet_totals(&mut ledger);
     use_alternates(&mut ledger);
     meet_section_totals(&mut ledger);
+    settle_summary_by_sections(&mut ledger);
     meet_daily_balances(&mut ledger);
+    // The interest row itself lost to the scan ("nS LL ee _ 0.18 scvsnemennnnnnannmnd 909-54",
+    // Wells): the summary prints "Interest paid this statement $0.18", and the credits fall
+    // short of their printed total by exactly that. The row is put back on the period's
+    // last day, from the statement's own figure.
+    if let (Some(i), Some(tc)) = (ledger.summary.interest_total, ledger.summary.total_credits) {
+        let credits: f64 = ledger.transactions.iter().filter(|t| t.kind == Kind::Credit && !ledger.netted.contains(&t.id)).map(|t| t.amount).sum();
+        let listed = ledger.transactions.iter().any(|t| t.kind == Kind::Credit && t.description.to_ascii_lowercase().contains("interest"));
+        if i > 0.0 && !listed && (tc - credits - i).abs() < 0.005 {
+            let date_tok = ledger.summary.period_end.clone().or_else(|| ledger.daily_balances.last().map(|b| b.date.clone()));
+            if let Some(date_tok) = date_tok {
+                let (date, day) = if date_tok.contains('-') && date_tok.len() == 10 { (date_tok.clone(), date_key(&date_tok).map(|(y, m, d)| days_from_civil(y, m, d))) } else { resolve_date(&date_tok, year) };
+                let id = ledger.transactions.len();
+                let page = ledger.transactions.last().map(|t| t.page).unwrap_or(pages.last().map(|p| p.0).unwrap_or(1));
+                let table = ledger.transactions.last().map(|t| t.table).unwrap_or(0);
+                ledger.transactions.push(Txn { id, date, day, kind: Kind::Credit, amount: i, description: "Interest paid (from the statement summary)".into(), page, table });
+            }
+        }
+    }
+    // A listing that prints no summary but a running balance on every row (an online
+    // printout) still tells where it began and ended: the balance after the oldest row
+    // less that row's change, and the balance after the newest. The rows between are
+    // then held to the balance equation like any statement's.
+    if ledger.summary.beginning_balance.is_none() && ledger.summary.ending_balance.is_none() && ledger.transactions.len() >= 3 && ledger.daily_balances.len() == ledger.transactions.len()
+        && ledger.daily_balances.iter().zip(&ledger.transactions).all(|(b, t)| b.date == t.date)
+    {
+        let (first, last) = (&ledger.transactions[0], &ledger.transactions[ledger.transactions.len() - 1]);
+        let newest_first = first.date > last.date;
+        let (oldest, oldest_balance, newest_balance) = if newest_first {
+            (last, ledger.daily_balances[ledger.daily_balances.len() - 1].balance, ledger.daily_balances[0].balance)
+        } else {
+            (first, ledger.daily_balances[0].balance, ledger.daily_balances[ledger.daily_balances.len() - 1].balance)
+        };
+        let change = if oldest.kind == Kind::Credit { oldest.amount } else { -oldest.amount };
+        ledger.summary.beginning_balance = Some(((oldest_balance - change) * 100.0).round() / 100.0);
+        ledger.summary.ending_balance = Some(newest_balance);
+    }
     if let (Some(b), Some(e)) = (ledger.summary.beginning_balance, ledger.summary.ending_balance) {
         let c: f64 = ledger.transactions.iter().filter(|t| t.kind == Kind::Credit && !ledger.netted.contains(&t.id)).map(|t| t.amount).sum();
         let d: f64 = ledger.transactions.iter().filter(|t| t.kind == Kind::Debit && !ledger.netted.contains(&t.id)).map(|t| t.amount).sum();
@@ -4847,6 +5533,52 @@ fn meet_section_totals(ledger: &mut Ledger) {
         ledger.transactions[r].amount = new as f64 / 100.0;
         if gap(ledger).map(|a| a > 0.011).unwrap_or(true) {
             ledger.transactions[r].amount = old_amount;
+        }
+    }
+}
+
+/// A section whose title the scan lost still names its kind in its total line ("Total
+/// Deposits and Additions $74,072.85" under rows headed only "DATE DESCRIPTION AMOUNT"):
+/// rows of that table whose kind was only a default take the section's.
+fn settle_weak_by_section_kinds(ledger: &mut Ledger) {
+    if ledger.section_kinds.is_empty() || ledger.weak.is_empty() {
+        return;
+    }
+    let kinds = ledger.section_kinds.clone();
+    for &i in &ledger.weak {
+        if let Some(t) = ledger.transactions.get_mut(i) {
+            if let Some((_, k)) = kinds.iter().find(|(tb, _)| *tb == t.table) {
+                t.kind = *k;
+            }
+        }
+    }
+}
+
+/// The section totals settle a misread statement total: when every section of a kind
+/// prints its total, the rows of those sections add up to them to the cent, and the
+/// statement's own figure for that kind is one digit off their sum (a scan's "75,193.44"
+/// for 76,193.44, Chase), the statement figure is the misread one. Two printed witnesses
+/// (the section totals and the rows) against one.
+fn settle_summary_by_sections(ledger: &mut Ledger) {
+    if ledger.section_totals.is_empty() {
+        return;
+    }
+    let cents = |v: f64| (v * 100.0).round() as i64;
+    let one_digit_off = |a: i64, b: i64| {
+        let (a, b) = (a.to_string(), b.to_string());
+        a.len() == b.len() && a.chars().zip(b.chars()).filter(|(x, y)| x != y).count() == 1
+    };
+    for kind in [Kind::Credit, Kind::Debit] {
+        let Some(total) = (if kind == Kind::Credit { ledger.summary.total_credits } else { ledger.summary.total_debits }) else { continue };
+        let tables: Vec<usize> = { let mut t: Vec<usize> = ledger.transactions.iter().filter(|t| t.kind == kind && !ledger.netted.contains(&t.id)).map(|t| t.table).collect(); t.sort_unstable(); t.dedup(); t };
+        if tables.is_empty() || !tables.iter().all(|tb| ledger.section_totals.iter().any(|(t, _)| t == tb)) {
+            continue;
+        }
+        let sections: i64 = tables.iter().map(|tb| ledger.section_totals.iter().find(|(t, _)| t == tb).map(|(_, v)| cents(*v)).unwrap_or(0)).sum();
+        let rows: i64 = ledger.transactions.iter().filter(|t| t.kind == kind && !ledger.netted.contains(&t.id)).map(|t| cents(t.amount)).sum();
+        if rows == sections && cents(total) != sections && one_digit_off(cents(total), sections) {
+            let fixed = sections as f64 / 100.0;
+            if kind == Kind::Credit { ledger.summary.total_credits = Some(fixed) } else { ledger.summary.total_debits = Some(fixed) }
         }
     }
 }
@@ -5129,6 +5861,8 @@ fn segment_statements<'a>(pages: &[(usize, &'a str)], forced: &[bool]) -> Vec<Ve
     let mut current_rows = 0usize;
     let mut current_is_printout = false;
     let mut current_summary_page: Option<usize> = None;
+    // The bank's own page count ("PAGE: 2 OF 11") of the statement in progress.
+    let mut current_footer_total: Option<usize> = None;
     for (i, &(page, text)) in pages.iter().enumerate() {
         let mut probe = Ledger::default();
         let mut st = State::default();
@@ -5162,7 +5896,10 @@ fn segment_statements<'a>(pages: &[(usize, &'a str)], forced: &[bool]) -> Vec<Ve
         // Zero-balance sweep accounts (Wintrust) all begin at $0.00; there the account
         // number on the page with the beginning balance tells the statements apart.
         let account = probe.summary.account_last4.clone();
-        let account_changes = begins.is_some() && matches!((&account, &current_account), (Some(a), Some(cur)) if a != cur);
+        // (Or a summary page naming another account when its beginning balance is lost to
+        // the scan: "Account number: 3250 8165 3203" over "Account summary" behind the
+        // 3725 account's pages, Bank of America in a complaint's exhibit.)
+        let account_changes = (begins.is_some() || summary_words) && matches!((&account, &current_account), (Some(a), Some(cur)) if a != cur);
         // A month with no activity ends where it began (KeyBank, $94.29 to $94.29), so the
         // next statement begins with the same figure: a page that opens with the balance an
         // earlier page closed at is a new statement too.
@@ -5183,12 +5920,23 @@ fn segment_statements<'a>(pages: &[(usize, &'a str)], forced: &[bool]) -> Vec<Ve
         // The bank's own "Page 1 of 10" footer opens a statement even when its summary is
         // printed elsewhere (Mercantile puts the balances at the end); only after rows or
         // balances have been seen, so a cover sheet's own footer does not split.
-        let first_page = footer_pages(text).map(|(n, _)| n == 1).unwrap_or(false) && (current_rows > 0 || current_beginning.is_some() || current_ending.is_some());
+        // (A one-page statement says "Page: 1 of 1"; it opens one when the page carries
+        // statement words, so a bank's one-page notice inside a statement does not split it.)
+        let only_page = statement_words(text) && text.lines().enumerate().any(|(i, l)| footer_numbers_min(l, 1) == Some((1, 1)) && !(i >= 1 && is_court_stamp(&text.lines().nth(i - 1).unwrap_or("").to_ascii_lowercase())));
+        let first_page = (footer_pages(text).map(|(n, _)| n == 1).unwrap_or(false) || only_page) && (current_rows > 0 || current_beginning.is_some() || current_ending.is_some());
         let tail_rows = current_rows >= 10 && current_beginning.is_none() && current_ending.is_none() && begins.is_some();
-        let starts_new = forced.get(i).copied().unwrap_or(false) || bank_changes || account_changes || continues || period_changes || printout || after_printout || summary_repeat || first_page || tail_rows || match (begins, current_beginning) {
+        // The bank's footer says this page is inside the statement in progress ("PAGE: 5 OF
+        // 11" after "PAGE: 1 OF 11"): its summary is the statement's own, printed at the end
+        // (Flushing Bank), not another statement's beginning.
+        // (Only while the statement in progress has printed no beginning balance of its
+        // own: JPMorgan's commercial statement numbers its pages "8 of 22" straight through
+        // two accounts, and the second account's summary page, with its own beginning
+        // balance after the first's, is another statement.)
+        let inside_footer = matches!((footer_pages(text), current_footer_total), (Some((n, m)), Some(cur)) if n > 1 && m == cur) && current_beginning.is_none();
+        let starts_new = forced.get(i).copied().unwrap_or(false) || bank_changes || printout || !inside_footer && (account_changes || continues || period_changes || after_printout || summary_repeat || first_page || tail_rows || match (begins, current_beginning) {
             (Some(b), Some(cur)) if (b - cur).abs() >= 0.005 => true,
             _ => false,
-        };
+        });
         // (A current segment that has neither balance yet is a letterhead or cover page;
         // it joins the statement that starts here instead of standing alone. So does a
         // summary page with no rows of its own when a sub-account heading follows: Navy
@@ -5215,6 +5963,10 @@ fn segment_statements<'a>(pages: &[(usize, &'a str)], forced: &[bool]) -> Vec<Ve
             current_rows = 0;
             current_is_printout = false;
             current_summary_page = None;
+            current_footer_total = None;
+        }
+        if let Some((_, m)) = footer_pages(text) {
+            current_footer_total = Some(m);
         }
         current_rows += probe.transactions.len();
         if printout {
@@ -5325,7 +6077,9 @@ fn dedup_across_tables(ledger: &mut Ledger) {
     let numbers = |d: &str| -> Vec<String> {
         d.split(|c: char| !c.is_ascii_digit()).filter(|n| (3..=7).contains(&n.len())).map(str::to_string).collect()
     };
-    let compatible = |a: &Txn, b: &Txn| -> bool {
+    // (`fuzzy`: a check number one digit off still pairs; only for an original that has
+    // no repeat yet, so a lost neighbouring serial is not swallowed by a repeated one.)
+    let compatible = |a: &Txn, b: &Txn, fuzzy: bool| -> bool {
         // "#0000  07/03/2025  $6,658.37" captions a withdrawal slip's image (Yampa Valley):
         // no check number, so it repeats whatever it matches.
         let zero_caption = |t: &Txn| t.description.strip_prefix("Check ").map(|n| !n.is_empty() && n.chars().all(|c| c == '0')).unwrap_or(false);
@@ -5340,7 +6094,11 @@ fn dedup_across_tables(ledger: &mut Ledger) {
             if na.chars().all(|c| c.is_ascii_digit()) && nb.chars().all(|c| c.is_ascii_digit()) {
                 let (na, nb) = (na.trim_start_matches('0'), nb.trim_start_matches('0')); // "#0652" captions check 652
                 let one_dropped = |long: &str, short: &str| long.len() == short.len() + 1 && (0..long.len()).any(|k| format!("{}{}", &long[..k], &long[k + 1..]) == short);
-                return na == nb || one_dropped(na, nb) || one_dropped(nb, na);
+                // (Or once a digit misread is put back: "4029" in the table for the check
+                // its image captions "0000001029", same day, same amount. An exact number
+                // is matched first below, so neighbouring serials keep their own repeats.)
+                let one_changed = fuzzy && na.len() == nb.len() && na.len() >= 3 && na.chars().zip(nb.chars()).filter(|(x, y)| x != y).count() == 1;
+                return na == nb || one_dropped(na, nb) || one_dropped(nb, na) || one_changed;
             }
         }
         let (wa, wb) = (words(&a.description), words(&b.description));
@@ -5350,7 +6108,22 @@ fn dedup_across_tables(ledger: &mut Ledger) {
         // Navy Federal's "Items Paid" recap names each item by a code ("ACH", "ATMO"),
         // sometimes with a smear of the text layer in front ("seis ACH"): one or two short
         // tokens are a code, not a description, and repeat whatever they match.
-        let code = |d: &str| { let t: Vec<&str> = d.split_whitespace().collect(); !t.is_empty() && t.len() <= 2 && t.iter().all(|w| w.len() <= 4) };
+        // (A form's field labels wrapped onto the recap's last row, "ATMO RANK/RATE
+        // NAME(FIRST MI LAST) ACCOUNT", are not description either: after the code every
+        // word is a label, printed without a lowercase letter.)
+        // (Or the code with a form's field labels wrapped onto it, "ATMO RANK/RATE
+        // NAME(FIRST MI LAST) ACCOUNT": labels carry no digit and no lowercase letter, and
+        // bracket or slash their parts, which no description of a payment does.)
+        let code = |d: &str| {
+            let t: Vec<&str> = d.split_whitespace().collect();
+            if t.is_empty() || t[0].len() > 4 {
+                return false;
+            }
+            t.len() <= 2 && t.iter().all(|w| w.len() <= 4)
+                || t.len() > 2
+                    && t[1..].iter().all(|w| !w.chars().any(|c| c.is_ascii_digit() || c.is_ascii_lowercase()))
+                    && t[1..].iter().any(|w| w.contains('(') || w.contains(')') || w.contains('/'))
+        };
         if code(&a.description) || code(&b.description) {
             return true;
         }
@@ -5383,8 +6156,15 @@ fn dedup_across_tables(ledger: &mut Ledger) {
         let candidates = available.entry(key.clone()).or_default().clone();
         // Prefer an original that has not been repeated yet, so two real same-day items
         // each absorb their own repeat; otherwise an original may repeat again.
-        let fits = |(table, j, _): &(usize, usize, Vec<usize>)| *table != t.table && compatible(&ledger.transactions[*j], t);
-        let pos = candidates.iter().position(|c| c.2.is_empty() && fits(c)).or_else(|| candidates.iter().position(fits));
+        let fits = |(table, j, _): &(usize, usize, Vec<usize>), fuzzy: bool| *table != t.table && compatible(&ledger.transactions[*j], t, fuzzy);
+        // (Only an image caption's number, "#0000001029" with its leading zeros, is read
+        // fuzzily: two serials a digit apart in the checks-paid table are two checks.)
+        let caption = |t: &Txn| t.description.strip_prefix("Check ").map(|n| n.len() >= 6 && n.starts_with('0')).unwrap_or(false);
+        let same_number = |(_, j, _): &(usize, usize, Vec<usize>)| matches!((check_key(&ledger.transactions[*j]), check_key(t)), (Some(a), Some(b)) if a == b);
+        let pos = candidates.iter().position(|c| c.2.is_empty() && same_number(c) && fits(c, false))
+            .or_else(|| candidates.iter().position(|c| c.2.is_empty() && fits(c, false)))
+            .or_else(|| candidates.iter().position(|c| fits(c, false)))
+            .or_else(|| candidates.iter().position(|c| c.2.is_empty() && caption(t) && fits(c, true)));
         let entry = available.get_mut(&key).unwrap();
         if let Some(pos) = pos {
             entry[pos].2.push(t.table);
@@ -5510,7 +6290,7 @@ fn bank_votes(texts: &[&str]) -> Vec<(&'static str, usize)> {
         ("huntington", "Huntington"), ("keybank", "KeyBank"), ("citizens bank", "Citizens"), ("citizensbank.com", "Citizens"), ("clearly better business checking", "Citizens"), ("m&t bank", "M&T Bank"), ("bmo", "BMO"),
         ("webster bank", "Webster Bank"), ("yampavalleybank", "Yampa Valley Bank"), ("yampa valley bank", "Yampa Valley Bank"), ("websterbank.com", "Webster Bank"), ("websteronline", "Webster Bank"), ("pinnacle", "Pinnacle Bank"), ("legends bank", "Legends Bank"), ("sunrise bank", "Sunrise Banks"),
         ("ally bank", "Ally"), ("frost bank", "Frost Bank"), ("frostbank", "Frost Bank"), ("box 1600 san antonio", "Frost Bank"), ("first citizens", "First Citizens"), ("comerica", "Comerica"),
-        ("zions", "Zions"), ("synovus", "Synovus"), ("santander", "Santander"), ("navy federal", "Navy Federal"), ("bluevine", "Bluevine"),
+        ("zions", "Zions"), ("synovus", "Synovus"), ("santander", "Santander"), ("navy federal", "Navy Federal"), ("bluevine", "Bluevine"), ("suntrust", "SunTrust"), ("home24bank", "Home Bank"), ("flushing bank", "Flushing Bank"),
         ("mercury", "Mercury"), ("novo", "Novo"), ("relayfi", "Relay"), ("relay financial", "Relay"), ("axos", "Axos"), ("live oak", "Live Oak"), ("first horizon", "First Horizon"),
         ("flagstar", "Flagstar"), ("valley national", "Valley National"), ("valleynationalbank", "Valley National"), ("east west bank", "East West Bank"), ("cathay", "Cathay Bank"),
         ("customers bank", "Customers Bank"), ("signature bank", "Signature Bank"), ("silicon valley bank", "Silicon Valley Bank"),
@@ -5523,6 +6303,8 @@ fn bank_votes(texts: &[&str]) -> Vec<(&'static str, usize)> {
         ("banknorth", "BankNorth"), ("brookline bank", "Brookline Bank"), ("brooklinebank", "Brookline Bank"), ("tristate capital", "TriState Capital"),
         ("first american bank", "First American Bank"), ("gulf bank", "Gulf Bank"), ("gulfbank", "Gulf Bank"), ("umb bank", "UMB Bank"), ("community bank", "Community Bank"),
         ("national city", "National City"), ("bank one", "Bank One"), ("bankone", "Bank One"), ("chase manhattan", "Chase"), ("first usa bank", "First USA"),
+        ("unionbank", "Union Bank"), ("union bank", "Union Bank"), ("first federal savings bank", "First Federal Savings Bank"), ("bankfirstfed", "First Federal Savings Bank"), ("western heritage", "Western Heritage Bank"),
+        ("first farmers & merchants", "First Farmers & Merchants"), ("highland bank", "Highland Bank"), ("forcht bank", "Forcht Bank"), ("forchtbank", "Forcht Bank"), ("communityamerica", "CommunityAmerica Credit Union"), ("communityamerica credit", "CommunityAmerica Credit Union"), ("heritage bank", "Heritage Bank"),
         ("trustmark", "Trustmark"), ("renasant", "Renasant Bank"), ("premier bank", "Premier Bank"), ("premierbankne", "Premier Bank"), ("atlantic union", "Atlantic Union Bank"), ("atlanticunion", "Atlantic Union Bank"), ("gulf coast bank", "Gulf Bank"), ("great southern", "Great Southern Bank"), ("greatsouthernbank", "Great Southern Bank"), ("tri counties bank", "Tri Counties Bank"), ("united bank", "United Bank"),
     ];
     // Multi-word names matched with the spaces gone; single words are not here, they hide
@@ -7097,6 +7879,220 @@ Nov 10 136,758.04 Nov 24 147,043.45 Nov 26 146,849.66
         assert!(l.transactions.iter().all(|t| t.kind == Kind::Debit), "{:?}", l.transactions);
         assert_eq!(l.transactions.len(), 3);
         assert_eq!(l.daily_balances.len(), 3, "{:?}", l.daily_balances);
+    }
+
+    #[test]
+    fn a_lost_interest_row_and_a_slash_read_as_seven() {
+        // Wells scan: the interest row is a smear, but the summary prints "Interest paid this
+        // statement $0.18" and the credits fall short by exactly that; "579" heads a row
+        // with its running balance beside real May dates, so it is 5/9.
+        let text = "Activity summary\nBeginning balance on 5/1 $5,909.36\nDeposits/Credits 5,909.54\nWithdrawals/Debits - 5,919.36\nEnding balance on 5/31 $5,899.54\nInterest paid this statement $0.18\nTransaction history\nDate Number Description Credits Debits balance\n579 Legal Order Debit - Contact Isaac H. Greenfield, Esq. 5,909.36 0.00\n5/18 Legal Order Reversal - Contact Isaac H. Greenfield, Esq. 5,909.36 5,909.36\n5/20 Legal Order Fee 10.00 5,899.36\nEnding balance on 5/31 5,899.54\nTotals $5,909.54 $5,919.36\n";
+        let l = parse(&[(1, text)]);
+        let rows: Vec<(&str, Kind, f64)> = l.transactions.iter().map(|t| (t.date.as_str(), t.kind, t.amount)).collect();
+        assert_eq!(rows, vec![("05/09", Kind::Debit, 5909.36), ("05/18", Kind::Credit, 5909.36), ("05/20", Kind::Debit, 10.0), ("05/31", Kind::Credit, 0.18)], "{:?}", l.transactions);
+        assert_eq!(l.summary.balance_check, Some(true));
+    }
+
+    #[test]
+    fn huntington_suntrust_and_flushing_summaries() {
+        // Huntington: the period beside the summary is no row; "Credits (+)" and "Debits (-)"
+        // name the totals; the signed section titles are never a row's continuation.
+        let hunt = "Huntington Analyzed Checking                                                         Account:------ 1079\nStatement Activity From:                          Beginning Balance                                $7,500.00\n03/01/23 to 03/31/23                              Credits (+)                                       1,000.00\n                                                     Regular Deposits                                1,000.00\nDays in Statement Period                 31       Debits (-)                                        2,124.32\n                                                     Electronic Withdrawals                          1,510.00\nAverage Ledger Balance*              6,074.40        Service Charges                                   614.32\nAverage Collected Balance*           6,009.88     Ending Balance                                   $6,375.68\nDeposits (+)                                                                                                         Account:-------1079\nDate              Amount           Serial #               Type\n03/28               1,000.00                              Remote\nOther Debits (-)                                                                                                     Account:-------1079\nDate                Amount          Description\n03/07               1,510.00        COMPLI MASTER CORP COLL 230307 2107 202302/202303 FUNDING\n03/15                 614.32        PRIOR MONTH'S SERVICE CHARGES\nBalance Activity                                                                                                     Account:-------1079\n";
+        let l = parse(&[(1, hunt)]);
+        let rows: Vec<(Kind, f64, &str)> = l.transactions.iter().map(|t| (t.kind, t.amount, t.description.as_str())).collect();
+        assert_eq!(rows, vec![(Kind::Credit, 1000.0, "Remote"), (Kind::Debit, 1510.0, "COMPLI MASTER CORP COLL 230307 2107 202302/202303 FUNDING"), (Kind::Debit, 614.32, "PRIOR MONTH'S SERVICE CHARGES")], "{:?}", l.transactions);
+        assert_eq!((l.summary.total_credits, l.summary.total_debits, l.summary.balance_check), (Some(1000.0), Some(2124.32), Some(true)), "{:?}", l.summary);
+        // SunTrust: the disclaimer's "pending transactions ... available balance" is not a
+        // printout; the margin label "Credits" before the first row is stripped.
+        let sun = "Get credit for your payment today.\nAccount Account Type Account Number Statement Period\nSummary\nPRIMARY BUSINESS CHECKING 7 6372 04/10/2017 - 04/30/2017\nDescription Amount Description Amount\nBeginning Balance $.00 Average Balance $25,397.14\nDeposits/Credits $36,617.24 Average Collected Balance $25,382.94\nChecks $.00 Number of Days in Statement Period 21\nWithdrawals/Debits $83.17\nEnding Balance $36,534.07\nDeposits/ Date Amount Serial # Description | Date Amount Serial # Description\nCredits 04/18 284.88 DEPOSIT\n04/11 23,282.36 INCOMING FEDWIRE CR TRN #008401\n04/28 13,050.00 INCOMING FEDWIRE CR TRN #009930\nDeposits/Credits: 3 Total Items Deposited: 1\nWithdrawals/ Date Amount Serial # Description\nDebits Paid\n04/11 15.00 INCOMING FEDWIRE TRANSFER FEE TRN #008401\n04/27 53.17 ELECTRONIC/ACH DEBIT\nCITI CARD ONLINE PAYMENT 112312813917308\n04/28 15.00 INCOMING FEDWIRE TRANSFER FEE TRN #009930\nWithdrawals/Debits: 3\nBalance Date Balance Collected Date Balance Collected\n";
+        let l = parse(&[(1, sun)]);
+        assert_eq!((l.summary.total_credits, l.summary.total_debits), (Some(36617.24), Some(83.17)), "{:?}", l.summary);
+        assert_eq!(((l.parsed_credit_total * 100.0).round() as i64, (l.parsed_debit_total * 100.0).round() as i64), (3661724, 8317), "{:?}", l.transactions);
+        // Flushing Bank: six labels over two lines, a zero without its point in the figures,
+        // the summary printed at the end of a statement whose footers keep its pages together,
+        // and "Image Statement" picture pages.
+        let f1 = "GREGORY M LASPINA CONSERVATOR PAGE: 1 OF 4\nSTATEMENT DATE: 03/31/23\n";
+        let f2 = "PAGE: 2 OF 4\nAccount Detail\nDate Description Credits Debits Balance\n02/28 Balance Forward 634,907.25\n03/01 Check Number 1319 16.05- 634,891.20\n03/09 Deposit 34,662.00 669,553.20\n03/17 Deposit 25,362.00 694,915.20\n03/17 Check Number 1539 15.00- 694,900.20\n03/20 Check Number 1325 2,744.75- 692,155.45\n03/22 Check Number 1327 217.75- 691,937.70\n";
+        let f3 = "Account Flushing Bank -- Image Statement 03/31/2023 Page 3 of 4\nCheck 1325 Date 03/20 Amount $2,744.75 Check 1327 Date 03/22 Amount $217.75\n";
+        let f4 = "PAGE: 4 OF 4\nAccount Summary\nPrevious Statement Date: 02/28/23\nBeginning Interest Service Ending\nBalance + Deposits + Paid - Withdrawals ~ Charge = Balance\n634,907.25 60,024.00 00 2,993.55 .00 691,937.70\nStatement from 03/01/23 Thru 03/31/23\n";
+        let l = parse(&[(1, f1), (2, f2), (3, f3), (4, f4)]);
+        assert!(l.statements.is_empty(), "one statement, not {:?}", l.statements.iter().map(|s| s.pages).collect::<Vec<_>>());
+        assert_eq!((l.summary.beginning_balance, l.summary.total_credits, l.summary.total_debits, l.summary.ending_balance), (Some(634907.25), Some(60024.0), Some(2993.55), Some(691937.7)), "{:?}", l.summary);
+        assert_eq!(((l.parsed_credit_total * 100.0).round() as i64, (l.parsed_debit_total * 100.0).round() as i64), (6002400, 299355), "{:?}", l.transactions);
+        assert_eq!(footer_numbers("REDE Page 224 of253"), None);
+    }
+
+    #[test]
+    fn purchases_heading_refunds_stray_marks_in_columns_and_check_captions() {
+        // Union Bank: the seven-word "Purchases ATM card and Debit card purchases" heading
+        // opens a debit section; the signed summary parts name the totals.
+        let union = "Banking By Design Summary                                  Account Number:\nDays in statement period : 30\n                        Balance on 2/28                      $                             17.00\n                        Additions                                                          20.00\n                        Subtractions                                                     -134.82\n                                             Purchases                         -66.82\n                                      Other Withdrawals                        -68.00\n                        Balance on 3/29                 $                                 -97.82\nAdditions\n                                Date        Description/Location                                                   Reference           Amount\n                                3/2         ATM DEPOSIT                                                            79336163    $         20.00\nPurchases ATM card and Debit card purchases\n                                Date        Description/Location                                       Reference                       Amount\n                                2/28        MARKET WOR 2067379149 WA 2067379149 WA                     71672646                $         3.10\n                                2/28        KFC C19100 SAN DIEGO CA SAN DIEGO CA                       71672647                             8.93\n                                3/5         NATIONAL C IT CA NATIONAL CIT CA                           70758030                            54.79\n                                Total                                                                                          $           66.82\nOther Withdrawals including fees and adjustments\n                                Date        Description/Location                                       Reference                       Amount\n                                3/6         TOTAL OVERDRAFT ITEM PAID FEES                             99520095                $        33.00\n                                3/12        CONTINUED OVERDRAFT FEE                                                                      6.00\n                                3/13        CONTINUED OVERDRAFT FEE                                                                     29.00\n";
+        let l = parse(&[(1, union)]);
+        assert_eq!((l.summary.total_credits, l.summary.total_debits), (Some(20.0), Some(134.82)), "{:?}", l.summary);
+        assert_eq!(((l.parsed_credit_total * 100.0).round() as i64, (l.parsed_debit_total * 100.0).round() as i64), (2000, 13482), "{:?}", l.transactions);
+        // Signature: "DEBIT CARD REFUND" under a deposits section inherited from the page
+        // before is a credit, the word "refund" beating "debit".
+        let sig1 = "Summary\n Previous Balance as of July      01, 2022                                                       82.96\n       3 Credits                                                                                200.29\n       2 Debits                                                                                 150.00\n Ending Balance as of   July      31, 2022                                                      133.25\nDeposits and Other Credits\n Jul 01 ACH DEPOSIT             ck/ref no.     1567847                                             103.46\n         SHOPIFY             TRANSFER        ST-J4E2V4S5A5H8\n Jul 05 ACH DEPOSIT             ck/ref no.     1887154                                              81.00\n";
+        let sig2 = "Statement Period\n Jul 14   DEBIT CARD REFUND                                                                                  15.83\n          ON 07/14 AT GRAINGER                       877 2022594    IL\nWithdrawals and Other Debits\n Jul 05   DEBIT CARD PURCHASE                                                                                 50.00\n Jul 06   ATM WITHDRAWAL CASH WITHDRAWAL                                                                     100.00\n";
+        let l = parse(&[(1, sig1), (2, sig2)]);
+        assert_eq!(((l.parsed_credit_total * 100.0).round() as i64, (l.parsed_debit_total * 100.0).round() as i64), (20029, 15000), "{:?}", l.transactions);
+        // Pinnacle: a stray mark between two amounts is blanked in place, so "$4.99 D
+        // $32.00" keeps $32.00 under the Debits column.
+        let pinn = "            Check/                                                     Deposits/   Withdrawals/   End of Day\nDate *      Serial #     Description                                     Credits         Debits     Balance\n7/16                     INSUFFICIENT FUNDS-RETURNED ITEM $500.00                       $32.00\n                         DEBIT FOR GIACT SYSTEMS GIACT FEES CO R\n7/16                     INSUFFICIENT FUNDS-RETURNED ITEM $4.99 D                       $32.00\n                         EBIT FOR GO DADDY WEB ORDER CO REF- 1385\n7/19                     CREDIT FOR PAYSAFE IPAYMENT 202106_RP3 CO     $4,434.92\n";
+        let l = parse(&[(1, pinn)]);
+        let rows: Vec<(Kind, i64)> = l.transactions.iter().map(|t| (t.kind, (t.amount * 100.0).round() as i64)).collect();
+        assert_eq!(rows, vec![(Kind::Debit, 3200), (Kind::Debit, 3200), (Kind::Credit, 443492)], "{:?}", l.transactions);
+        // Chase: the caption under a check's image, "#0000001029", repeats the table's
+        // "4029" (one digit misread) on the same day for the same amount; a caption is
+        // read fuzzily only against a table row not repeated yet, and never two table rows
+        // a serial apart.
+        let chase1 = "CHECKS PAID\nCHECK NO. DESCRIPTION PAID AMOUNT\n1028 4 03/02 20.22\n4029 A 03/04 506.00\n60556 * 03/09 984.41\n";
+        let chase2 = "CHECKS PAID (continued)\n60559 A 03/09 984.41\nELECTRONIC WITHDRAWALS\n03/06 Orig CO Name:Nicor Gas Orig ID:8200406241 699.62\n";
+        let chase3 = "See both front and back images of cleared checks at Chase.com.\n003580515351 MAR 02 #0000001028 $20.22 109180720961 MAR 04 #0000001029 $506.00\n008080048064 MAR 09 #0000060556 $984.41 009370981191 MAR 09 #0000060559 $984.41\n";
+        let l = parse(&[(1, chase1), (2, chase2), (3, chase3)]);
+        let mut rows: Vec<(String, i64)> = l.transactions.iter().map(|t| (t.description.clone(), (t.amount * 100.0).round() as i64)).collect();
+        rows.sort();
+        assert_eq!(rows, vec![("Check 1028".to_string(), 2022), ("Check 4029".to_string(), 50600), ("Check 60556".to_string(), 98441), ("Check 60559".to_string(), 98441), ("Orig CO Name:Nicor Gas Orig ID:8200406241".to_string(), 69962)], "{:?}", l.transactions);
+        // Mercantile: a one-page statement's "Page: 1 of 1" opens its own statement behind
+        // another statement's pages.
+        let merc1 = "Mercantile Page: 1 of 4\nStatement Date: 09/30/2020\nPeriod: 08/31/20 to 09/30/20\nCREDITS\nDate Description Amount\n09/04 Deposit 100.00\nDEBITS\nDate Description Amount\n09/08 Check 40.00\nDAILY BALANCE\nDate Balance\n09/04 100.00\n09/08 60.00\n";
+        let merc2 = "Mercantile Page: 1 of 1\nStatement Date: 09/30/2020\nPeriod: 08/31/20 to 09/30/20\nCREDITS\nDate Description Amount\n09/04 Transfer From Coml Analysis Ck Account 27.95\nDEBITS\nDate Description Amount\n09/04 Mthchgs Worldpay Merch Bankcard 27.95\nDAILY BALANCE\nDate Balance\n09/04 0.00\n";
+        let l = parse(&[(1, merc1), (2, merc2)]);
+        assert_eq!(l.statements.iter().map(|s| s.pages).collect::<Vec<_>>(), vec![Some((1, 1)), Some((2, 2))], "{:?}", l.statements);
+    }
+
+    #[test]
+    fn check_pairs_newest_first_listings_and_schedules() {
+        // TD: a two-column check table in a scan, one figure without its point, one split
+        // by a space, one with a glyph in front; the columns are cut apart afterwards.
+        let td = "Checks Paid\nDATE SERIAL NO. AMOUNT DATE SERIAL NO. AMOUNT\n04/16 2281 22331 04/15 11071 1;199:05\n04/15 11082 467 96 04/29 11102 £28.48\n04/16 2282 4,308.69 04/14 11072 1,499.78\n";
+        let l = parse(&[(1, td)]);
+        let mut rows: Vec<(String, i64)> = l.transactions.iter().map(|t| (t.description.clone(), (t.amount * 100.0).round() as i64)).collect();
+        rows.sort();
+        assert_eq!(rows, vec![("Check 11071".to_string(), 119905), ("Check 11072".to_string(), 149978), ("Check 11082".to_string(), 46796), ("Check 11102".to_string(), 2848), ("Check 2281".to_string(), 22331), ("Check 2282".to_string(), 430869)], "{:?}", l.transactions);
+        assert_eq!(repair_check_pairs("04/16 2281 22331 04/15 11071 1,199.05"), "04/16 2281 223.31 04/15 11071 1,199.05");
+        assert_eq!(repair_check_pairs("Cust #562791 711 3,783.78"), "Cust #562791 711 3,783.78");
+        // CommunityAmerica's online printout: newest first under "Date Description Amount
+        // Balance", the balances chaining backwards (and one that does not chain, the
+        // header still saying which figure is the amount); the last row on the page keeps
+        // its shape from the row above. Where it began and ended comes from the balance
+        // column, and the rows between must close the equation.
+        let p1 = "CommunityAmerica Credit Union  09/12/2023 11:41 AM\nAug 1, 2023 - Aug 31, 2023 Custom\nDate  Description  Amount  Balance\n08/31/2023  Point Of Sale Withdrawal / WAL-MART #2955  -$28.64  $977.16\n08/31/2023  Point Of Sale Withdrawal / SAMSCLUB.COM  -$39.23  $1,005.80\n08/31/2023  Point Of Sale Deposit / VENMO*Miller David  $541.36  $1,045.03\n08/31/2023  Point Of Sale Withdrawal ROBLOX  -$19.99  $503.67\n08/30/2023  ATM Foreign Transaction Fee  -$1.50  $173.69\n08/30/2023  Point Of Sale Withdrawal CASH / APP*THOMAS  -$100.00  $525.16\n";
+        let p2 = "Date  Description  Amount  Balance\n08/29/2023  Point Of Sale Withdrawal / CULVERS  -$20.00  $625.16\n08/29/2023  Point Of Sale Deposit / VENMO  $300.00  $645.16\n08/28/2023  ACH Payment PAYPAL  -$8.72  $345.16\n";
+        let l = parse(&[(1, p1), (2, p2)]);
+        let rows: Vec<(Kind, i64)> = l.transactions.iter().map(|t| (t.kind, (t.amount * 100.0).round() as i64)).collect();
+        assert_eq!(rows, vec![(Kind::Debit, 2864), (Kind::Debit, 3923), (Kind::Credit, 54136), (Kind::Debit, 1999), (Kind::Debit, 150), (Kind::Debit, 10000), (Kind::Debit, 2000), (Kind::Credit, 30000), (Kind::Debit, 872)], "{:?}", l.transactions);
+        assert_eq!((l.summary.beginning_balance, l.summary.ending_balance, l.summary.balance_check), (Some(353.88), Some(977.16), Some(true)), "{:?}", l.summary);
+        // A debtor's "Cash Disbursements ... Per Bank Statements" schedule is not a statement.
+        let sched = "Exhibit B- Cash Disbursements Page 1 of 4\nCash Disbursements\n10/1/2024-10/31/2024\nPer Bank Statements\nDate  Description  Source  Statement Period  Amount  Account Designation\n10/15/2024  ACH WEB  FSTENERGY METED ONLINE PMT  PNC Joint Checking 2001  October Export  $  (428.69) Utilities\n10/11/2024  ACH WEB  WASTE MANAGEMENT ONLINE PMT  PNC Joint Checking 2001  October Export  $  (266.41) Utilities\n";
+        let l = parse(&[(1, sched)]);
+        assert_eq!(l.summary.document_kind.as_deref(), Some("cash receipts and disbursements schedule"), "{:?}", l.summary);
+        // Three scribbles between a check number and its date; the point lost to a space
+        // at the end of a dated row with no other figure.
+        let chase = "CHECKS PAID\nCHECK NO. DESCRIPTION PAID AMOUNT\n60541 A\u{201d} a \u{2014}_ 01/26 984.41\nELECTRONIC DEPOSITS\n02/21 CCD DEPOSIT, GRUBHUB INC FEB ACTVTY ****2119dKHGk50 424 67\n";
+        let l = parse(&[(1, chase)]);
+        let rows: Vec<(Kind, i64, &str)> = l.transactions.iter().map(|t| (t.kind, (t.amount * 100.0).round() as i64, t.description.as_str())).collect();
+        assert_eq!(rows, vec![(Kind::Debit, 98441, "Check 60541"), (Kind::Credit, 42467, "CCD DEPOSIT, GRUBHUB INC FEB ACTVTY ****2119dKHGk50")], "{:?}", l.transactions);
+        // A sweep account's "Other Debits" title at the wrapped lines' indent is the
+        // section; a doubled "Check Date Amount" header under the deposits opens the checks.
+        let sweep = "Business Account\n07/01/2023 Beginning Balance                                  .00\n  15 Deposits/Other Credits  +  1,553.84\n  4 Checks/Other Debits  -  1,553.84\n07/31/2023 Ending Balance  31 Days in Statement Period  .00\n  Deposits/Other Credits\n07/03/2023 Transfer Deposit  From Loan XXXXXX1727  850.00\n  TECH TOOL SUPPLY, LLC 7342077700 MI #2024\n07/31/2023 Mobile Deposit  703.84\n  Checks listed in numerical order; (*) indicates gap in sequence\nCheck Date Amount Check Date Amount\n4501 07/12 553.84 4503* 07/26 150.00\n  Other Debits\n07/03/2023 Debit Card Debit  800.00\n  LOWES #02231* CEDAR RAPIDS IA #2040\n07/03/2023 Debit Card Debit  50.00\n  MENARDS CEDAR RAPIDS S CEDAR RAPIDS IA #1992\n";
+        let l = parse(&[(1, sweep)]);
+        assert_eq!(((l.parsed_credit_total * 100.0).round() as i64, (l.parsed_debit_total * 100.0).round() as i64), (155384, 155384), "{:?}", l.transactions);
+        assert_eq!(l.summary.balance_check, Some(true), "{:?}", l.summary);
+        // Wintrust's second account page in a text layer whose font map lost its figures.
+        assert_eq!(unfont("$o.oo").as_deref(), Some("$0.00"));
+        assert_eq!(unfont("$431.3s").as_deref(), Some("$431.35"));
+        assert_eq!(unfont("O9lO1l24").as_deref(), Some("09/01/24"));
+        assert_eq!(unfont("O9l3olz4").as_deref(), Some("09/30/24"));
+        assert_eq!(unfont("Balance"), None);
+        assert_eq!(unfont("$Total"), None);
+        // Chase in a scan: the summary's "75,193.44" is one digit off the deposits section's
+        // "Total Deposits and Additions $76,193.44", which the rows meet; the section wins.
+        let chase = "CHECKING SUMMARY\nBeginning Balance $0.00\nDeposits and Additions 75,193.44\nElectronic Withdrawals -76,193.44\nEnding Balance $0.00\nDEPOSITS AND ADDITIONS\nDATE DESCRIPTION AMOUNT\n09/12 Deposit 2027225520 $300.00\n09/15 Orig CO Name Sabio Inc Orig ID 9814416124 75,893.44\nTotal Deposits and Additions $76,193.44\nELECTRONIC WITHDRAWALS\nDATE DESCRIPTION AMOUNT\n09/16 Online Transfer To Chk ...8142 Transaction#: 15313724148 $76,193.44\nTotal Electronic Withdrawals $76,193.44\n";
+        let l = parse(&[(1, chase)]);
+        assert_eq!((l.summary.total_credits, l.summary.total_debits, l.summary.balance_check), (Some(76193.44), Some(76193.44), Some(true)), "{:?}", l.summary);
+        // Chase in a scan: a day no month has ("02/41") fitted between the row's own
+        // transaction date and the row below; the three-column daily table ends at the
+        // "TRANSACTIONS FOR SERVICE FEE CALCULATION" title so its columns are not flushed
+        // behind it as debits; the fee calculation block is informational.
+        let chase = "ATM & DEBIT CARD WITHDRAWALS\nDATE DESCRIPTION AMOUNT\n02/41 Card Purchase 02/10 Att*Bill Payment 800-288-2020 TX Card 9540 $984.85\n02/17 Card Purchase 02/16 Paypal *Sarah 402-935-7733 CA Card 9540 150.00\nDAILY ENDING BALANCE |_(comlinves)\nDATE AMOUNT DATE __ _ AMOUNT DATE AMOUNT\n03/22 44,659.33 03/25 29,359.39 03/30 78,075.45\n03/23 46,128.94 03/26 30,951.09 03/31 78,903.52\n03/24 27,051.33 03/29 49,079.94\nTRANSACTIONS FOR SERVICE FEE CALCULATION NUMBER OF TRANSACTIONS\nChecks Paid / Debits 27\nSERVICE FEE CALCULATION AMOUNT\nService Fee $12.00\nService Fee Credit -$12.00\nNet Service Fee $0.00\n";
+        let l = parse(&[(1, chase)]);
+        let rows: Vec<(&str, Kind, i64)> = l.transactions.iter().map(|t| (t.date.as_str(), t.kind, (t.amount * 100.0).round() as i64)).collect();
+        assert_eq!(rows, vec![("02/11", Kind::Debit, 98485), ("02/17", Kind::Debit, 15000)], "{:?}", l.transactions);
+        assert_eq!(l.daily_balances.len(), 8, "{:?}", l.daily_balances);
+        // Heritage Bank in a scan: a month over 12 in a full date ("42/22/2021"), the
+        // three-column daily table headed "Date Amount ~ Date Amount Date Amount" with its
+        // title lost, and "INET XFER 12-02 FROM ..." / "TO ..." naming the direction.
+        let heritage = "Date Description Amount\n12/22/2021 REGULAR DEPOSIT $300.00\n42/23/2021 ___ INCOMING WIRE FRANCO FACTORING LLC $36,016.17\nNumber of Deposits 2 Total Deposits $36,316.17\nDate Description Amount\n12/02/2021 INET XFER 12-02 TO XXXXXXXX0260 $1,200.00\n12/03/2021 INET XFER 12-03 FROM XXXXXXXX0686 $100.00\nDate Amount ~ Date Amount Date Amount\n12/09/2021 $28,395.91 12/20/2021 $5,643.81 12/27/2021 $16,984.79\n12/10/2021 $3,591.21 12/21/2021 $4,308.81 12/28/2021 $12,473.79\n";
+        let l = parse(&[(1, heritage)]);
+        let rows: Vec<(Kind, i64)> = l.transactions.iter().map(|t| (t.kind, (t.amount * 100.0).round() as i64)).collect();
+        assert_eq!(rows, vec![(Kind::Credit, 30000), (Kind::Credit, 3601617), (Kind::Debit, 120000), (Kind::Credit, 10000)], "{:?}", l.transactions);
+        assert_eq!(l.daily_balances.len(), 6, "{:?}", l.daily_balances);
+        // Synovus in flat OCR: a wire's wrapped description "PAYMENT ELEKTA INC DEPOSIT"
+        // straight under its row is no deposits section.
+        let syn = "Other Debits\n09-23 Phn/Fax Dom Out Wire ELEKTAINC DEPOSIT Y ACCOUNTCUREPOINT 24,941.08\nPAYMENT ELEKTA INC DEPOSIT\nORY ACCOUNT\n09-23 Service Charge PHN/FAX DOM OUT WI 100.00\n09-27 Preauthorized Wd CALL EXPERTS CALL EXPER 194.68\n";
+        let l = parse(&[(1, syn)]);
+        assert!(l.transactions.iter().all(|t| t.kind == Kind::Debit) && l.transactions.len() == 3, "{:?}", l.transactions);
+        // National City in a scan: a check number with one misread letter ("f040*") and an
+        // amount without its point ("132850") in the check table.
+        let nc = "Checks\nCheck Number Amount Description Date Paid\n1029 $4,903.00 Paid Check - Image Available Online 10/23\nf040* 435.00 Paid Check - Image Available Online 10/16\n1048 132850 Paid Check - image Available Online 10/27\nTotal: 3 items for $6,666.50\n";
+        let l = parse(&[(1, nc)]);
+        let rows: Vec<(String, i64)> = l.transactions.iter().map(|t| (t.description.clone(), (t.amount * 100.0).round() as i64)).collect();
+        assert_eq!(rows, vec![("Check 1029".to_string(), 490300), ("Check f040".to_string(), 43500), ("Check 1048".to_string(), 132850)], "{:?}", l.transactions);
+        // KeyBank in flat OCR: a one-digit day ("12-1") padded to "12-01" must keep its
+        // single space; the summary's "11-30-23" had switched the dashed-date padding on.
+        let key = "Beginning balance 11-30-23 $9,220.75\nAdditions\nDeposits Date Serial # Source\n12-1 Direct Deposit, Capital Partners6D42 $1,965.00\n12-4 Direct Deposit, Vantage Vantage 1,575.48\n12-12 Direct Deposit, Spartanbusiness Ap 4,400.00\n";
+        let l = parse(&[(1, key)]);
+        assert_eq!(l.transactions.iter().map(|t| t.date.as_str()).collect::<Vec<_>>(), vec!["2023-12-01", "2023-12-04", "2023-12-12"], "{:?}", l.transactions);
+        // Chase in a scan, under "DATE DESCRIPTION AMOUNT BALANCE": figures whose commas
+        // and points became spaces are put back together from the right.
+        assert_eq!(rejoin_split_figures("03/05 First Foundation Loan Pymt PPD ID: 1320211527 -6 789 84 25 409.88").as_deref(), Some("03/05 First Foundation Loan Pymt PPD ID: 1320211527 -6,789.84 25,409.88"));
+        assert_eq!(rejoin_split_figures("03/21 Withdrawal -23 980 38 014").as_deref(), Some("03/21 Withdrawal -23,980.38 0.14"));
+        assert_eq!(rejoin_split_figures("03/21 Interest Payment 0.14 23,980.52"), None);
+        // Flagstar in a scan: a garbled daily balance row ("gan 31 1,050,488.04 Feb 14
+        // 1,3129,847.30") is no check 31; "dan 31 489 36,210.81 Jan 29 508 5,555.41" is a
+        // January row when the line prints the month right further on.
+        let flag = "Checks by Serial Number\nFeb 14 531 * 58.64\ndan 31 489 36,210.81 Jan 29 508 5,555.41\nDaily Balances\ngan 31 1,050,488.04 Feb 14 1,3129,847.30\nFeb 03 1,079,689.09 Feb 18 1,129,904.80\n";
+        let l = parse(&[(1, flag)]);
+        let mut rows: Vec<(String, i64)> = l.transactions.iter().map(|t| (format!("{} {}", t.date, t.description), (t.amount * 100.0).round() as i64)).collect();
+        rows.sort();
+        assert_eq!(rows, vec![("01/29 Check 508".to_string(), 555541), ("01/31 Check 489".to_string(), 3621081), ("02/14 Check 531".to_string(), 5864)], "{:?}", l.transactions);
+        // PNC's two summary boxes squashed onto one line by a poor text layer.
+        let pnc = "Deposits and Other Additions  Checks and Other Deductions\nDescription  Items  Amount  Description  Items  Amount\nOther Additions  1  400,378.67  Checks  4  380,087.50\n  Service Charges and Fees  1  4.50\n  Other Deductions  1  8,625.00\nTotal  400,378.67  Total  6  388,717.00\nActivity Detail\nDeposits and Other Additions\n07/14  400,378.67  Transfer From Sub Account 0000004257379616\nChecks and Other Deductions\n07/20  380,087.50  Check 1001\n07/29  4.50  Counter Check Fee\n07/29  8,625.00  Withdrawal Tel\n";
+        let l = parse(&[(1, pnc)]);
+        assert_eq!((l.summary.total_credits, l.summary.total_debits), (Some(400378.67), Some(388717.0)), "{:?}", l.summary);
+        // Flushing Bank in a scan (a receiver's bundle): margin glyphs before the dates,
+        // specks after them and the summary figures, "$60;000.00-", "96/03" under a "05/31
+        // Balance Forward" over June's rows, and the six-label header with a lone "i" in it.
+        let fl = "All Transactions by Date\nDate Description Withdrawal / Debit Deposit / Credit (+) Balance\n| 05/31. Balance Forward $42,860.59\n96/03 Deposit $5,000.00 $47,860.59\n| 06/10 Deposit $14,500.00 $62,360.59\n| 06/13. TRANSFER TO CK XXXXXXXX8362 $60;000.00- | $2,360.59\n06/15. Deposit $15,000.00 $17,360.59\nAccount Summary\nPrevious: Statement Date; 05/31/2023 |\nBeginning Interest. i Service Ending\nBalance + Deposits + Paid. - Withdrawals: - | Charge = Balance\n$42,860.59. $34,500.00. $0.00 $60,000.00 $0.00 $17,360.59\n";
+        let l = parse(&[(1, fl)]);
+        assert_eq!((l.summary.beginning_balance, l.summary.total_credits, l.summary.total_debits, l.summary.ending_balance, l.summary.balance_check), (Some(42860.59), Some(34500.0), Some(60000.0), Some(17360.59), Some(true)), "{:?}", l.summary);
+        assert_eq!(l.transactions.iter().map(|t| t.date.as_str()).collect::<Vec<_>>(), vec!["2023-06-03", "2023-06-10", "2023-06-13", "2023-06-15"], "{:?}", l.transactions);
+        // Check 28's regressions: JPMorgan numbers its pages straight through two accounts,
+        // and the second account's summary page (its own beginning balance after the
+        // first's) still starts a statement inside the running footer.
+        let jp1 = "Page 7 of 22\nDeposits & Credits\nDate Description Amount\n09/30 JPMorgan Access Transfer From Account 9072 600,000.00\nTotal Deposits & Credits $600,000.00\n";
+        let jp2 = "Checking Account Summary Instances Amount\nBeginning Balance 221,227.38\nDeposits & Credits 1 414,314.57\nChecks Paid 1 (391,174.19)\nEnding Balance 2 $244,367.76\nDeposits & Credits\nDate Description Amount\n09/01 Remote Online Deposit 1 414,314.57\nChecks Paid\nCheck Number Date Paid Amount\n60405 09/07 391,174.19\nPage 8 of 22\n";
+        let jp0 = "Checking Account Summary Instances Amount\nBeginning Balance 100.00\nDeposits & Credits 1 600,000.00\nEnding Balance 1 $600,100.00\nPage 6 of 22\n";
+        let l = parse(&[(1, jp0), (2, jp1), (3, jp2)]);
+        assert_eq!(l.statements.iter().map(|s| s.pages).collect::<Vec<_>>(), vec![Some((1, 2)), Some((3, 3))], "{:?}", l.statements);
+        // A dated wrapped cell under a check table ("06/12 000000075073010") never takes
+        // a figure four lines below it ("Total Debits" then "-- 101,186.43").
+        let cz = "Checks\nCheck # Amount Date Item No.\n1949 280.00 06/06 000000081035139\n06/12 000000075073010\n*There is a break in sequence\nTotal\nTotal Debits\nDebits\n-- 101,186.43\n";
+        let l = parse(&[(1, cz)]);
+        assert_eq!(l.transactions.iter().map(|t| (t.amount * 100.0).round() as i64).collect::<Vec<_>>(), vec![28000], "{:?}", l.transactions);
+        // Two U.S. Bank first pages sharing the fee schedule's six figures are not one page twice.
+        let us = |acct: &str, period: &str, rows: &str| format!("U.S. Bank Uni-Statement\nAccount Number: {acct}\nStatement Period: {period}\nPage 1 of 2\nINFORMATION YOU SHOULD KNOW\nFees: $6.00 $12.00 $35.00 $50.00 $55.00 $55.00 apply to some services described in the Consumer Pricing Information document that you received at account opening and which you can read online at any time.\nAccount Summary\n{rows}");
+        let us1 = us("7110", "Dec 1, 2025 through Dec 31, 2025", "Beginning Balance on Dec 1 $ 100.00\nDeposits / Credits 3,579.40\nOther Withdrawals 99.18-\nEnding Balance on Dec 31, 2025 $ 3,580.22\nDeposits / Credits\nDate Description Amount\n12/12 Internet Banking Transfer From Account 1012 3,579.40\nOther Withdrawals\nDate Description Amount\n12/26 Check 5002 99.18\n");
+        let us2 = us("9012", "Nov 22, 2025 through Dec 18, 2025", "Beginning Balance on Nov 22 $ 716.99\nDeposits / Credits 3,581.54\nOther Withdrawals 3,579.40-\nEnding Balance on Dec 18, 2025 $ 719.13\nDeposits / Credits\nDate Description Amount\n12/10 Federal Benefit Deposit 3,579.40\n12/18 Interest Paid 2.14\nOther Withdrawals\nDate Description Amount\n12/12 Internet Banking Transfer To Account 7110 3,579.40\n");
+        let l = parse(&[(1, us1.as_str()), (2, us2.as_str())]);
+        assert_eq!(l.statements.len(), 2, "{:?}", l.statements);
+        assert!(l.statements.iter().all(|s| s.balance_check == Some(true)), "{:?}", l.statements);
+        // American Express pages: "Minimum Due" with "New Charges" and "Pay Over Time".
+        assert!(is_card_page("American Express Gold Card\nClosing Date 03/17/24\nPrevious Balance $852.07\nNew Charges +$2,420.32\nMinimum Due $0.00\nPay Over Time Limit $1,000.00\n"));
+        assert!(!is_card_page("Business Checking\nStatement Period 03/01/24 - 03/31/24\nMinimum balance $1,000.00\n"));
+        // Chase's online activity export is a printout: its own document, no totals.
+        assert!(is_printout_page("total $0.00\naccount activity\ndate description type amount balance\noct 13, 2021 online transfer to chk ...3565 account transfer -$1,500.00 $7.58\n"));
     }
 
     #[test]

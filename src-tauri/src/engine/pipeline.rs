@@ -167,9 +167,18 @@ fn parse_size(v: &str) -> u64 {
 
 /// Fraction of dark pixels on a low-resolution render. Cover sheets and blank pages have
 /// almost none, so they skip the OCR model (30 to 50 seconds each).
-const BLANK_INK_RATIO: f64 = 0.004;
+/// (A court's two-line exhibit stamp alone is about half a percent; the sparsest page of
+/// statement text is well over one.)
+const BLANK_INK_RATIO: f64 = 0.0075;
 
 fn page_ink_ratio(pdf: &str, page: usize) -> Result<f64, String> {
+    page_ink_ratio_below(pdf, page, 128)
+}
+
+/// The same with the darkness cut-off given. At 40 dpi the strokes of a scan drawn as
+/// vector outlines come out mid-grey, not black: a Home Bank page with 16 percent of its
+/// pixels under 200 has 1.5 percent under 128, the same as a court stamp alone.
+fn page_ink_ratio_below(pdf: &str, page: usize, cutoff: u8) -> Result<f64, String> {
     let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
     let prefix = dir.path().join("ink");
     let p = page.to_string();
@@ -178,7 +187,7 @@ fn page_ink_ratio(pdf: &str, page: usize) -> Result<f64, String> {
         return Err(format!("pdftocairo failed: {}", String::from_utf8_lossy(&out.stderr)));
     }
     let img = image::open(prefix.with_extension("png")).map_err(|e| e.to_string())?.into_luma8();
-    let dark = img.pixels().filter(|p| p.0[0] < 128).count();
+    let dark = img.pixels().filter(|p| p.0[0] < cutoff).count();
     Ok(dark as f64 / img.pixels().count().max(1) as f64)
 }
 
@@ -579,20 +588,36 @@ async fn ocr_prompt(ep: &Endpoint, uri: &str, prompt: &str, progress: &PageProgr
 /// that carry an image (a scan), or that have no text at all. Near-blank pages are skipped.
 pub fn page_method(pdf: &str, page: usize, layer: &str, force_ocr: bool) -> &'static str {
     let words = layer.split_whitespace().count();
-    let thin = words < MIN_TEXT_WORDS;
+    // A scan whose text layer is someone else's failed OCR (",S,1=.or:2~ho1,Jr-a~11nl"):
+    // when a quarter or more of its tokens carry characters no statement prints, the
+    // layer is worthless and the page is read as a scan.
+    let junk = |t: &str| !t.chars().all(|c| c.is_ascii_alphanumeric() || ".,/$#:%()'*&+\"-".contains(c));
+    let junk_layer = words >= MIN_TEXT_WORDS && layer.split_whitespace().filter(|t| junk(t)).count() * 4 >= words;
+    let thin = words < MIN_TEXT_WORDS || junk_layer && has_page_image(pdf, page);
     // A thin page with no image object can still be a scan drawn as vector outlines (some
     // court filings convert the scan): ink well beyond a stamp's worth says so.
-    let inked_vector = || page_ink_ratio(pdf, page).map(|r| r >= VECTOR_SCAN_INK_RATIO).unwrap_or(false);
+    // (Such a page is never blank, whatever its share of black pixels: a sparse last page
+    // of four rows has 3.4 percent of mid-grey ink and well under the blank share of black.)
+    // (A faint scan image of a sparse last page, four rows and a footer, has the same
+    // share of black; it is blank only when its mid-grey ink is a stamp's worth too.)
+    let inked_vector = || page_ink_ratio_below(pdf, page, 200).map(|r| r >= VECTOR_SCAN_INK_RATIO).unwrap_or(false);
+    let grey_blank = || page_ink_ratio_below(pdf, page, 200).map(|r| r < BLANK_GREY_INK_RATIO).unwrap_or(true);
     if force_ocr || words == 0 || thin && (has_page_image(pdf, page) || inked_vector()) {
-        if !force_ocr && page_ink_ratio(pdf, page).map(|r| r < BLANK_INK_RATIO).unwrap_or(false) { "blank" } else { "ocr" }
+        if !force_ocr && page_ink_ratio(pdf, page).map(|r| r < BLANK_INK_RATIO).unwrap_or(false) && grey_blank() { "blank" } else { "ocr" }
     } else {
         "text"
     }
 }
 
-/// Dark-pixel share above which a page with almost no text layer is treated as a scan even
-/// without an image object; a court stamp alone is well under one percent.
-const VECTOR_SCAN_INK_RATIO: f64 = 0.02;
+/// Share of pixels under 200 above which a page with almost no text layer is treated as a
+/// scan even without an image object; a court stamp alone is about half a percent, a page
+/// of statement text six percent or more.
+const VECTOR_SCAN_INK_RATIO: f64 = 0.03;
+
+/// Share of pixels under 200 below which a page with almost no black is blank. A faint scan
+/// of a sparse page (a fee continuation and the daily balances, Bank of America) has 0.4
+/// percent of black and 2.3 percent of mid-grey; the court's stamp alone is half a percent.
+const BLANK_GREY_INK_RATIO: f64 = 0.015;
 
 
 /// Error returned when a page needs the OCR model but no engine endpoint was given.
@@ -1110,7 +1135,12 @@ pub async fn read_pages(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdfs: &[S
 fn adopt_readings(mut best: Vec<PageText>, candidates: &[PageText], method: &str, mut best_gap: f64, mut best_verified: usize, mut best_passing: usize) -> (Vec<PageText>, f64, usize, usize) {
     let mut try_candidate = |best: &mut Vec<PageText>, candidate: Vec<PageText>, best_gap: &mut f64, best_verified: &mut usize, best_passing: &mut usize| -> bool {
         if let Some((g, n, p)) = totals_gap(&candidate) {
-            if g < *best_gap && n >= *best_verified && p >= *best_passing {
+            // (Or the same gap with more printed figures or more statements passing: a
+            // reading whose summary the classic OCR garbled, "(827.88 -$95,111. -$381.7",
+            // gets its totals from the model's page at no cost to the rest.)
+            let closer = g < *best_gap && n >= *best_verified && p >= *best_passing;
+            let fuller = g <= *best_gap && n >= *best_verified && p >= *best_passing && (n > *best_verified || p > *best_passing);
+            if closer || fuller {
                 *best = candidate;
                 *best_gap = g;
                 *best_verified = n;
