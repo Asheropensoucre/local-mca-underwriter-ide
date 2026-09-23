@@ -3426,9 +3426,14 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
                     if from_balance {
                         desc = format!("{desc} (amount read from the running balance)").trim().to_string();
                     }
-                    // A signed amount ("20.00-", Navy Federal) names its own kind.
-                    let signed = if tokens[n - 2].ends_with('-') || tokens[n - 2].starts_with('-') { Some(Kind::Debit) } else if tokens[n - 2].ends_with('+') || tokens[n - 2].starts_with('+') || signed_balance_page { Some(Kind::Credit) } else { None };
-                    let kind = from_prev.flatten().or(signed).or(back_kind).unwrap_or_else(|| st.row_kind(page, &desc).0);
+                    // A signed amount ("20.00-", Navy Federal; "($695.00)", a bank verification
+                    // report) names its own kind. Where the listing signs its debits, an unsigned
+                    // amount is a credit whatever its words say ("... Credit Card  ($695.00)").
+                    let t2 = tokens[n - 2];
+                    let signed = if t2.ends_with('-') || t2.starts_with('-') || t2.starts_with('(') || t2.starts_with("$(") || t2.starts_with("$-") { Some(Kind::Debit) } else if t2.ends_with('+') || t2.starts_with('+') || signed_balance_page || signed_amounts { Some(Kind::Credit) } else { None };
+                    // (Where the listing signs its debits the sign is certain; the balance change
+                    // is only a witness, and on a newest-first printout it reads backwards.)
+                    let kind = if signed_amounts { signed } else { from_prev.flatten().or(signed) }.or(back_kind).unwrap_or_else(|| st.row_kind(page, &desc).0);
                     let id = ledger.transactions.len();
                     let (date, day) = resolve_date(tokens[0], year_hint);
                     ledger.transactions.push(Txn { id, date: date.clone(), day, kind, amount, description: desc, page, table: st.table });
@@ -3456,8 +3461,12 @@ fn parse_page(text: &str, page: usize, year_hint: Option<i32>, ledger: &mut Ledg
                 continue;
             }
         }
-        if starts_with_date && !ends_with_amount && tokens.len() >= 3 && (amount_positions.len() == 1 || st.amount_first && amount_positions.first() == Some(&1)) && !summary_row {
-            let a = amount_positions[0];
+        // A report row that ends in the dash it prints for an unrepeated balance may quote other
+        // figures in its description ("Cash Svcs Db/Cr Dep Adjust, Org Dep Amt= 85,520.00 ...
+        // ($38,150.00)  -"): the figure just before the dash is the row's own amount.
+        let dashed_row = !ends_with_amount && tokens.len() >= 4 && matches!(tokens[tokens.len() - 1], "-" | "\u{2014}" | "\u{2013}") && is_amount_token(tokens[tokens.len() - 2]);
+        if starts_with_date && !ends_with_amount && tokens.len() >= 3 && (amount_positions.len() == 1 || dashed_row || st.amount_first && amount_positions.first() == Some(&1)) && !summary_row {
+            let a = if dashed_row { tokens.len() - 2 } else { amount_positions[0] };
             // (Stray marks, "=" and "*" around a check number in a scan, are not words.)
             let rest: Vec<&str> = tokens[1..].iter().enumerate().filter(|(i, t)| *i + 1 != a && !(t.len() >= 9 && t.chars().all(|c| c.is_ascii_digit())) && (t.chars().count() > 1 || t.chars().all(|c| c.is_alphanumeric()))).map(|(_, t)| *t).collect();
             let desc = if rest.len() == 1 && rest[0].len() <= 7 && rest[0].chars().all(|c| c.is_ascii_digit()) && rest[0].chars().any(|c| c != '0') { format!("Check {}", rest[0]) } else { rest.join(" ") };
@@ -8539,6 +8548,32 @@ Nov 10 136,758.04 Nov 24 147,043.45 Nov 26 146,849.66
                 (Kind::Credit, 2043.32),
                 (Kind::Debit, 2000.0),
                 (Kind::Credit, 1000.0),
+            ],
+            "{:?}",
+            l.transactions
+        );
+    }
+
+    #[test]
+    fn report_rows_that_quote_a_figure_and_parenthesised_debits_beside_a_balance() {
+        // A bank verification report: a deposit adjustment row quotes the original deposit
+        // ("Org Dep Amt= 85,520.00") before its own amount, and its wrapped reason line
+        // ("Reason= Missing Deposit Tick") is the row's, not a deposits heading. A debit in
+        // parentheses beside the day's running balance is a debit whatever the category
+        // column says ("Credit Card").
+        let page = "                                                                                                                        EOD\nDate         Codes      Description                                                        Category          Amount\n                                                                                                                       Balance\n6/8/2026     dp         Deposit 1254529466                                                 Deposit       $2,043.32  $40,328.44\n6/5/2026                Cash Svcs Db/Cr Dep Adjust, Org Dep Amt= 85,520.00, Depdate= 06/02/2026  Other     ($38,150.00)       -\n                        Reason= Missing Deposit Tick\n6/5/2026                ORIG CO NAME:PAYCHEX TPS DESCR:TAXES                               Services      ($2,858.35)       -\n6/4/2026     dp         Cash Svcs Db/Cr Dep Adjust, Org Dep Amt= 14,350.00, Depdate= 06/01/2026  Deposit     $4,614.00       -\n6/4/2026     cc         ORIG CO NAME:CAPITAL ONE DESCR:CRCARDPMT SEC:CCD Credit Card       Credit Card     ($695.00)  $36,000.00\n6/3/2026     dp         Deposit 1254529467                                                 Deposit       $1,000.00       -\n6/3/2026                ORIG CO NAME:SUPPLIER                                              Services        ($500.00)       -\n";
+        let l = parse(&[(1, page)]);
+        let rows: Vec<(Kind, f64)> = l.transactions.iter().map(|t| (t.kind, t.amount)).collect();
+        assert_eq!(
+            rows,
+            vec![
+                (Kind::Credit, 2043.32),
+                (Kind::Debit, 38150.0),
+                (Kind::Debit, 2858.35),
+                (Kind::Credit, 4614.0),
+                (Kind::Debit, 695.0),
+                (Kind::Credit, 1000.0),
+                (Kind::Debit, 500.0),
             ],
             "{:?}",
             l.transactions

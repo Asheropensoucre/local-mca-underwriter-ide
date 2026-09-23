@@ -16,7 +16,8 @@ separately: those are layouts the parser does not understand yet.
             skipped as with no --ocr).
 --markdown  print a per-bank coverage table instead of the plain lists.
 --snapshot <file>  compare with the previous run saved in <file> (regressions and new passes
-            are listed), then overwrite it with this run.
+            are listed), then overwrite it with this run. Each file's funder-like payees are kept
+            in <file>.lenders.json, and a file that loses them all is listed.
 
 --exclude <file>  list of files that are not bank statements, skipped (default: not_statements.txt
             next to the PDF folder; one file name per line, the reason after a space).
@@ -161,6 +162,17 @@ def main():
         if gains:
             print("NEW PASSES:", ", ".join(gains))
         json.dump(current, open(snapshot, "w"), indent=0, sort_keys=True)
+        # Funder-like recurring debits per file, kept beside the snapshot: a statement that
+        # showed funder activity before and shows none now has lost a position the report
+        # would have named, which matters as much as a lost pass.
+        lenders_file = snapshot + ".lenders.json"
+        lenders_now = {r["name"]: sorted(set(r.get("lenders") or [])) for r in rows if r.get("lenders")}
+        if os.path.exists(lenders_file):
+            lenders_before = json.load(open(lenders_file))
+            lost = sorted(n for n, l in lenders_before.items() if l and n in current and not lenders_now.get(n))
+            if lost:
+                print("LENDER ACTIVITY LOST:", ", ".join(lost))
+        json.dump(lenders_now, open(lenders_file, "w"), indent=0, sort_keys=True)
 
     if markdown:
         by_bank = defaultdict(list)

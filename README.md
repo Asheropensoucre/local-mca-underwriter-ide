@@ -75,7 +75,7 @@ Every statement is checked against itself: the parser sums the transaction lines
 | Chase (business) | summary with one line per debit category (card, electronic, checks, fees) summed; sectioned lists where the section decides credit or debit |
 | Chase (business, print-stream PDF) | rows broken across the "*end*" section marker at a page break rejoined; "Check No. / Description / Date Paid / Amount" table, including the check's own date in the description column |
 | Chase online activity printout | date printed once per day and carried to the rows below it, also across pages; descriptions wrapped over several lines; "Pending" rows left out |
-| Bank verification reports (DecisionLogic) | "EOD / Balance" header stacked over three lines; one amount column that signs its debits "($918.75)"; the running balance printed on the last row of each day |
+| Bank verification reports (DecisionLogic) | "EOD / Balance" header stacked over three lines; one amount column that signs its debits "($918.75)"; the running balance printed on the last row of each day; rows that quote another figure before their own amount |
 | Wintrust | "Jun 03" dates, mailing barcodes in the margin, "Analysis or Maintenance Fees" counted with debits |
 | Hancock Whitney | two transaction columns side by side (unfolded), "22 CREDITS / 9 DEBITS / SERVICE CHARGES" summary |
 | Mabrey Bank | "2 Deposits/Credits / 31 Checks/Debits" summary, check table, image caption pages skipped |
