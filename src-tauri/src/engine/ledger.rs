@@ -1950,6 +1950,13 @@ fn kind_and_confidence(desc: &str, section: Option<Kind>) -> (Kind, bool) {
     if CREDIT_PHRASES.iter().any(|w| l.contains(w)) {
         return (Kind::Credit, true);
     }
+    // A pull that came back (BMO: "RETURNED ACH DEBIT NSF  WEB COMCAST") is money returned
+    // to the account, and "TRANSFER IN" is money arriving. (Not the fee a bank charges for a
+    // returned item: "RETURNED ACH DEBIT FEE" stays a debit.)
+    let returned_pull = l.contains("returned ach debit") || l.contains("returned debit") || l.contains("ach debit return");
+    if (returned_pull || l.contains("transfer in ") || l.ends_with("transfer in")) && !l.contains(" fee") && !l.contains("charge") {
+        return (Kind::Credit, true);
+    }
     // (Heritage Bank's "INET XFER 12-02 FROM XXXXXXXX0686" / "INET XFER 12-02 TO ...": the
     // direction word comes after the date.)
     if l.contains("xfer") && !l.contains("transfer") {
@@ -5176,6 +5183,18 @@ fn document_kind(pages: &[(usize, &str)]) -> Option<String> {
     let fx_pages = pages.iter().filter(|(_, t)| { let l = t.to_ascii_lowercase(); l.matches("spot").count() >= 3 && pairs.iter().filter(|p| l.contains(*p)).count() >= 2 }).count();
     if fx_pages >= 1 && !pages.iter().any(|(_, t)| { let l = t.to_ascii_lowercase(); l.contains("member fdic") }) {
         return Some("foreign exchange statement".into());
+    }
+    // An online store's order receipt ("Order Total: $77.10", "Shipping & Handling: $11.28",
+    // "Free Shipping: -$11.28") filed as an exhibit: a purchase, not an account.
+    let receipt = |l: &str| (l.contains("order total") || l.contains("grand total")) && (l.contains("shipping & handling") || l.contains("items subtotal") || l.contains("order placed") || l.contains("total before tax"));
+    if pages.iter().any(|(_, t)| receipt(&t.to_ascii_lowercase())) && !pages.iter().any(|(_, t)| statement_words(t)) {
+        return Some("order receipt".into());
+    }
+    // Recorded real estate papers (deeds, mortgages, assignments of leases, each with the
+    // county's "Recording Fee" cover sheet): land records, not a bank account.
+    let recording = pages.iter().filter(|(_, t)| { let l = t.to_ascii_lowercase(); l.contains("recording fee") || l.contains("realty transfer fee") || l.contains("record and return to") || l.contains("recorded inst") }).count();
+    if recording >= 2 && !pages.iter().any(|(_, t)| statement_words(t)) {
+        return Some("recorded real estate documents".into());
     }
     // A foreign bank's statement in another currency ("Currency: UAE Dirham", Dubai Islamic
     // Bank in a terrorism-litigation exhibit): not a U.S. merchant's account.
@@ -8578,5 +8597,22 @@ Nov 10 136,758.04 Nov 24 147,043.45 Nov 26 146,849.66
             "{:?}",
             l.transactions
         );
+    }
+
+    #[test]
+    fn order_receipts_and_recorded_land_papers_are_not_statements() {
+        let receipt = "Order Placed: January 3, 2022\nItems Subtotal: $70.98\nShipping & Handling: $11.28\nFree Shipping: -$11.28\nTotal before tax: $70.98\nEstimated tax to be collected: $6.12\nGrand Total: $77.10\n";
+        assert_eq!(parse(&[(1, receipt)]).summary.document_kind.as_deref(), Some("order receipt"));
+        let deed = "RECORD AND RETURN TO:\nTITLE COMPANY\nRecording Fee (excluding transfer tax) $40.00\nTotal Amount $40.00\n";
+        let mortgage = "MORTGAGE\n(J) \"Community Association Dues, Fees, and Assessments\" means all dues\nRECORDING FEES 40.00\n";
+        assert_eq!(parse(&[(1, deed), (2, mortgage)]).summary.document_kind.as_deref(), Some("recorded real estate documents"));
+    }
+
+    #[test]
+    fn a_returned_pull_and_a_transfer_in_are_credits_but_a_returned_item_fee_is_not() {
+        assert_eq!(super::kind_and_confidence("RETURNED ACH DEBIT NSF WEB COMCAST RETRY PYMT", None), (Kind::Credit, true));
+        assert_eq!(super::kind_and_confidence("TRANSFER IN RECORD NO. P0F023 ZELLE FROM A PERSON", None), (Kind::Credit, true));
+        assert_eq!(super::kind_and_confidence("RETURNED ACH DEBIT FEE", None).0, Kind::Debit);
+        assert_eq!(super::kind_and_confidence("TRANSFER OUT RECORD NO. P0L0IV ZELLE TO A PERSON", None).0, Kind::Debit);
     }
 }
