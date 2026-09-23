@@ -58,7 +58,7 @@ On laptops the GPU has no memory of its own; models and caches come out of syste
 
 ## Statement layouts the parser understands
 
-Every statement is checked against itself: the parser sums the transaction lines and compares them with the totals the bank printed. The verification block in the report shows both numbers, so a layout the parser does not fully understand is visible, never silent. Layouts verified to the cent so far (`scripts/parser_check.py` over public court-filing exhibits and the test statements; 403 statements to the cent as of September 22, 2026 afternoon, over about 6,570 court-filing PDFs (127,800 pages), 81 of them with funder activity, 243 more documents recognized as not bank statements and 28 court copies reported as incomplete):
+Every statement is checked against itself: the parser sums the transaction lines and compares them with the totals the bank printed. The verification block in the report shows both numbers, so a layout the parser does not fully understand is visible, never silent. Layouts verified to the cent so far (`scripts/parser_check.py` over public court-filing exhibits and the test statements; 403 statements to the cent as of September 23, 2026, over about 6,570 court-filing PDFs (127,800 pages), 80 of them with funder activity, 243 more documents recognized as not bank statements and 28 court copies reported as incomplete):
 
 | Bank | Layout features |
 |---|---|
@@ -73,6 +73,9 @@ Every statement is checked against itself: the parser sums the transaction lines
 | Pinnacle Bank | `$.00` amounts, "Credits + / Debits -" summary, check image pages |
 | TD Bank | "DEBIT / CREDIT / BALANCE" columns, "Statement Balance as of" beginning and ending, three-line descriptions |
 | Chase (business) | summary with one line per debit category (card, electronic, checks, fees) summed; sectioned lists where the section decides credit or debit |
+| Chase (business, print-stream PDF) | rows broken across the "*end*" section marker at a page break rejoined; "Check No. / Description / Date Paid / Amount" table, including the check's own date in the description column |
+| Chase online activity printout | date printed once per day and carried to the rows below it, also across pages; descriptions wrapped over several lines; "Pending" rows left out |
+| Bank verification reports (DecisionLogic) | "EOD / Balance" header stacked over three lines; one amount column that signs its debits "($918.75)"; the running balance printed on the last row of each day |
 | Wintrust | "Jun 03" dates, mailing barcodes in the margin, "Analysis or Maintenance Fees" counted with debits |
 | Hancock Whitney | two transaction columns side by side (unfolded), "22 CREDITS / 9 DEBITS / SERVICE CHARGES" summary |
 | Mabrey Bank | "2 Deposits/Credits / 31 Checks/Debits" summary, check table, image caption pages skipped |
