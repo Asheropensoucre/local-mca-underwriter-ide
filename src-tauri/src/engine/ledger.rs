@@ -1953,6 +1953,25 @@ fn kind_and_confidence(desc: &str, section: Option<Kind>) -> (Kind, bool) {
     // A pull that came back (BMO: "RETURNED ACH DEBIT NSF  WEB COMCAST") is money returned
     // to the account, and "TRANSFER IN" is money arriving. (Not the fee a bank charges for a
     // returned item: "RETURNED ACH DEBIT FEE" stays a debit.)
+    // A payment app's cash-out ("VENMO CASHOUT", "CASH APP*CASH OUT", "PAYPAL TRANSFER ...
+    // CASHOUT") moves the balance from the app into this account: money in.
+    let app = l.contains("venmo") || l.contains("cash app") || l.contains("paypal") || l.contains("square inc");
+    if app && (l.contains("cashout") || l.contains("cash out")) && !l.contains(" fee") {
+        return (Kind::Credit, true);
+    }
+    // Square's payout of the merchant's card sales ("SQUARE INC  SQ240101  A COMPANY", the
+    // settlement date after "SQ") is money in. (A card purchase at another Square seller reads
+    // "SQ *NAME" and stays a debit, and so does any Square fee.)
+    // (A scan reads the "S" as a dollar sign: "$Q240101".)
+    if l.contains("square inc") && l.split_whitespace().any(|w| w.len() == 8 && (w.starts_with("sq") || w.starts_with("$q")) && w[2..].chars().all(|c| c.is_ascii_digit())) && !l.contains(" fee") {
+        return (Kind::Credit, true);
+    }
+    // A card processor paying out the merchant's sales ("PODIUM PAYMENTS PODIUM PAY",
+    // "STRIPE TRANSFER", "SHOPIFY PAYOUT") is money in; the same companies' software charges
+    // read differently ("WWW.PODIUM.COM", "STRIPE BILLING") and stay debits.
+    if ["podium payments", "stripe transfer", "shopify payout", "shopify payments"].iter().any(|w| l.contains(w)) && !l.contains(" fee") && !l.contains("billing") {
+        return (Kind::Credit, true);
+    }
     let returned_pull = l.contains("returned ach debit") || l.contains("returned debit") || l.contains("ach debit return");
     if (returned_pull || l.contains("transfer in ") || l.ends_with("transfer in")) && !l.contains(" fee") && !l.contains("charge") {
         return (Kind::Credit, true);
@@ -5129,6 +5148,11 @@ fn document_kind(pages: &[(usize, &str)]) -> Option<String> {
     if (sq.contains("declaration of") || sq.contains("affidavit of")) && (sq.contains("in support of") || sq.contains("case no")) && no_statement_page() {
         return Some("court declaration".into());
     }
+    // The pre-2015 bankruptcy petition ("B1 (Official Form 1)") with its schedules and the
+    // debtor's pay stubs, whose "Leave Balance Summary" is one loose statement word.
+    if head.contains("(official form 1)") && no_statement_page() {
+        return Some("bankruptcy petition and schedules".into());
+    }
     // A debtor's own "DIP Accounts - Reconciliation" sheet, with nothing behind it.
     if pages.first().map(|(_, t)| is_reconciliation_page(t)).unwrap_or(false) && no_statement_page() {
         return Some("reconciliation report".into());
@@ -5183,6 +5207,19 @@ fn document_kind(pages: &[(usize, &str)]) -> Option<String> {
     let fx_pages = pages.iter().filter(|(_, t)| { let l = t.to_ascii_lowercase(); l.matches("spot").count() >= 3 && pairs.iter().filter(|p| l.contains(*p)).count() >= 2 }).count();
     if fx_pages >= 1 && !pages.iter().any(|(_, t)| { let l = t.to_ascii_lowercase(); l.contains("member fdic") }) {
         return Some("foreign exchange statement".into());
+    }
+    // A point-of-sale system's sales report ("Sales summary ... Net sales ... Sales by day",
+    // a restaurant's card terminal): the merchant's own sales, not a bank's account.
+    let pos = |l: &str| (l.contains("sales summary") || l.contains("salessummary")) && (l.contains("net sales") || l.contains("sales by day") || l.contains("revenue summary"));
+    if pages.iter().take(2).any(|(_, t)| pos(&t.to_ascii_lowercase())) && no_statement_page() {
+        return Some("point of sale sales report".into());
+    }
+    // A utility bill ("Meter Number ... Prior Read ... Current Read ... Usage"): a bill, not
+    // an account statement.
+    let utility = |l: &str| l.contains("meter") && (l.contains("read date") || l.contains("prior read") || l.contains("current read")) && (l.contains("usage") || l.contains("ccf") || l.contains("kwh") || l.contains("therms"));
+    // (A bill's "Previous Balance" is a statement word; a bill has no dated rows of a ledger.)
+    if pages.iter().take(2).any(|(_, t)| utility(&t.to_ascii_lowercase())) && no_statement_page() {
+        return Some("utility bill".into());
     }
     // An online store's order receipt ("Order Total: $77.10", "Shipping & Handling: $11.28",
     // "Free Shipping: -$11.28") filed as an exhibit: a purchase, not an account.
@@ -5631,6 +5668,7 @@ fn parse_one(pages: &[(usize, &str)]) -> Ledger {
     drop_repeated_copy(&mut ledger);
     dedup_across_tables(&mut ledger);
     net_reversals(&mut ledger);
+    settle_verification_deposits(&mut ledger);
     settle_weak_by_section_kinds(&mut ledger);
     meet_totals(&mut ledger);
     use_alternates(&mut ledger);
@@ -5832,6 +5870,30 @@ fn settle_weak_by_section_kinds(ledger: &mut Ledger) {
 /// statement's own figure for that kind is one digit off their sum (a scan's "75,193.44"
 /// for 76,193.44, Chase), the statement figure is the misread one. Two printed witnesses
 /// (the section totals and the rows) against one.
+/// A bank or payment app proves an account by sending two small deposits and pulling them
+/// back in one debit ("INTUIT ACCTVERIFY" 0.15, 0.03 and 0.18 on one day). The words are the
+/// same on all three, so they cannot say which is which; the amounts can: in a same-day group of
+/// verification entries under a dollar, the one equal to the sum of the others is the debit and
+/// the rest are credits.
+fn settle_verification_deposits(ledger: &mut Ledger) {
+    let verify = |d: &str| { let l = d.to_ascii_lowercase(); l.contains("acctverify") || l.contains("acct verify") || l.contains("verifybank") || l.contains("verify bank") || l.contains("trial deposit") || l.contains("micro deposit") || l.contains("microdeposit") };
+    let mut groups: std::collections::BTreeMap<(String, usize), Vec<usize>> = std::collections::BTreeMap::new();
+    for (i, t) in ledger.transactions.iter().enumerate() {
+        if t.amount < 1.0 && verify(&t.description) {
+            groups.entry((t.date.clone(), t.table)).or_default().push(i);
+        }
+    }
+    for ids in groups.values().filter(|g| g.len() >= 3) {
+        let total: f64 = ids.iter().map(|&i| ledger.transactions[i].amount).sum();
+        let pulls: Vec<usize> = ids.iter().copied().filter(|&i| (ledger.transactions[i].amount * 2.0 - total).abs() < 0.005).collect();
+        if pulls.len() == 1 {
+            for &i in ids {
+                ledger.transactions[i].kind = if i == pulls[0] { Kind::Debit } else { Kind::Credit };
+            }
+        }
+    }
+}
+
 fn settle_summary_by_sections(ledger: &mut Ledger) {
     if ledger.section_totals.is_empty() {
         return;
@@ -8614,5 +8676,27 @@ Nov 10 136,758.04 Nov 24 147,043.45 Nov 26 146,849.66
         assert_eq!(super::kind_and_confidence("TRANSFER IN RECORD NO. P0F023 ZELLE FROM A PERSON", None), (Kind::Credit, true));
         assert_eq!(super::kind_and_confidence("RETURNED ACH DEBIT FEE", None).0, Kind::Debit);
         assert_eq!(super::kind_and_confidence("TRANSFER OUT RECORD NO. P0L0IV ZELLE TO A PERSON", None).0, Kind::Debit);
+        assert_eq!(super::kind_and_confidence("VENMO CASHOUT A PERSON", None), (Kind::Credit, true));
+        assert_eq!(super::kind_and_confidence("VENMO PAYMENT A PERSON", None).0, Kind::Debit);
+        assert_eq!(super::kind_and_confidence("SQUARE INC SQ240101 A COMPANY", None), (Kind::Credit, true));
+        assert_eq!(super::kind_and_confidence("SQ *COFFEE SHOP CITY ST", None).0, Kind::Debit);
+        assert_eq!(super::kind_and_confidence("PODIUM PAYMENTS PODIUM PAY A COMPANY", None), (Kind::Credit, true));
+        assert_eq!(super::kind_and_confidence("WWW.PODIUM.COM HTTPSWWW UT 02/14", None).0, Kind::Debit);
+        // Three verification entries on one day: the one equal to the others' sum is the pull.
+        let page = "Date Description Deposits Withdrawals\nFeb 13 INTUIT ACCTVERIFY A COMPANY 0.15\nFeb 13 INTUIT ACCTVERIFY A COMPANY 0.03\nFeb 13 INTUIT ACCTVERIFY A COMPANY 0.18\n";
+        let l = parse(&[(1, page)]);
+        let rows: Vec<(Kind, f64)> = l.transactions.iter().map(|t| (t.kind, t.amount)).collect();
+        assert_eq!(rows, vec![(Kind::Credit, 0.15), (Kind::Credit, 0.03), (Kind::Debit, 0.18)], "{:?}", l.transactions);
+    }
+
+    #[test]
+    fn sales_reports_utility_bills_and_old_form_petitions_are_not_statements() {
+        let pos = "SalesSummary_2024-08-01_2024-08-31\n-A Restaurant\nRevenue summary\nNet sales                     184005.6\nGratuity                        1899.08\n";
+        assert_eq!(parse(&[(1, pos)]).summary.document_kind.as_deref(), Some("point of sale sales report"));
+        let bill = "Account Number: 2035438-7\nMeter Number  Meter Size  Prior Read Date  Current Read Date  Usage (CCF)\n88189524  1\"  11/2/25  11/11/25  37.2\nBill Date 2/3/26\nPrevious Balance  $17,038.31\n";
+        assert_eq!(parse(&[(1, bill)]).summary.document_kind.as_deref(), Some("utility bill"));
+        let petition = "B1 (Official Form 1) (04/13)\nUnited States Bankruptcy Court\nName of Debtor (if individual, enter Last, First, Middle):\n";
+        let stub = "Earnings Statement\nLeave Balance Summary\nLeave Type  Beginning Balance  Earned  Current\nSick and Personal  63.53  3.00\n";
+        assert_eq!(parse(&[(1, petition), (2, stub)]).summary.document_kind.as_deref(), Some("bankruptcy petition and schedules"));
     }
 }
