@@ -260,6 +260,19 @@ fn join_split_amounts(line: &str) -> String {
             line.to_string()
         }
     };
+    // (And the comma before that group read as a point, "Deposits and Additions 47 224.065
+    // 44", Chase in a scan: the point goes back to a comma first.)
+    let line = &{
+        let b = line.as_bytes();
+        let digit = |k: usize| b.get(k).map(|c| c.is_ascii_digit()).unwrap_or(false);
+        let mut out: Vec<u8> = b.to_vec();
+        for i in 5..b.len() {
+            if b[i] == b' ' && b[i - 4] == b'.' && digit(i - 5) && digit(i - 3) && digit(i - 2) && digit(i - 1) && digit(i + 1) && digit(i + 2) && !digit(i + 3) && b.get(i + 3).map(|c| *c == b' ' || *c == b'-').unwrap_or(true) && b.get(i + 3) != Some(&b'.') {
+                out[i - 4] = b',';
+            }
+        }
+        String::from_utf8(out).unwrap_or_else(|_| line.to_string())
+    };
     // A decimal point lost to a space after a thousands group ("Deposits 8,498 69"): the
     // group of three after a comma, a space, two digits and no more digits is ".dd".
     let line = &{
@@ -1030,7 +1043,8 @@ fn repair_bad_months(text: &str) -> String {
     // first so the dates behind it are seen by every repair here; bullets and signs stay.)
     let glyphs = ['|', '!', '¦', '[', ']', '{', '}', '\'', '\u{2018}', '\u{2019}', '"', '\u{201c}', '\u{201d}', '_', '~', '='];
     let unglyphed: String = text.lines().map(|l| {
-        match l.split_whitespace().next() {
+        let toks: Vec<&str> = l.split_whitespace().take(3).collect();
+        match toks.first() {
             Some(t) if t.chars().count() == 1 && glyphs.contains(&t.chars().next().unwrap()) => {
                 let at = l.find(t).unwrap();
                 format!("{}{}{}", &l[..at], " ".repeat(t.len()), &l[at + t.len()..])
@@ -4577,6 +4591,23 @@ fn year_hint(texts: &[&str]) -> Option<i32> {
     None
 }
 
+/// A smear the scan read as a lowercase word in front of an amount-first row ("veseene
+/// 01/17 19,175.21 TRUST DEPT", "svar 01/02 79.29 Payroll ... 01/03 77,948.08 PAYROLL",
+/// Hancock Whitney in a court scan): the word goes, so the row and its column partner
+/// start with their date.
+fn strip_row_smears(text: &str) -> String {
+    text.lines().map(|l| {
+        let toks: Vec<&str> = l.split_whitespace().take(3).collect();
+        let smear = toks.len() == 3 && toks[0].len() >= 3 && toks[0].chars().all(|c| c.is_ascii_lowercase()) && parse_date_token(toks[1]).is_some() && is_amount_token(toks[2]);
+        if smear {
+            let at = l.find(toks[0]).unwrap();
+            format!("{}{}{}", &l[..at], " ".repeat(toks[0].len()), &l[at + toks[0].len()..])
+        } else {
+            l.to_string()
+        }
+    }).collect::<Vec<_>>().join("\n")
+}
+
 /// Some banks (Hancock Whitney, small banks) print two transaction columns side by side:
 /// "Date  Amount  Description        Date  Amount  Description". Split each line of such a
 /// block at the start of the right header and emit the left column, then the right, so the
@@ -4584,7 +4615,7 @@ fn year_hint(texts: &[&str]) -> Option<i32> {
 pub fn unfold_two_columns(text: &str) -> String {
     // (Dates the scan read without their slash, "1105" for 11/05 at the head of a
     // three-column check row, are repaired first: the columns are cut at the dates.)
-    let text = &repair_slashless_dates(text);
+    let text = &repair_slashless_dates(&strip_row_smears(text));
     let mut out = String::new();
     // Character offsets where the second, third, ... column start; empty outside a block.
     let mut splits: Vec<usize> = Vec::new();
@@ -5674,7 +5705,9 @@ fn split_sub_accounts(pages: &[(usize, &str)]) -> Vec<(usize, String, bool)> {
         // 0849", the column header between it and "Beginning Balance".
         let caps_heading = |l: &str| {
             let t = l.trim();
-            let toks: Vec<&str> = t.split_whitespace().collect();
+            // (Marks count for nothing: Truist's "¡ TRUIST DYNAMIC BUSINESS CHECKING -
+            // PREFERRED TIER   0392", a logo glyph in front and a dash inside.)
+            let toks: Vec<&str> = t.split_whitespace().filter(|w| w.chars().any(|c| c.is_ascii_alphanumeric())).collect();
             let lower = t.to_ascii_lowercase();
             (2..=8).contains(&toks.len()) && toks.last().map(|n| n.len() == 4 && n.chars().all(|c| c.is_ascii_digit())).unwrap_or(false)
                 && !t.chars().any(|c| c.is_ascii_lowercase()) && t.chars().filter(|c| c.is_ascii_alphabetic()).count() >= 6
@@ -9107,6 +9140,34 @@ Nov 10 136,758.04 Nov 24 147,043.45 Nov 26 146,849.66
         assert!(garbled_layer(&bad));
         let good = "Deposits and Credits\nDate Description Amount\n".to_string() + &"10/01 Deposit to the account from a customer for services 1,000.00\n".repeat(10);
         assert!(!garbled_layer(&good));
+    }
+
+    #[test]
+    fn a_thousands_comma_read_as_a_point_before_a_lost_decimal() {
+        assert_eq!(join_split_amounts("Deposits and Additions 47 224.065 44"), "Deposits and Additions 47 224,065.44");
+        // (Near the start of a line too.)
+        assert_eq!(join_split_amounts("5.065 44"), "5,065.44");
+    }
+
+    #[test]
+    fn a_smear_read_as_a_word_in_front_of_a_row_goes() {
+        // Hancock Whitney in a court scan, two columns read flat.
+        let text = "Deposits and Other Credits\nDate Amount Description Date Amount Description\nsvar 01/02 79.29 Payroll ST ANTHONY CHURC 01/03 77,948.08 PAYROLL AN118-CATHOLIC C\nveseene 01/17 19,175.21 TRUST DEPT HANCOCK WHITNEY\n";
+        let l = parse(&[(1, text)]);
+        let mut amounts: Vec<f64> = l.transactions.iter().map(|t| t.amount).collect();
+        amounts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_eq!(amounts, vec![79.29, 19175.21, 77948.08], "{:?}", l.transactions);
+        assert!(l.transactions.iter().all(|t| t.kind == Kind::Credit));
+    }
+
+    #[test]
+    fn a_truist_account_heading_with_a_logo_glyph_splits_the_page() {
+        // The first account's deposits end on the page where the second account begins.
+        let p1 = "\u{a1} TRUIST DYNAMIC BUSINESS CHECKING - PREFERRED TIER 0384\nAccount summary\nYour previous balance as of 07/31/2026 $1,000.00\nOther withdrawals, debits and service charges - 0.00\nDeposits, credits and interest + 300.00\nYour new balance as of 08/31/2026 = $1,300.00\nDeposits, credits and interest\nDATE DESCRIPTION AMOUNT($)\n08/24 REMOTE DEPOSIT 100.00\n";
+        let p2 = "\u{a1} TRUIST DYNAMIC BUSINESS CHECKING - PREFERRED TIER 0384 (continued)\nDATE DESCRIPTION AMOUNT($)\n08/31 REMOTE DEPOSIT 200.00\nTotal deposits, credits and interest = $300.00\n\u{a1} TRUIST DYNAMIC BUSINESS CHECKING - PREFERRED TIER 0392\nAccount summary\nYour previous balance as of 07/31/2026 $50.00\nOther withdrawals, debits and service charges - 0.00\nDeposits, credits and interest + 10.00\nYour new balance as of 08/31/2026 = $60.00\nDeposits, credits and interest\nDATE DESCRIPTION AMOUNT($)\n08/05 REMOTE DEPOSIT 10.00\n";
+        let l = parse(&[(1, p1), (2, p2)]);
+        let got: Vec<(Option<f64>, Option<f64>)> = l.statements.iter().map(|s| (s.total_credits, s.parsed_credits)).collect();
+        assert_eq!(got, vec![(Some(300.0), Some(300.0)), (Some(10.0), Some(10.0))], "{:?}", l.statements);
     }
 
     #[test]
