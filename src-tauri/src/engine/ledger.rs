@@ -3995,6 +3995,11 @@ fn has_key(lower: &str, key: &str) -> bool {
 }
 
 fn capture_summary(lower: &str, line: &str, s: &mut Summary, page: usize) {
+    // (Chase's "ATM & Debit Card Totals" box, "Total Card Deposits & Credits $20,847.74",
+    // counts the card's own items: no statement total.)
+    if lower.starts_with("total card ") || lower.starts_with("total atm ") {
+        return;
+    }
     if has_key(lower, "beginning balance") || lower.contains("previous balance") || lower.contains("opening ledger balance") || lower.contains("opening balance") || lower.starts_with("balance forward") || lower.contains("balance last statement") {
         // Sunrise puts the values on the next line; Legends on the same line; Frost says
         // "BALANCE LAST STATEMENT".
@@ -6775,6 +6780,26 @@ fn dedup_across_tables(ledger: &mut Ledger) {
 /// Number of rows under a transaction table header that start with a date but carry no
 /// amount. On plain OCR output of a scanned table these are rows whose amount cells were
 /// dropped; the caller then asks the OCR model for the table itself.
+/// A text layer whose font maps its glyphs to the wrong characters ("G%$#(G$"  8JA8<678@?<6"
+/// for a dated row, a court copy of a Zions statement): hundreds of tokens, hardly any of the
+/// words every statement page prints, no line opening with a date, and tokens made of the
+/// symbols the font maps its letters to. The page's picture is still right, so it is read
+/// again by OCR.
+pub fn garbled_layer(text: &str) -> bool {
+    const COMMON: &[&str] = &["the", "and", "of", "to", "for", "balance", "date", "amount", "deposit", "deposits", "account", "total", "check", "checks", "description", "statement", "debit", "debits", "credit", "credits", "withdrawal", "withdrawals", "payment", "transfer", "fee", "service", "ending", "beginning", "bank"];
+    let tokens: Vec<String> = text.split_whitespace().map(|t| t.trim_matches(|c: char| !c.is_ascii_alphanumeric()).to_ascii_lowercase()).collect();
+    if tokens.len() < 60 {
+        return false;
+    }
+    let common = tokens.iter().filter(|t| COMMON.contains(&t.as_str())).count();
+    let dated = text.lines().filter(|l| l.split_whitespace().next().and_then(parse_date_token).is_some()).count();
+    // (And a quarter of the tokens or more carry two of the symbols such a font maps to,
+    // "8JA8<678@?<6": a service list of names and addresses prints few common words too.)
+    let symbols = |t: &str| t.chars().filter(|c| "<>@?=;%$#&!()*\"'".contains(*c) || !c.is_ascii()).count() >= 2;
+    let weird = text.split_whitespace().filter(|t| symbols(t)).count();
+    common * 50 < tokens.len() && dated < 2 && weird * 4 >= tokens.len()
+}
+
 pub fn rows_missing_amounts(text: &str) -> usize {
     let mut under_header = false;
     let mut balance_column = false;
@@ -9074,5 +9099,20 @@ Nov 10 136,758.04 Nov 24 147,043.45 Nov 26 146,849.66
         assert_eq!((l.summary.total_credits, l.summary.total_debits), (Some(1500.19), Some(100.0)), "{:?}", l.summary);
         let kinds: Vec<(Kind, f64)> = l.transactions.iter().map(|t| (t.kind, t.amount)).collect();
         assert_eq!(kinds, vec![(Kind::Credit, 1000.0), (Kind::Credit, 500.0), (Kind::Credit, 0.09), (Kind::Credit, 0.1), (Kind::Debit, 40.0), (Kind::Debit, 60.0)], "{:?}", l.transactions);
+    }
+
+    #[test]
+    fn a_text_layer_whose_font_maps_the_wrong_characters_is_garbled() {
+        let bad = "G%$#(G$\"     G$#\" 8JA8<678@?<6?6=;:<9>A8B      h$LGGNGG\n".repeat(20);
+        assert!(garbled_layer(&bad));
+        let good = "Deposits and Credits\nDate Description Amount\n".to_string() + &"10/01 Deposit to the account from a customer for services 1,000.00\n".repeat(10);
+        assert!(!garbled_layer(&good));
+    }
+
+    #[test]
+    fn a_chase_card_totals_box_is_not_the_statement_total() {
+        let text = "ATM & Debit Card Totals\nTotal ATM Withdrawals & Debits $0.00\nTotal Card Purchases $120,391.40\nTotal Card Deposits & Credits $20,847.74\nELECTRONIC WITHDRAWALS\nDATE DESCRIPTION AMOUNT\n06/01 06/01 Online Transfer To Chk ...1863 $1,000.00\n";
+        let l = parse(&[(1, text)]);
+        assert_eq!((l.summary.total_credits, l.summary.total_debits), (None, None), "{:?}", l.summary);
     }
 }

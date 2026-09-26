@@ -1027,7 +1027,9 @@ pub async fn read_pages(app: &tauri::AppHandle, ep: Option<&Endpoint>, pdfs: &[S
             // (A vector text page whose layer dropped a row's amount, "04/09/2025  Square Inc
             // SQ250409  [blank]  $715,889.24", is rendered and read as well: the glyphs are
             // on the page, only the text layer lost them.)
-            if p.method == "text" && (has_page_image(pdf, p.page) || ledger::rows_missing_amounts(&p.text) > 0) {
+            // (Or a layer whose font maps its glyphs to the wrong characters: the picture of
+            // the page is right, the text is not.)
+            if p.method == "text" && (has_page_image(pdf, p.page) || ledger::rows_missing_amounts(&p.text) > 0 || ledger::garbled_layer(&p.text)) {
                 if let Some(text) = tesseract_layer(cache.as_ref(), tessdata.as_deref(), pdf, p.page) {
                     p.text = text;
                     p.method = "tesseract";
